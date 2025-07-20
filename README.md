@@ -1,0 +1,160 @@
+# CtrlVee - a Discord VLC Bot
+
+A Discord bot that controls VLC media player, manages playlists, and provides movie metadata integration on Windows and macOS.
+
+## Features
+
+- **VLC Playback Control**
+  - Basic controls (play, pause, stop)
+  - Navigate playlist (next, previous)
+  - Jump to specific items using numbers
+  - Rewind playback
+  - Progress display with timestamps
+
+- **Movie Information**
+  - Automatic movie metadata lookup via TMDB
+  - Movie posters, release dates, and ratings
+  - Direct links to TMDB movie pages
+
+- **Playlist Management**
+  - View and navigate existing VLC playlist
+  - List all items with pagination
+  - Quick replay of items using item numbers
+  - Search and filter playlist contents
+  
+- **State Monitoring**
+  - Track VLC state changes
+  - Notify about manual interventions
+  - Configurable notification channel
+  - State change history
+
+## Prerequisites
+
+- Python 3.6 or higher
+- VLC media player installed (Windows or macOS)
+- Discord bot token
+
+### Discord Bot Setup
+1. Go to [Discord Developer Portal](https://discord.com/developers/applications)
+2. Create a new application or select your existing one
+3. Go to the "Bot" section
+4. Enable the following Privileged Intents:
+   - MESSAGE CONTENT INTENT
+5. Under "Bot Permissions", enable:
+   - Read Messages/View Channels
+   - Send Messages
+   - Embed Links
+   - Read Message History
+
+### VLC Setup
+1. Open VLC Media Player
+2. Go to Preferences (or Settings)
+3. Enable the Web Interface:
+   - On macOS: VLC > Preferences > Interface > Main Interfaces > check "Web"
+   - On Windows: Tools > Preferences > Interface > Main Interfaces > check "Web"
+4. Set a password (optional but recommended)
+5. Restart VLC after making these changes
+
+### macOS Specific Setup
+- Install VLC from the official website or using Homebrew: `brew install --cask vlc`
+- Make sure VLC is installed in the standard location (/Applications/VLC.app)
+
+## Installation
+
+1. Clone this repository
+
+2. Set up Python environment:
+   ```
+   # Create a virtual environment
+   python -m venv venv
+   
+   # Activate the virtual environment
+   # On Windows:
+   .\venv\Scripts\activate
+   # On macOS/Linux:
+   source venv/bin/activate
+   ```
+
+3. Install required packages:
+   ```
+   # Install dependencies
+   pip install -r requirements.txt
+   
+   # If you get "no module named audioop" error, run:
+   pip install audioop-lts
+   ```
+
+4. Set up your configuration:
+   ```bash
+   # Copy the template environment file
+   cp template.env .env
+   
+   # Edit the .env file with your settings
+   nano .env   # or use any text editor
+   ```
+   
+   Required Configuration:
+   - `DISCORD_TOKEN`: Your Discord bot token
+   - `TMDB_API_KEY`: Your TMDB API key (optional, but recommended for movie metadata)
+   
+   Optional Configuration:
+   - `ALLOWED_ROLES`: Comma-separated list of roles that can control playback (default: "Theater 2,Theater Host")
+   - `VLC_HOST`: VLC HTTP interface host (default: localhost)
+   - `VLC_PORT`: VLC HTTP interface port (default: 8080)
+   - `VLC_PASSWORD`: VLC HTTP interface password (default: vlc)
+   - `QUEUE_BACKUP_FILE`: Path to queue backup file (default: queue_backup.json)
+   - `ITEMS_PER_PAGE`: Number of items per page in playlist view (default: 20)
+
+## Usage
+
+1. Start the bot:
+   ```
+   python bot.py
+   ```
+
+2. Available commands in Discord:
+   
+   Playback Controls:
+   - `!play` - Start/resume playback
+   - `!pause` - Pause playback
+   - `!stop` - Stop playback
+   - `!next` - Play next item
+   - `!previous` - Play previous item
+   - `!restart` - Restart current file from beginning
+   - `!rewind [seconds]` - Rewind by specified seconds (default: 10)
+   - `!play_num <number>` - Play specific item by number
+
+   Playlist Management:
+   - `!list` - Show playlist (paginated)
+   - `!search <query>` - Search playlist
+   - `!play_search <query>` - Search and play first match
+   - Use ⏮️, ◀️, ▶️, ⏭️ buttons to navigate pages
+
+   Notification Settings:
+   - `!set_notification_channel` - Set current channel for VLC state notifications
+   - `!unset_notification_channel` - Disable notifications
+   - `!show_notification_channel` - Show notification settings
+
+## Known Issues
+
+- **Metadata Matching**: Movie metadata from TMDB may not always match the actual media file. This occurs due to how media file names are parsed and handled by the system. File names with non-standard formatting, special characters, year mismatches, or quality indicators (like "1080p", "BluRay") can interfere with accurate metadata retrieval. This is a known limitation that we plan to improve in future versions by implementing better file name parsing and fuzzy matching algorithms.
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
+
+## Notes
+
+- The bot uses TMDB for movie metadata. You'll get better results if your media files are named accurately.
+- VLC's HTTP interface must be enabled for the bot to function.
+- The bot works with VLC's existing playlist - add your media files directly through VLC.
+- State monitoring helps track manual changes made directly in VLC.
+- Quick Replay feature helps you easily replay items using their position numbers.
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
+## Acknowledgments
+
+This bot was built with assistance from GitHub Copilot.
