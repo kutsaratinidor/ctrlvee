@@ -39,3 +39,6 @@ queue_backup.json
 *.swp
 *.swo
 .DS_Store
+
+# Keep screenshots
+!screenshots/

@@ -28,6 +28,22 @@ A Discord bot that controls VLC media player, manages playlists, and provides mo
   - Configurable notification channel
   - State change history
 
+## Screenshots
+
+### Bot Commands and Help
+![Bot Help Command](screenshots/help-command.png)
+
+### Playlist Management
+![Playlist View](screenshots/playlist-view.png)
+
+### Movie Metadata Integration
+![Movie Metadata](screenshots/movie-metadata.png)
+
+### Bot Commands in Action
+![Bot Commands - Next](screenshots/bot-commands-next.png)
+
+![Bot Commands - Play Number](screenshots/bot-commands-play_num.png)
+
 ## Prerequisites
 
 - Python 3.6 or higher
