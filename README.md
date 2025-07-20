@@ -31,18 +31,18 @@ A Discord bot that controls VLC media player, manages playlists, and provides mo
 ## Screenshots
 
 ### Bot Commands and Help
-<img src="screenshots/help-command.png" alt="Bot Help Command" width="600">
+<img src="screenshots/help-command.png" alt="Bot Help Command" width="400">
 
 ### Playlist Management
-<img src="screenshots/playlist-view.png" alt="Playlist View" width="600">
+<img src="screenshots/playlist-view.png" alt="Playlist View" width="400">
 
 ### Movie Metadata Integration
-<img src="screenshots/movie-metadata.png" alt="Movie Metadata" width="600">
+<img src="screenshots/movie-metadata.png" alt="Movie Metadata" width="400">
 
 ### Bot Commands in Action
-<img src="screenshots/bot-commands-next.png" alt="Bot Commands - Next" width="600">
+<img src="screenshots/bot-commands-next.png" alt="Bot Commands - Next" width="400">
 
-<img src="screenshots/bot-commands-play_num.png" alt="Bot Commands - Play Number" width="600">
+<img src="screenshots/bot-commands-play_num.png" alt="Bot Commands - Play Number" width="400">
 
 ## Prerequisites
 
