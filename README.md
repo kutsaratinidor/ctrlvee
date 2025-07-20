@@ -114,7 +114,7 @@ A Discord bot that controls VLC media player, manages playlists, and provides mo
    - `TMDB_API_KEY`: Your TMDB API key (optional, but recommended for movie metadata)
    
    Optional Configuration:
-   - `ALLOWED_ROLES`: Comma-separated list of roles that can control playback (default: "Theater 2,Theater Host")
+   - `ALLOWED_ROLES`: Comma-separated list of roles that can control playback (default: "Theater Host")
    - `VLC_HOST`: VLC HTTP interface host (default: localhost)
    - `VLC_PORT`: VLC HTTP interface port (default: 8080)
    - `VLC_PASSWORD`: VLC HTTP interface password (default: vlc)
