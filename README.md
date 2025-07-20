@@ -1,6 +1,6 @@
 # CtrlVee - a Discord VLC Bot
 
-A Discord bot that controls VLC media player, manages playlists, and provides movie metadata integration on Windows and macOS.
+A Discord bot that controls VLC media player, manages playlists, and provides movie metadata integration on Windows and macOS. This idea was due to a need for users on a discord server to be able to control the screen shared VLC setup I have even if I am away. It allows more options for them for viewing instead of just relying on the randomness of the playlist. It also allows me to be around or remoting into that computer. I have not seen this to be available and it makes sense because you need to have local access to the host where VLC is running. I used Github Copilot to build this and refine the bot. It used to be just one single python file, but after asking it to be refactored, it rebuilt and implemented it in a more proper way. 
 
 ## Features
 
