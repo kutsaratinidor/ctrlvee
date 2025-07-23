@@ -34,7 +34,6 @@ tmdb_service = TMDBService()
 # Import cogs
 from src.cogs.playback import PlaybackCommands
 from src.cogs.playlist import PlaylistCommands
-from src.cogs.queue import QueueCommands
 
 @bot.event
 async def setup_hook():
@@ -44,7 +43,6 @@ async def setup_hook():
         # Add cogs
         await bot.add_cog(PlaybackCommands(bot, vlc, tmdb_service))
         await bot.add_cog(PlaylistCommands(bot, vlc, tmdb_service))
-        await bot.add_cog(QueueCommands(bot, vlc, tmdb_service))
         logger.info("Cogs loaded successfully")
     except Exception as e:
         logger.error(f"Error loading cogs: {e}")
@@ -136,6 +134,9 @@ async def controls(ctx):
 `!next` - Play next track
 `!previous` - Play previous track
 `!rewind [seconds]` - Rewind by specified seconds (default: 10)
+`!shuffle` - Toggle shuffle mode on/off
+`!shuffle_on` - Enable shuffle mode
+`!shuffle_off` - Disable shuffle mode
         """
         embed.add_field(name="🎮 Playback Controls", value=playback_commands, inline=False)
 
@@ -150,11 +151,9 @@ async def controls(ctx):
 
         # Queue Management
         queue_commands = """
-`!addq <number>` - Add a playlist item to the queue
-`!queue` - Show the current queue
-`!playq` - Play the next item in the queue
-`!removeq <number>` - Remove an item from the queue
-`!clearq` - Clear the entire queue
+`!queue_next <number>` - Queue a playlist item to play next (shows item title & positions)
+`!queue_status` - Show current queue with item titles and playlist positions
+`!clear_queue` - Clear all queue tracking
         """
         embed.add_field(name="📑 Queue Management", value=queue_commands, inline=False)
 

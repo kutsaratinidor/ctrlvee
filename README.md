@@ -1,15 +1,23 @@
 # CtrlVee - a Discord VLC Bot
 
-A Discord bot that controls VLC media player, manages playlists, and provides movie metadata integration on Windows and macOS. This idea was due to a need for users on a discord server to be able to control the screen shared VLC setup I have even if I am away. It allows more options for them for viewing instead of just relying on the randomness of the playlist. It also allows me to not be around or remoting into that computer all the time. I have not seen this to be available and it makes sense because you need to have local access to the host where VLC is running. I used Github Copilot to build this and refine the bot. It used to be just one single python file, but after asking it to be refactored, it rebuilt and implemented it in a more proper way. 
+A Discord bot that controls VLC media player, manages playlists, provides movie metadata integration, and features an intelligent queue system on Windows and macOS. This idea was due to a need for users on a discord server to be able to control the screen shared VLC setup I have even if I am away. It allows more options for them for viewing instead of just relying on the randomness of the playlist. It also allows me to not be around or remoting into that computer all the time. I have not seen this to be available and it makes sense because you need to have local access to the host where VLC is running. I used Github Copilot to build this and refine the bot. It used to be just one single python file, but after asking it to be refactored, it rebuilt and implemented it in a more proper way. 
 
 ## Features
 
 - **VLC Playback Control**
-  - Basic controls (play, pause, stop)
+  - Basic controls (play, pause, stop, restart)
   - Navigate playlist (next, previous)
   - Jump to specific items using numbers
-  - Rewind playback
-  - Progress display with timestamps
+  - Rewind playback with customizable seconds
+  - Shuffle mode control (enable, disable, toggle)
+  - Progress display with timestamps and enhanced status
+
+- **Intelligent Queue System**
+  - Queue items to play next with automatic shuffle handling
+  - Soft queue implementation compatible with VLC 3.x
+  - Automatic shuffle restoration after queued items finish
+  - Queue persistence across bot restarts
+  - Real-time queue status with item titles and positions
 
 - **Movie Information**
   - Automatic movie metadata lookup via TMDB
@@ -17,16 +25,18 @@ A Discord bot that controls VLC media player, manages playlists, and provides mo
   - Direct links to TMDB movie pages
 
 - **Playlist Management**
-  - View and navigate existing VLC playlist
-  - List all items with pagination
+  - View and navigate existing VLC playlist with pagination
+  - List all items with interactive navigation buttons
   - Quick replay of items using item numbers
   - Search and filter playlist contents
+  - Play search results directly
   
-- **State Monitoring**
-  - Track VLC state changes
-  - Notify about manual interventions
+- **Enhanced State Monitoring**
+  - Track VLC state changes with cooldown protection
+  - Notify about manual interventions and queue transitions
   - Configurable notification channel
-  - State change history
+  - State change history and queue event tracking
+  - Automatic detection of media ending and queue handling
 
 ## Screenshots
 
@@ -119,7 +129,7 @@ A Discord bot that controls VLC media player, manages playlists, and provides mo
 
 2. Available commands in Discord:
    
-   Playback Controls:
+   **Playback Controls:**
    - `!play` - Start/resume playback
    - `!pause` - Pause playback
    - `!stop` - Stop playback
@@ -128,14 +138,25 @@ A Discord bot that controls VLC media player, manages playlists, and provides mo
    - `!restart` - Restart current file from beginning
    - `!rewind [seconds]` - Rewind by specified seconds (default: 10)
    - `!play_num <number>` - Play specific item by number
+   - `!shuffle` - Toggle shuffle mode on/off
+   - `!shuffle_on` - Enable shuffle mode
+   - `!shuffle_off` - Disable shuffle mode
 
-   Playlist Management:
-   - `!list` - Show playlist (paginated)
+   **Playlist Management:**
+   - `!list` - Show playlist with interactive navigation (⏮️, ◀️, ▶️, ⏭️ buttons)
    - `!search <query>` - Search playlist
    - `!play_search <query>` - Search and play first match
-   - Use ⏮️, ◀️, ▶️, ⏭️ buttons to navigate pages
 
-   Notification Settings:
+   **Queue Management:**
+   - `!queue_next <number>` - Queue a playlist item to play next (temporarily disables shuffle if needed)
+   - `!queue_status` - Show current queue with item titles and playlist positions
+   - `!clear_queue` - Clear all queue tracking
+
+   **Status & Information:**
+   - `!status` - Show current VLC status (state, volume, playing item)
+   - `!controls` - Show this help message
+
+   **Notification Settings:**
    - `!set_notification_channel` - Set current channel for VLC state notifications
    - `!unset_notification_channel` - Disable notifications
    - `!show_notification_channel` - Show notification settings
@@ -143,6 +164,15 @@ A Discord bot that controls VLC media player, manages playlists, and provides mo
 ## Known Issues
 
 - **Metadata Matching**: Movie metadata from TMDB may not always match the actual media file. This occurs due to how media file names are parsed and handled by the system. File names with non-standard formatting, special characters, year mismatches, or quality indicators (like "1080p", "BluRay") can interfere with accurate metadata retrieval. This is a known limitation that we plan to improve in future versions by implementing better file name parsing and fuzzy matching algorithms.
+
+## Recent Improvements
+
+- **Enhanced Queue System**: Implemented intelligent soft queue management with automatic shuffle handling and restoration
+- **Code Refactoring**: Major cleanup removed debug commands, simplified user messaging, and improved code organization
+- **Better Error Handling**: Consolidated HTTP request logic with consistent error handling across all VLC operations  
+- **UI Cleanup**: Streamlined queue status display to show only essential information without technical implementation details
+- **Improved Monitoring**: Enhanced state monitoring with cooldown protection and better queue transition detection
+- **Queue Persistence**: Queue state is now automatically saved and restored across bot restarts
 
 ## Contributing
 
@@ -153,8 +183,10 @@ Contributions are welcome! Please feel free to submit a Pull Request. For major 
 - The bot uses TMDB for movie metadata. You'll get better results if your media files are named accurately.
 - VLC's HTTP interface must be enabled for the bot to function.
 - The bot works with VLC's existing playlist - add your media files directly through VLC.
-- State monitoring helps track manual changes made directly in VLC.
-- Quick Replay feature helps you easily replay items using their position numbers.
+- **Queue System**: Uses a soft queue approach compatible with VLC 3.x that temporarily disables shuffle when needed and automatically restores it after queued items finish playing.
+- **State Monitoring**: Enhanced monitoring helps track manual changes made directly in VLC and automatically handles queue transitions.
+- **Role-Based Access**: Most commands require specific Discord roles (configurable via `ALLOWED_ROLES` in `.env`).
+- **Queue Persistence**: Queue state is automatically saved to `queue_backup.json` and restored when the bot restarts.
 
 ## License
 

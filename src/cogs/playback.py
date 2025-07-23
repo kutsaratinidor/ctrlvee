@@ -18,8 +18,10 @@ class PlaybackCommands(commands.Cog):
         self.logger = logging.getLogger(__name__)
         self.last_known_state = None
         self.last_known_position = None
+        self.last_known_playing_item = None  # Track the last item that was playing
         self.monitoring_task = None
         self.notification_channel = None
+        self.last_queue_auto_play = 0  # Timestamp of last queue auto-play to prevent rapid triggers
         
     async def cog_load(self):
         """Called when the cog is loaded"""
@@ -67,6 +69,17 @@ class PlaybackCommands(commands.Cog):
             if time_since_last < 1:
                 logger.debug(f"Command ignored - too soon after last state change ({time_since_last:.2f}s)")
                 return False
+        return True
+    
+    def _check_queue_auto_play_cooldown(self):
+        """Check if enough time has passed since last queue auto-play to prevent rapid triggers"""
+        current_time = asyncio.get_event_loop().time()
+        time_since_last = current_time - self.last_queue_auto_play
+        
+        if time_since_last < 2.0:  # 2 second cooldown between queue auto-plays
+            return False
+        
+        self.last_queue_auto_play = current_time
         return True
         
     @commands.command(name='set_notification_channel')
@@ -143,6 +156,130 @@ class PlaybackCommands(commands.Cog):
                         state_changed = current_state != self.last_known_state
                         position_changed = current_position != self.last_known_position
                         
+                        # Handle queue transitions when track changes OR when state changes to stopped/paused
+                        if (position_changed and current_item is not None) or (state_changed and current_state in ['stopped', 'paused']):
+                            current_item_id = current_item.get('id') if current_item else None
+                            
+                            # Priority 1: Handle position changes (track transitions)
+                            if position_changed and current_item_id:
+                                # Check if there's a queue and this is a natural track progression
+                                next_queued = self.vlc.get_next_queued_item()
+                                if next_queued:
+                                    # There's a queued item - check if the current track is NOT the queued item
+                                    if current_item_id != next_queued['item_id']:
+                                        if self._check_queue_auto_play_cooldown():
+                                            logger.info(f"Track changed to {current_item_id} but we have queued item {next_queued['item_id']} - interrupting to play queued item")
+                                            try:
+                                                play_result = self.vlc.play_next_queued_item()
+                                                logger.info(f"Auto-play result: {play_result}")
+                                                
+                                                if play_result.get("success"):
+                                                    logger.info(f"Auto-played next queued item: {play_result.get('item_name', 'Unknown')}")
+                                                    
+                                                    # Optionally notify in Discord if notification channel is set
+                                                    if self.notification_channel:
+                                                        try:
+                                                            embed = discord.Embed(
+                                                                title="🎵 Auto-Queue",
+                                                                description=f"Automatically playing queued item: **{play_result.get('item_name', 'Unknown')}**",
+                                                                color=discord.Color.green()
+                                                            )
+                                                            await self.notification_channel.send(embed=embed)
+                                                        except Exception as e:
+                                                            logger.error(f"Failed to send auto-queue notification: {e}")
+                                                else:
+                                                    logger.warning(f"Auto-play failed: {play_result.get('error', 'Unknown error')}")
+                                            except Exception as e:
+                                                logger.error(f"Error auto-playing next queued item: {e}")
+                            
+                            # Priority 2: For state changes to stopped OR paused, check if we should auto-play next queued item
+                            # (movies often go to paused state when they end, not stopped)
+                            elif state_changed and current_state in ['stopped', 'paused'] and self.vlc.get_next_queued_item():
+                                if self._check_queue_auto_play_cooldown():
+                                    try:
+                                        logger.info(f"Track {current_state} - checking for next queued item to auto-play")
+                                        next_queued = self.vlc.get_next_queued_item()
+                                        logger.info(f"Next queued item found: {next_queued}")
+                                        
+                                        # Additional check: if paused, make sure we're actually at the end
+                                        should_auto_play = True
+                                        if current_state == 'paused':
+                                            try:
+                                                status = self.vlc.get_status()
+                                                if status is not None:
+                                                    time_elem = status.find('time')
+                                                    length_elem = status.find('length')
+                                                    if time_elem is not None and length_elem is not None:
+                                                        current_time = int(time_elem.text)
+                                                        total_length = int(length_elem.text)
+                                                        # Only auto-play if we're within 3 seconds of the end
+                                                        if total_length > 0 and (total_length - current_time) > 3:
+                                                            should_auto_play = False
+                                                            logger.debug(f"Paused but not at end: {current_time}/{total_length}s - not auto-playing")
+                                            except Exception as e:
+                                                logger.debug(f"Could not check time position: {e}")
+                                        
+                                        if should_auto_play:
+                                            play_result = self.vlc.play_next_queued_item()
+                                            logger.info(f"Auto-play result: {play_result}")
+                                            
+                                            if play_result.get("success"):
+                                                logger.info(f"Auto-played next queued item: {play_result.get('item_name', 'Unknown')}")
+                                                
+                                                # Optionally notify in Discord if notification channel is set
+                                                if self.notification_channel:
+                                                    try:
+                                                        embed = discord.Embed(
+                                                            title="🎵 Auto-Queue",
+                                                            description=f"Automatically playing queued item: **{play_result.get('item_name', 'Unknown')}**",
+                                                            color=discord.Color.green()
+                                                        )
+                                                        await self.notification_channel.send(embed=embed)
+                                                    except Exception as e:
+                                                        logger.error(f"Failed to send auto-queue notification: {e}")
+                                            else:
+                                                logger.warning(f"Auto-play failed: {play_result.get('error', 'Unknown error')}")
+                                            
+                                    except Exception as e:
+                                        logger.error(f"Error auto-playing next queued item: {e}")
+                            
+                            # Handle normal queue transitions for position changes (only if we didn't intercept)
+                            if position_changed and current_item_id:
+                                try:
+                                    # Check for queue transitions and shuffle restoration
+                                    queue_result = self.vlc.check_and_handle_queue_transition(current_item_id)
+                                    
+                                    # Log any queue transitions
+                                    if queue_result.get("transitions"):
+                                        for transition in queue_result["transitions"]:
+                                            if transition["action"] == "shuffle_restored":
+                                                logger.info(f"Queue system restored shuffle after item {transition['item_id']} finished")
+                                                
+                                                # Optionally notify in Discord if notification channel is set
+                                                if self.notification_channel:
+                                                    try:
+                                                        embed = discord.Embed(
+                                                            title="🔀 Queue Management",
+                                                            description="Shuffle mode automatically restored after queued item finished",
+                                                            color=discord.Color.blue()
+                                                        )
+                                                        await self.notification_channel.send(embed=embed)
+                                                    except Exception as e:
+                                                        logger.error(f"Failed to send queue notification: {e}")
+                                    
+                                except Exception as e:
+                                    logger.error(f"Error handling queue transition: {e}")
+                            
+                            # Detect when the last playing item finished (for shuffle restoration)
+                            if position_changed and self.last_known_playing_item:
+                                last_item_id = self.last_known_playing_item.get('id')
+                                if last_item_id and last_item_id != current_item_id:
+                                    # The last playing item is no longer playing - it finished
+                                    try:
+                                        self.vlc._handle_queued_item_finished(last_item_id)
+                                    except Exception as e:
+                                        logger.error(f"Error handling finished item {last_item_id}: {e}")
+                        
                         if state_changed or position_changed:
                             # Get item name if available
                             item_name = None
@@ -181,12 +318,83 @@ class PlaybackCommands(commands.Cog):
                     # Update last known state
                     self.last_known_state = current_state
                     self.last_known_position = current_position
+                    self.last_known_playing_item = current_item  # Track the current playing item
+                    
+                    # Priority 3: End-of-track detection - check if current track is about to end
+                    if current_state in ['playing', 'paused'] and self.vlc.get_next_queued_item():
+                        if self._check_queue_auto_play_cooldown():
+                            try:
+                                status = self.vlc.get_status()
+                                if status is not None:
+                                    time_elem = status.find('time')
+                                    length_elem = status.find('length')
+                                    if time_elem is not None and length_elem is not None:
+                                        current_time = int(time_elem.text)
+                                        total_length = int(length_elem.text)
+                                        
+                                        # If we're within 2 seconds of the end and have a queued item, auto-play it
+                                        if total_length > 0 and (total_length - current_time) <= 2 and current_time > 0:
+                                            logger.info(f"Detected track near end ({current_time}/{total_length}s) - checking queue")
+                                            
+                                            next_queued = self.vlc.get_next_queued_item()
+                                            if next_queued:
+                                                logger.info(f"Track ending, auto-playing queued item: {next_queued}")
+                                                
+                                                play_result = self.vlc.play_next_queued_item()
+                                                if play_result.get("success"):
+                                                    logger.info(f"Successfully auto-played queued item at track end: {play_result.get('item_name', 'Unknown')}")
+                                                    
+                                                    # Optionally notify in Discord if notification channel is set
+                                                    if self.notification_channel:
+                                                        try:
+                                                            embed = discord.Embed(
+                                                                title="🎵 Auto-Queue (End Detection)",
+                                                                description=f"Track ended, playing queued item: **{play_result.get('item_name', 'Unknown')}**",
+                                                                color=discord.Color.green()
+                                                            )
+                                                            await self.notification_channel.send(embed=embed)
+                                                        except Exception as e:
+                                                            logger.error(f"Failed to send end detection notification: {e}")
+                            except Exception as e:
+                                logger.debug(f"Error in end-of-track detection: {e}")
+                        else:
+                            logger.debug("End-of-track queue auto-play skipped due to cooldown")
+                    
+                    # Enhanced periodic check: If we have queued items, ensure they get played
+                    next_queued = self.vlc.get_next_queued_item()
+                    if next_queued:
+                        # Case 1: VLC is stopped and we have queued items
+                        if current_state == 'stopped':
+                            if self._check_queue_auto_play_cooldown():
+                                try:
+                                    play_result = self.vlc.play_next_queued_item()
+                                    
+                                    if play_result.get("success"):
+                                        logger.info(f"Periodic auto-play successful: {play_result.get('item_name', 'Unknown')}")
+                                    else:
+                                        logger.warning(f"Periodic auto-play failed: {play_result.get('error', 'Unknown error')}")
+                                except Exception as e:
+                                    logger.error(f"Error in periodic queue check: {e}")
+                        
+                        # Case 2: VLC is playing but wrong item (queue was bypassed)
+                        elif current_state == 'playing' and current_item:
+                            current_item_id = current_item.get('id')
+                            if current_item_id != next_queued['item_id']:
+                                if self._check_queue_auto_play_cooldown():
+                                    try:
+                                        logger.info(f"Periodic check: Wrong item playing ({current_item_id}), should be queued item ({next_queued['item_id']}) - correcting")
+                                        play_result = self.vlc.play_next_queued_item()
+                                        
+                                        if play_result.get("success"):
+                                            logger.info(f"Periodic correction successful: {play_result.get('item_name', 'Unknown')}")
+                                    except Exception as e:
+                                        logger.error(f"Error in periodic queue correction: {e}")
                     
             except Exception as e:
                 logger.error(f"Error in VLC monitoring task: {e}")
             
             # Wait before next check
-            await asyncio.sleep(1)  # Check every second
+            await asyncio.sleep(0.5)  # Check every half second for more responsive queue handling
 
     @commands.command(name='play')
     @commands.has_any_role(*Config.ALLOWED_ROLES)
@@ -337,10 +545,34 @@ class PlaybackCommands(commands.Cog):
     @commands.command(name='next')
     @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def next_track(self, ctx):
-        """Play next track in playlist"""
+        """Play next track in playlist (prioritizes queued items)"""
         if not await self._check_cooldown(ctx):
             return
+        
+        # First check if there are any queued items to play
+        next_queued = self.vlc.get_next_queued_item()
+        if next_queued:
+            logger.info(f"Playing next queued item: {next_queued['item_name']}")
+            result = self.vlc.play_next_queued_item()
             
+            if result.get("success"):
+                embed = discord.Embed(
+                    title="🎵 Playing Queued Item",
+                    description=f"Now playing: **{result['item_name']}**",
+                    color=discord.Color.green()
+                )
+                embed.add_field(
+                    name="Queue Info",
+                    value=f"This was queued item #{result.get('queue_order', 'unknown')}",
+                    inline=True
+                )
+                await ctx.send(embed=embed)
+                return
+            else:
+                await ctx.send(f"Error playing queued item: {result.get('error', 'Unknown error')}")
+                # Fall through to normal next behavior
+        
+        # If no queued items or queue failed, use normal next behavior
         if self.vlc.next():
             logger.info("Loading next track")
             await ctx.send('Loading next track...')
@@ -582,3 +814,244 @@ class PlaybackCommands(commands.Cog):
                     embed.add_field(name="Quick Replay", value=f"💡 Use **!play_num {current_position}** to play this item again", inline=False)
         
         await ctx.send(embed=embed)
+
+    @commands.command(name='queue_next', aliases=['qnext'])
+    @commands.has_any_role(*Config.ALLOWED_ROLES)
+    async def queue_next(self, ctx, number: int):
+        """Queue a specific playlist item to play next using soft queue system (handles shuffle intelligently)"""
+        try:
+            if number < 1:
+                await ctx.send('Please provide a number greater than 0')
+                return
+
+            playlist = self.vlc.get_playlist()
+            if not playlist:
+                await ctx.send('Could not access VLC playlist')
+                return
+
+            items = playlist.findall('.//leaf')
+            if not items:
+                await ctx.send('Playlist is empty')
+                return
+
+            if number > len(items):
+                await ctx.send(f'Number too high. Playlist has {len(items)} items')
+                return
+
+            item = items[number - 1]
+            item_id = item.get('id')
+            item_name = item.get('name', 'Unknown')
+
+            # Queue the item
+            result = self.vlc.queue_item_next(item_id)
+            
+            if result.get("success"):
+                embed = discord.Embed(
+                    title="🎵 Item Queued",
+                    color=discord.Color.green()
+                )
+                embed.add_field(
+                    name="Queued Item",
+                    value=f"**{item_name}**\n📋 Playlist position: #{number}",
+                    inline=False
+                )
+                embed.add_field(
+                    name="Queue Position",
+                    value=f"#{result['queue_order']} of {result.get('total_queued', 1)} in queue",
+                    inline=True
+                )
+                
+                await ctx.send(embed=embed)
+                logger.info(f"Queued item #{number} ({item_name}) to play next")
+            else:
+                await ctx.send(f'Error queuing item: {result.get("error", "Unknown error")}')
+                
+        except ValueError:
+            await ctx.send('Please provide a valid number')
+        except Exception as e:
+            logger.error(f"Error in queue_next command: {e}")
+            await ctx.send(f'Error queuing item: {str(e)}')
+
+    @commands.command(name='queue_status', aliases=['qstatus'])
+    @commands.has_any_role(*Config.ALLOWED_ROLES)
+    async def queue_status(self, ctx):
+        """Show current soft queue status and shuffle state"""
+        try:
+            queue_status = self.vlc.get_queue_status()
+            shuffle_on = queue_status.get("shuffle_currently_on", False)
+            
+            embed = discord.Embed(
+                title="📋 Queue Status",
+                color=discord.Color.blue()
+            )
+            
+            # Get queue count for title
+            queued_items = queue_status.get("queued_items", {})
+            queue_count = len(queued_items)
+            if queue_count > 0:
+                embed.title = f"📋 Queue Status ({queue_count} item{'s' if queue_count != 1 else ''})"
+            
+            # Active queued items
+            if queued_items:
+                # Get playlist to map item IDs to titles and positions
+                playlist = self.vlc.get_playlist()
+                playlist_map = {}
+                if playlist:
+                    for idx, item in enumerate(playlist.findall('.//leaf'), 1):
+                        item_id = item.get('id')
+                        item_name = item.get('name', 'Unknown')
+                        if item_id:
+                            playlist_map[item_id] = {
+                                'name': item_name,
+                                'position': idx
+                            }
+                
+                queue_list = []
+                for item_id, info in queued_items.items():
+                    # Get item details from playlist
+                    if item_id in playlist_map:
+                        item_name = playlist_map[item_id]['name']
+                        playlist_pos = playlist_map[item_id]['position']
+                        queue_list.append(f"• **{item_name}** (playlist #{playlist_pos}, queue #{info['queue_order']})")
+                    else:
+                        # Fallback if item not found in current playlist
+                        item_name = info.get('item_name', 'Unknown')
+                        queue_list.append(f"• **{item_name}** (queue #{info['queue_order']})")
+                
+                embed.add_field(
+                    name="Active Queue Items",
+                    value="\n".join(queue_list[:5]) + ("\n..." if len(queue_list) > 5 else ""),
+                    inline=False
+                )
+            else:
+                embed.add_field(
+                    name="Active Queue Items",
+                    value="No items currently queued",
+                    inline=False
+                )
+            
+            
+            # Usage hint
+            embed.add_field(
+                name="Usage",
+                value="Use `!queue_next <number>` to queue a playlist item to play next",
+                inline=False
+            )
+            
+            await ctx.send(embed=embed)
+            
+        except Exception as e:
+            logger.error(f"Error in queue_status command: {e}")
+            await ctx.send(f'Error getting queue status: {str(e)}')
+
+    @commands.command(name='clear_queue', aliases=['qclear'])
+    @commands.has_any_role(*Config.ALLOWED_ROLES)
+    async def clear_queue(self, ctx):
+        """Clear all queue tracking (useful for reset)"""
+        try:
+            self.vlc.clear_queue_tracking()
+            embed = discord.Embed(
+                title="🗑️ Queue Cleared",
+                description="All queue tracking has been cleared",
+                color=discord.Color.orange()
+            )
+            embed.add_field(
+                name="Note",
+                value="This only clears tracking data. Items already moved in the playlist remain in their positions.",
+                inline=False
+            )
+            await ctx.send(embed=embed)
+            logger.info("Queue tracking cleared by user command")
+            
+        except Exception as e:
+            logger.error(f"Error in clear_queue command: {e}")
+            await ctx.send(f'Error clearing queue: {str(e)}')
+
+    @commands.has_any_role(*Config.ALLOWED_ROLES)
+    @commands.command(name='shuffle_on', aliases=['shuffle_enable'])
+    async def shuffle_on(self, ctx):
+        """Enable shuffle mode"""
+        try:
+            current_shuffle = self.vlc.get_shuffle_state()
+            
+            if current_shuffle:
+                embed = discord.Embed(
+                    title="🔀 Shuffle Already On",
+                    description="Shuffle mode is already enabled",
+                    color=discord.Color.blue()
+                )
+            else:
+                # Enable shuffle
+                self.vlc.toggle_shuffle()
+                embed = discord.Embed(
+                    title="🔀 Shuffle Enabled",
+                    description="Shuffle mode has been turned on",
+                    color=discord.Color.green()
+                )
+            
+            await ctx.send(embed=embed)
+            logger.info(f"Shuffle enable command used by {ctx.author} (was already {'on' if current_shuffle else 'off'})")
+            
+        except Exception as e:
+            logger.error(f"Error in shuffle_on command: {e}")
+            await ctx.send(f'Error enabling shuffle: {str(e)}')
+
+    @commands.has_any_role(*Config.ALLOWED_ROLES)
+    @commands.command(name='shuffle_off', aliases=['shuffle_disable'])
+    async def shuffle_off(self, ctx):
+        """Disable shuffle mode"""
+        try:
+            current_shuffle = self.vlc.get_shuffle_state()
+            
+            if not current_shuffle:
+                embed = discord.Embed(
+                    title="▶️ Shuffle Already Off",
+                    description="Shuffle mode is already disabled",
+                    color=discord.Color.blue()
+                )
+            else:
+                # Disable shuffle
+                self.vlc.toggle_shuffle()
+                embed = discord.Embed(
+                    title="▶️ Shuffle Disabled",
+                    description="Shuffle mode has been turned off",
+                    color=discord.Color.green()
+                )
+            
+            await ctx.send(embed=embed)
+            logger.info(f"Shuffle disable command used by {ctx.author} (was already {'on' if current_shuffle else 'off'})")
+            
+        except Exception as e:
+            logger.error(f"Error in shuffle_off command: {e}")
+            await ctx.send(f'Error disabling shuffle: {str(e)}')
+
+    @commands.has_any_role(*Config.ALLOWED_ROLES)
+    @commands.command(name='shuffle_toggle', aliases=['shuffle'])
+    async def shuffle_toggle(self, ctx):
+        """Toggle shuffle mode on/off"""
+        try:
+            current_shuffle = self.vlc.get_shuffle_state()
+            
+            # Toggle shuffle
+            self.vlc.toggle_shuffle()
+            new_shuffle = not current_shuffle
+            
+            if new_shuffle:
+                embed = discord.Embed(
+                    title="🔀 Shuffle Enabled",
+                    description="Shuffle mode has been turned on",
+                    color=discord.Color.green()
+                )
+            else:
+                embed = discord.Embed(
+                    title="▶️ Shuffle Disabled",
+                    description="Shuffle mode has been turned off",
+                    color=discord.Color.green()
+                )
+            
+            await ctx.send(embed=embed)
+            logger.info(f"Shuffle toggle command used by {ctx.author} (changed from {'on' if current_shuffle else 'off'} to {'on' if new_shuffle else 'off'})")
+            
+        except Exception as e:
+            logger.error(f"Error in shuffle_toggle command: {e}")
+            await ctx.send(f'Error toggling shuffle: {str(e)}')
