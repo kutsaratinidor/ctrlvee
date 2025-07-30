@@ -733,9 +733,14 @@ class PlaybackCommands(commands.Cog):
                     break
             logger.info(f"Current position in playlist: {current_position if current_position else 'not found'}")
         
+        # Initialize embed - this needs to be outside the if block
+        embed = discord.Embed(
+            title="VLC Status",
+            color=discord.Color.blue()
+        )
+        embed.add_field(name="State", value=state.capitalize(), inline=True)
+        
         if state != 'stopped':
-            # Initialize embed as None, we'll either use the movie_data embed or create a basic one
-            embed = None
             # Get the name from information/category/info[@name='filename']
             name = None
             if current is not None:
@@ -781,19 +786,12 @@ class PlaybackCommands(commands.Cog):
                 
                 if movie_data:
                     logger.debug("Status - Using TMDB movie data")
-                    # Use the movie_data embed directly
+                    # Use the movie_data embed directly and update the state field
                     embed = movie_data
-                    
-                    # Add state information
                     embed.insert_field_at(0, name="State", value=state.capitalize(), inline=True)
                 else:
                     logger.debug("Status - No movie data, using filename")
-                    # Create basic embed since we don't have movie data
-                    embed = discord.Embed(
-                        title="VLC Status",
-                        color=discord.Color.blue()
-                    )
-                    embed.add_field(name="State", value=state.capitalize(), inline=True)
+                    # Add the filename to our existing embed
                     embed.add_field(
                         name="Now Playing",
                         value=name,
@@ -812,6 +810,25 @@ class PlaybackCommands(commands.Cog):
                 # Add position note as a field with bold formatting after progress
                 if current_position is not None:
                     embed.add_field(name="Quick Replay", value=f"💡 Use **!play_num {current_position}** to play this item again", inline=False)
+            else:
+                # Playing but no name found
+                embed.add_field(name="Now Playing", value="Unknown item", inline=False)
+        else:
+            # VLC is stopped - add helpful information
+            embed.add_field(name="Now Playing", value="Nothing currently playing", inline=False)
+            
+            # Add playlist information if available
+            if playlist is not None:
+                items = playlist.findall('.//leaf')
+                playlist_count = len(items)
+                if playlist_count > 0:
+                    embed.add_field(
+                        name="Playlist Info", 
+                        value=f"{playlist_count} items in playlist\nUse `!play` to resume or `!play_num <number>` to play a specific item", 
+                        inline=False
+                    )
+                else:
+                    embed.add_field(name="Playlist Info", value="Playlist is empty", inline=False)
         
         await ctx.send(embed=embed)
 
