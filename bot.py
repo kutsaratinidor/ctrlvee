@@ -131,9 +131,11 @@ async def controls(ctx):
 `!play` - Start or resume playback
 `!pause` - Pause playback
 `!stop` - Stop playback
+`!restart` - Restart current file from the beginning
 `!next` - Play next track
 `!previous` - Play previous track
 `!rewind [seconds]` - Rewind by specified seconds (default: 10)
+`!forward [seconds]` - Fast forward by specified seconds (default: 10)
 `!shuffle` - Toggle shuffle mode on/off
 `!shuffle_on` - Enable shuffle mode
 `!shuffle_off` - Disable shuffle mode
