@@ -658,8 +658,8 @@ class PlaybackCommands(commands.Cog):
                 return
                 
             logger.info(f"Now playing: {name}" + (f" (#{item_number})" if item_number else ""))
-            search_title = MediaUtils.clean_movie_title(name)
-            movie_embed = self.tmdb.get_movie_metadata(search_title)
+            search_title, search_year = MediaUtils.parse_movie_filename(name)
+            movie_embed = self.tmdb.get_movie_metadata(search_title, search_year)
         except Exception as e:
             logger.error(f"Error getting movie metadata: {str(e)}")
             await ctx.send(f'Error getting movie metadata: {str(e)}')
@@ -764,9 +764,9 @@ class PlaybackCommands(commands.Cog):
             if name:
                 logger.debug(f"Status - Found name: {name}")
                 # Get movie metadata
-                search_title = MediaUtils.clean_movie_title(name)
-                logger.debug(f"Status - Cleaned title: {search_title}")
-                movie_data = self.tmdb.get_movie_metadata(search_title)
+                search_title, search_year = MediaUtils.parse_movie_filename(name)
+                logger.debug(f"Status - Cleaned title: {search_title}, Year: {search_year}")
+                movie_data = self.tmdb.get_movie_metadata(search_title, search_year)
                 logger.debug(f"Status - Movie data: {movie_data}")
                 
                 # Log movie data attributes

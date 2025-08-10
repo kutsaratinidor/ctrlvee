@@ -9,12 +9,13 @@ from ..config import Config
 logger = logging.getLogger(__name__)
 
 class PlaylistView(discord.ui.View):
-    def __init__(self, items, items_per_page=20):
+    def __init__(self, items, items_per_page: Optional[int] = None):
         super().__init__(timeout=300)  # 5 minute timeout
         self.items = items
-        self.items_per_page = items_per_page
+        # Default to Config if not provided
+        self.items_per_page = items_per_page or Config.ITEMS_PER_PAGE
         self.current_page = 1
-        self.total_pages = (len(items) + items_per_page - 1) // items_per_page
+        self.total_pages = (len(items) + self.items_per_page - 1) // self.items_per_page
 
     @discord.ui.button(label="⏮️", style=discord.ButtonStyle.secondary)
     async def first_page(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -202,9 +203,9 @@ class PlaylistCommands(commands.Cog):
                 logger.info(f"Playing search result: {item.get('name')} (#{playlist_num})")
                 await ctx.send(f'Loading item #{playlist_num}...')
                 
-                # Get cleaned name for metadata search
-                search_title = MediaUtils.clean_movie_title(item.get('name'))
-                movie_embed = self.tmdb.get_movie_metadata(search_title)
+                # Get parsed title and optional year for metadata search
+                search_title, search_year = MediaUtils.parse_movie_filename(item.get('name'))
+                movie_embed = self.tmdb.get_movie_metadata(search_title, search_year)
                 
                 if movie_embed:
                     movie_embed.set_footer(text=f"Now Playing #{playlist_num}")
@@ -229,7 +230,7 @@ class PlaylistCommands(commands.Cog):
                 await ctx.send('Playlist is empty')
                 return
 
-            view = PlaylistView(items)
+            view = PlaylistView(items, items_per_page=Config.ITEMS_PER_PAGE)
             
             # Create initial embed
             embed = discord.Embed(
@@ -238,7 +239,7 @@ class PlaylistCommands(commands.Cog):
             )
             
             # Show first page
-            current_items = items[:20]
+            current_items = items[:Config.ITEMS_PER_PAGE]
             playlist_text = ""
             for i, item in enumerate(current_items, start=1):
                 name = item.get('name', '')
@@ -247,7 +248,7 @@ class PlaylistCommands(commands.Cog):
                 playlist_text += f"{icon}`{i}` {basename}\n"
             
             embed.add_field(
-                name=f"📋 Page 1/{(len(items) + 19) // 20}",
+                name=f"📋 Page 1/{(len(items) + (Config.ITEMS_PER_PAGE - 1)) // Config.ITEMS_PER_PAGE}",
                 value=playlist_text if playlist_text else "No items in playlist",
                 inline=False
             )

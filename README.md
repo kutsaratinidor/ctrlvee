@@ -173,6 +173,8 @@ A Discord bot that controls VLC media player, manages playlists, provides movie 
 - **UI Cleanup**: Streamlined queue status display to show only essential information without technical implementation details
 - **Improved Monitoring**: Enhanced state monitoring with cooldown protection and better queue transition detection
 - **Queue Persistence**: Queue state is now automatically saved and restored across bot restarts
+- **Filename Cleanup**: Strip HC/hardsub markers and additional torrent/scene noise from display and TMDB search inputs; preserves numeric title tokens (e.g., "2 Fast 2 Furious")
+- **Pagination Config**: `ITEMS_PER_PAGE` from `.env` now controls playlist page size (default remains 20)
 
 ## Contributing
 
