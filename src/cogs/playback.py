@@ -480,6 +480,19 @@ class PlaybackCommands(commands.Cog):
             await ctx.send(f'Rewound {seconds} seconds')
         else:
             await ctx.send('Error: Could not rewind')
+
+    @commands.command(name='forward', aliases=['ff'])
+    @commands.has_any_role(*Config.ALLOWED_ROLES)
+    async def forward(self, ctx, seconds: int = 10):
+        """Fast forward playback by specified number of seconds"""
+        if seconds <= 0:
+            await ctx.send('Please specify a positive number of seconds')
+            return
+
+        if self.vlc.seek(f"+{seconds}"):
+            await ctx.send(f'Fast forwarded {seconds} seconds')
+        else:
+            await ctx.send('Error: Could not fast forward')
     
     @commands.command(name='play_num')
     @commands.has_any_role(*Config.ALLOWED_ROLES)

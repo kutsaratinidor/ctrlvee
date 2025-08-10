@@ -137,6 +137,7 @@ A Discord bot that controls VLC media player, manages playlists, provides movie 
    - `!previous` - Play previous item
    - `!restart` - Restart current file from beginning
    - `!rewind [seconds]` - Rewind by specified seconds (default: 10)
+   - `!forward [seconds]` - Fast forward by specified seconds (default: 10)
    - `!play_num <number>` - Play specific item by number
    - `!shuffle` - Toggle shuffle mode on/off
    - `!shuffle_on` - Enable shuffle mode
