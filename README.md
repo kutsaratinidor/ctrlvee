@@ -155,6 +155,7 @@ A Discord bot that controls VLC media player, manages playlists, provides movie 
 
    **Status & Information:**
    - `!status` - Show current VLC status (state, volume, playing item)
+   - `!version` - Show bot version and key config info
    - `!controls` - Show this help message
 
    **Notification Settings:**
@@ -176,6 +177,17 @@ A Discord bot that controls VLC media player, manages playlists, provides movie 
 - **Queue Persistence**: Queue state is now automatically saved and restored across bot restarts
 - **Filename Cleanup**: Strip HC/hardsub markers and additional torrent/scene noise from display and TMDB search inputs; preserves numeric title tokens (e.g., "2 Fast 2 Furious")
 - **Pagination Config**: `ITEMS_PER_PAGE` from `.env` now controls playlist page size (default remains 20)
+
+## Versioning and Releases
+
+- The project follows Semantic Versioning (MAJOR.MINOR.PATCH) stored in `src/version.py`.
+- Check the current version with the `!version` command in Discord.
+- Release workflow:
+   1. Update `src/version.py` with the new version.
+   2. Update `README.md` and `CHANGELOG.md` with notable changes.
+   3. Commit and push.
+   4. Create a Git tag, e.g., `git tag vX.Y.Z && git push origin vX.Y.Z`.
+   5. Optionally draft a GitHub Release pointing to the tag.
 
 ## Contributing
 

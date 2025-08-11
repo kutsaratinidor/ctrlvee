@@ -34,6 +34,7 @@ tmdb_service = TMDBService()
 # Import cogs
 from src.cogs.playback import PlaybackCommands
 from src.cogs.playlist import PlaylistCommands
+from src.version import __version__
 
 @bot.event
 async def setup_hook():
@@ -175,6 +176,18 @@ async def controls(ctx):
             await ctx.send("❌ I need the 'Embed Links' permission to show the help message.")
     except Exception as e:
         await ctx.send(f"An error occurred: {str(e)}")
+
+@bot.command(name="version")
+async def version(ctx):
+    """Show the bot version and basic configuration info"""
+    embed = discord.Embed(
+        title="CtrlVee Version",
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="Version", value=__version__, inline=True)
+    embed.add_field(name="Items Per Page", value=str(Config.ITEMS_PER_PAGE), inline=True)
+    embed.add_field(name="TMDB", value=("Configured" if Config.TMDB_API_KEY else "Not Configured"), inline=True)
+    await ctx.send(embed=embed)
 
 def main():
     """Main entry point for the bot"""

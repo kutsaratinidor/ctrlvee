@@ -468,7 +468,7 @@ class PlaybackCommands(commands.Cog):
             logger.error("Failed to restart file")
             await ctx.send('Error: Could not restart file')
 
-    @commands.command(name='rewind')
+    @commands.command(name='rewind', aliases=['rw'])
     @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def rewind(self, ctx, seconds: int = 10):
         """Rewind playback by specified number of seconds"""
@@ -480,7 +480,7 @@ class PlaybackCommands(commands.Cog):
             await ctx.send(f'Rewound {seconds} seconds')
         else:
             await ctx.send('Error: Could not rewind')
-
+ 
     @commands.command(name='forward', aliases=['ff'])
     @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def forward(self, ctx, seconds: int = 10):
