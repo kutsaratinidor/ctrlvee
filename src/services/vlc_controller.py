@@ -562,6 +562,23 @@ class VLCController:
         """Add an item to the end of the playlist"""
         # VLC's enqueue command - adds to end of playlist
         return self.send_command("in_enqueue", {"id": str(item_id)})
+
+    def enqueue_path(self, file_path: str) -> bool:
+        """Add a local file path to the end of the playlist.
+
+        Uses VLC HTTP command 'in_enqueue' with 'input' parameter.
+        Escapes path as a file URI.
+        """
+        try:
+            # Convert to file URI using pathlib for correctness
+            import pathlib
+            p = pathlib.Path(file_path).resolve()
+            uri = p.as_uri()
+            result = self.send_command("in_enqueue", {"input": uri})
+            return result is not None
+        except Exception as e:
+            self.logger.error(f"enqueue_path failed for {file_path}: {e}")
+            return False
     
     def smart_queue(self, item_id, behavior="auto"):
         """

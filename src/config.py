@@ -33,6 +33,18 @@ class Config:
     
     # Playlist Settings
     ITEMS_PER_PAGE: int = int(os.getenv('ITEMS_PER_PAGE', '20'))
+
+    # Watch Folders
+    # Comma-separated absolute paths. If empty, watch service is disabled.
+    WATCH_FOLDERS = [p.strip() for p in os.getenv('WATCH_FOLDERS', '').split(',') if p.strip()]
+    # Polling interval in seconds for watch service
+    WATCH_SCAN_INTERVAL: int = int(os.getenv('WATCH_SCAN_INTERVAL', '10'))
+    # Whether to enqueue discovered files on the initial scan (default: true)
+    WATCH_ENQUEUE_ON_START: bool = os.getenv('WATCH_ENQUEUE_ON_START', 'true').strip().lower() in {'1','true','yes','y'}
+    # Discord channel ID to announce newly added files; 0 disables announcements
+    WATCH_ANNOUNCE_CHANNEL_ID: int = int(os.getenv('WATCH_ANNOUNCE_CHANNEL_ID', '0'))
+    # Max items to list per announcement message
+    WATCH_ANNOUNCE_MAX_ITEMS: int = int(os.getenv('WATCH_ANNOUNCE_MAX_ITEMS', '10'))
     
     @classmethod
     def validate(cls) -> List[str]:
@@ -63,6 +75,18 @@ class Config:
                 errors.append("ITEMS_PER_PAGE must be greater than 0")
         except ValueError:
             errors.append("ITEMS_PER_PAGE must be a valid integer")
+
+        # Validate watch folders if provided
+        for folder in cls.WATCH_FOLDERS:
+            if not os.path.isabs(folder):
+                errors.append(f"WATCH_FOLDERS entry must be an absolute path: {folder}")
+            elif not os.path.isdir(folder):
+                errors.append(f"WATCH_FOLDERS entry is not a directory or not found: {folder}")
+        try:
+            if cls.WATCH_SCAN_INTERVAL < 1:
+                errors.append("WATCH_SCAN_INTERVAL must be greater than 0")
+        except ValueError:
+            errors.append("WATCH_SCAN_INTERVAL must be a valid integer")
             
         return errors
     
@@ -78,6 +102,11 @@ class Config:
             f"Allowed Roles: {', '.join(cls.ALLOWED_ROLES)}",
             f"Queue Backup File: {cls.QUEUE_BACKUP_FILE}",
             f"Items Per Page: {cls.ITEMS_PER_PAGE}",
+            f"Watch Folders: {', '.join(cls.WATCH_FOLDERS) if cls.WATCH_FOLDERS else 'Disabled'}",
+            f"Watch Scan Interval: {cls.WATCH_SCAN_INTERVAL}s",
+            f"Watch Enqueue On Start: {cls.WATCH_ENQUEUE_ON_START}",
+            f"Watch Announce Channel: {cls.WATCH_ANNOUNCE_CHANNEL_ID if cls.WATCH_ANNOUNCE_CHANNEL_ID else 'Disabled'}",
+            f"Watch Announce Max Items: {cls.WATCH_ANNOUNCE_MAX_ITEMS}",
             f"TMDB API Key: {'Configured' if cls.TMDB_API_KEY else 'Not Configured'}",
             f"Discord Token: {'Configured' if cls.DISCORD_TOKEN else 'Not Configured'}",
             "-" * 50

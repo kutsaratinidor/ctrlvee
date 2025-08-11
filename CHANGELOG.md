@@ -1,3 +1,12 @@
+## 0.2.0
+
+### Added
+- Optional Watch Folders service: poll configured directories and auto-enqueue new media to VLC.
+- Config keys: WATCH_FOLDERS, WATCH_SCAN_INTERVAL.
+
+### Changed
+- Bump version to 0.2.0.
+
 # Changelog
 
 All notable changes to this project will be documented in this file.

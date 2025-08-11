@@ -37,6 +37,11 @@ A Discord bot that controls VLC media player, manages playlists, provides movie 
   - Configurable notification channel
   - State change history and queue event tracking
   - Automatic detection of media ending and queue handling
+  
+- **Watch Folders (Optional)**
+   - Polls configured folders for new media files
+   - Automatically enqueues discovered files into VLC
+   - Lightweight polling (no extra dependencies)
 
 ## Screenshots
 
@@ -119,6 +124,11 @@ A Discord bot that controls VLC media player, manages playlists, provides movie 
    - `VLC_PASSWORD`: VLC HTTP interface password (default: vlc)
    - `QUEUE_BACKUP_FILE`: Path to queue backup file (default: queue_backup.json)
    - `ITEMS_PER_PAGE`: Number of items per page in playlist view (default: 20)
+   - `WATCH_FOLDERS`: Comma-separated absolute paths to watch (optional)
+   - `WATCH_SCAN_INTERVAL`: Poll interval in seconds (default: 10)
+   - `WATCH_ENQUEUE_ON_START`: If true, enqueue files discovered on the first scan (default: true)
+   - `WATCH_ANNOUNCE_CHANNEL_ID`: Discord channel ID for adding-file announcements (0 to disable)
+   - `WATCH_ANNOUNCE_MAX_ITEMS`: Max file paths to show per announcement (default: 10)
 
 ## Usage
 
@@ -202,6 +212,7 @@ Contributions are welcome! Please feel free to submit a Pull Request. For major 
 - **State Monitoring**: Enhanced monitoring helps track manual changes made directly in VLC and automatically handles queue transitions.
 - **Role-Based Access**: Most commands require specific Discord roles (configurable via `ALLOWED_ROLES` in `.env`).
 - **Queue Persistence**: Queue state is automatically saved to `queue_backup.json` and restored when the bot restarts.
+ - **Watch Folders**: When `WATCH_FOLDERS` is set, the bot runs a lightweight watcher that scans every `WATCH_SCAN_INTERVAL` seconds. New media files are enqueued once they appear stable (size unchanged for ~2s). Hidden files and folders are ignored. Supported extensions include common video/audio types (mp4, mkv, avi, mov, mp3, flac, etc.). You can control whether the initial scan also enqueues existing files via `WATCH_ENQUEUE_ON_START`.
 
 ## License
 

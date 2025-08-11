@@ -1,4 +1,5 @@
 import sys
+import asyncio
 import logging
 from src.config import Config
 from discord.ext import commands
@@ -27,9 +28,12 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 # Initialize services
 from src.services.vlc_controller import VLCController
 from src.services.tmdb_service import TMDBService
+from src.services.watch_folder_service import WatchFolderService
+from src.utils.media_utils import MediaUtils
 
 vlc = VLCController()
 tmdb_service = TMDBService()
+watch_service = WatchFolderService(vlc)
 
 # Import cogs
 from src.cogs.playback import PlaybackCommands
@@ -81,6 +85,65 @@ async def on_ready():
         logger.info("7. Set password as 'vlc'")
         logger.info("8. Restart VLC")
         logger.warning("Starting bot anyway - will retry connection when needed...")
+
+    # Start watch service if configured
+    try:
+        # Set announcement notifier if channel configured
+        if Config.WATCH_ANNOUNCE_CHANNEL_ID:
+            channel = bot.get_channel(Config.WATCH_ANNOUNCE_CHANNEL_ID)
+            if not channel:
+                try:
+                    channel = await bot.fetch_channel(Config.WATCH_ANNOUNCE_CHANNEL_ID)
+                except Exception:
+                    channel = None
+
+            def notifier(paths):
+                # Dispatch into the asyncio loop to send messages
+                async def _send_announcement():
+                    if not channel:
+                        return
+                    # Batch and truncate
+                    max_items = max(1, Config.WATCH_ANNOUNCE_MAX_ITEMS)
+                    shown = paths[:max_items]
+                    remaining = len(paths) - len(shown)
+                    title = f"📥 {len(paths)} new file(s) added to VLC playlist"
+                    # Format without revealing file paths: show icon + cleaned title only
+                    desc_lines = []
+                    for p in shown:
+                        try:
+                            import os
+                            name = os.path.basename(p)
+                            pretty = MediaUtils.clean_filename_for_display(name)
+                            icon = MediaUtils.get_media_icon(name)
+                            desc_lines.append(f"• {icon} {pretty}")
+                        except Exception:
+                            # Fallback to just the basename on any unexpected error
+                            try:
+                                import os
+                                desc_lines.append(f"• {os.path.basename(p)}")
+                            except Exception:
+                                desc_lines.append("• <new media>")
+                    if remaining > 0:
+                        desc_lines.append(f"… and {remaining} more")
+                    embed = discord.Embed(title=title, description="\n".join(desc_lines), color=discord.Color.green())
+                    try:
+                        await channel.send(embed=embed)
+                    except discord.Forbidden:
+                        logger.warning("Missing permission to send announcements in the configured channel.")
+                    except Exception as e:
+                        logger.error(f"Failed to send announcement: {e}")
+
+                asyncio.run_coroutine_threadsafe(_send_announcement(), bot.loop)
+
+            watch_service.set_notifier(notifier)
+
+        started = watch_service.start()
+        if started:
+            logger.info("WatchFolderService started")
+        else:
+            logger.info("WatchFolderService not started (disabled or already running)")
+    except Exception as e:
+        logger.error(f"Failed to start WatchFolderService: {e}")
 
 @bot.event
 async def on_message(message):
