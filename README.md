@@ -1,6 +1,6 @@
 # CtrlVee - a Discord VLC Bot
 
-A Discord bot that controls VLC media player, manages playlists, provides movie metadata integration, and features an intelligent queue system on Windows and macOS. This idea was due to a need for users on a discord server to be able to control the screen shared VLC setup I have even if I am away. It allows more options for them for viewing instead of just relying on the randomness of the playlist. It also allows me to not be around or remoting into that computer all the time. I have not seen this to be available and it makes sense because you need to have local access to the host where VLC is running. I used Github Copilot to build this and refine the bot. It used to be just one single python file, but after asking it to be refactored, it rebuilt and implemented it in a more proper way. 
+A Discord bot that controls VLC media player, manages playlists, provides movie metadata integration, and features an intelligent queue system on Windows, macOS, and Linux. This idea was due to a need for users on a discord server to be able to control the screen shared VLC setup I have even if I am away. It allows more options for them for viewing instead of just relying on the randomness of the playlist. It also allows me to not be around or remoting into that computer all the time. I have not seen this to be available and it makes sense because you need to have local access to the host where VLC is running. I used Github Copilot to build this and refine the bot. It used to be just one single python file, but after asking it to be refactored, it rebuilt and implemented it in a more proper way. 
 
 ## Features
 
@@ -48,11 +48,45 @@ A Discord bot that controls VLC media player, manages playlists, provides movie 
 ### Bot Commands and Help
 <img src="screenshots/help-command.png" alt="Bot Help Command" width="400">
 
+
+
 ## Prerequisites
 
-- Python 3.6 or higher
-- VLC media player installed (Windows or macOS)
+- Python 3.6 or higher (Windows, macOS, or Linux)
+- VLC media player installed (Windows, macOS, or Linux)
 - Discord bot token
+
+## Python Installation
+
+If you do not have Python 3 installed, follow these steps for your platform **before** continuing:
+
+### Linux (Ubuntu/Debian)
+```sh
+sudo apt update
+sudo apt install python3 python3-venv python3-pip
+```
+
+### Linux (Fedora)
+```sh
+sudo dnf install python3 python3-venv python3-pip
+```
+
+### macOS (with Homebrew)
+```sh
+brew install python
+```
+
+### Windows
+1. Download Python from https://www.python.org/downloads/
+2. Run the installer and **check the box that says "Add Python to PATH"**
+3. Complete the installation
+
+After installing, verify with:
+```sh
+python3 --version
+# or on Windows
+python --version
+```
 
 ### Discord Bot Setup
 1. Go to [Discord Developer Portal](https://discord.com/developers/applications)
@@ -75,18 +109,21 @@ A Discord bot that controls VLC media player, manages playlists, provides movie 
 4. Set a password (optional but recommended)
 5. Restart VLC after making these changes
 
-### macOS Specific Setup
-- Install VLC from the official website or using Homebrew: `brew install --cask vlc`
-- Make sure VLC is installed in the standard location (/Applications/VLC.app)
+
+### macOS/Linux Specific Setup
+- On macOS: Install VLC from the official website or using Homebrew: `brew install --cask vlc`
+- On Linux: Install VLC using your package manager, e.g. `sudo apt install vlc` (Debian/Ubuntu) or `sudo dnf install vlc` (Fedora)
+- Make sure VLC is installed in your system PATH
 
 ## Installation
 
 1. Clone this repository
 
+
 2. Set up Python environment:
-   ```
-   # Create a virtual environment
-   python -m venv venv
+   ```sh
+   # Create a virtual environment (recommended)
+   python3 -m venv venv
    
    # Activate the virtual environment
    # On Windows:
@@ -95,13 +132,16 @@ A Discord bot that controls VLC media player, manages playlists, provides movie 
    source venv/bin/activate
    ```
 
-3. Install required packages:
-   ```
-   # Install dependencies
-   pip install -r requirements.txt
-   
-   # If you get "no module named audioop" error, run:
-   pip install audioop-lts
+3. Install Python dependencies:
+   ```sh
+   # Make sure pip is up to date
+   python3 -m pip install --upgrade pip
+
+   # Install all required packages
+   python3 -m pip install -r requirements.txt
+
+   # If you get "no module named audioop" error (rare, usually on Linux), run:
+   python3 -m pip install audioop-lts
    ```
 
 4. Set up your configuration:
@@ -208,11 +248,12 @@ Contributions are welcome! Please feel free to submit a Pull Request. For major 
 - The bot uses TMDB for movie metadata. You'll get better results if your media files are named accurately.
 - VLC's HTTP interface must be enabled for the bot to function.
 - The bot works with VLC's existing playlist - add your media files directly through VLC.
+- **Cross-platform**: CtrlVee works on Windows, macOS, and Linux. All setup and commands are supported on Linux as well.
 - **Queue System**: Uses a soft queue approach compatible with VLC 3.x that temporarily disables shuffle when needed and automatically restores it after queued items finish playing.
 - **State Monitoring**: Enhanced monitoring helps track manual changes made directly in VLC and automatically handles queue transitions.
 - **Role-Based Access**: Most commands require specific Discord roles (configurable via `ALLOWED_ROLES` in `.env`).
 - **Queue Persistence**: Queue state is automatically saved to `queue_backup.json` and restored when the bot restarts.
- - **Watch Folders**: When `WATCH_FOLDERS` is set, the bot runs a lightweight watcher that scans every `WATCH_SCAN_INTERVAL` seconds. New media files are enqueued once they appear stable (size unchanged for ~2s). Hidden files and folders are ignored. Supported extensions include common video/audio types (mp4, mkv, avi, mov, mp3, flac, etc.). You can control whether the initial scan also enqueues existing files via `WATCH_ENQUEUE_ON_START`.
+- **Watch Folders**: When `WATCH_FOLDERS` is set, the bot runs a lightweight watcher that scans every `WATCH_SCAN_INTERVAL` seconds. New media files are enqueued once they appear stable (size unchanged for ~2s). Hidden files and folders are ignored. Supported extensions include common video/audio types (mp4, mkv, avi, mov, mp3, flac, etc.). You can control whether the initial scan also enqueues existing files via `WATCH_ENQUEUE_ON_START`.
 
 ## License
 
