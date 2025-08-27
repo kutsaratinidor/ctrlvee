@@ -1,3 +1,14 @@
+## 0.3.0
+
+### Added
+- Media library size is now displayed in `!status` and `!list` commands (shows total size of all watched folders).
+- Hot reloading of watch folders: add new folders to `.env` and they are picked up live, no restart needed.
+- Log progress indicator (N/total) for each file enqueued from watch folders.
+
+### Changed
+- Major performance improvement: media size is now cached and updated after each scan, making commands instant even for large libraries.
+- Only log new folders and progress, not every .env reload.
+
 ## 0.2.0
 
 ### Added

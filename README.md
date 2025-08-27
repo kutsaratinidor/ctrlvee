@@ -2,6 +2,7 @@
 
 A Discord bot that controls VLC media player, manages playlists, provides movie metadata integration, and features an intelligent queue system on Windows, macOS, and Linux. This idea was due to a need for users on a discord server to be able to control the screen shared VLC setup I have even if I am away. It allows more options for them for viewing instead of just relying on the randomness of the playlist. It also allows me to not be around or remoting into that computer all the time. I have not seen this to be available and it makes sense because you need to have local access to the host where VLC is running. I used Github Copilot to build this and refine the bot. It used to be just one single python file, but after asking it to be refactored, it rebuilt and implemented it in a more proper way. 
 
+
 ## Features
 
 - **VLC Playback Control**
@@ -24,12 +25,13 @@ A Discord bot that controls VLC media player, manages playlists, provides movie 
   - Movie posters, release dates, and ratings
   - Direct links to TMDB movie pages
 
-- **Playlist Management**
-  - View and navigate existing VLC playlist with pagination
-  - List all items with interactive navigation buttons
-  - Quick replay of items using item numbers
-  - Search and filter playlist contents
-  - Play search results directly
+-- **Playlist Management**
+   - View and navigate existing VLC playlist with pagination
+   - List all items with interactive navigation buttons
+   - Quick replay of items using item numbers
+   - Search and filter playlist contents
+   - Play search results directly
+   - **Media Library Size**: See the total size of all watched folders in `!list` and `!status` commands
   
 - **Enhanced State Monitoring**
   - Track VLC state changes with cooldown protection
@@ -42,6 +44,8 @@ A Discord bot that controls VLC media player, manages playlists, provides movie 
    - Polls configured folders for new media files
    - Automatically enqueues discovered files into VLC
    - Lightweight polling (no extra dependencies)
+   - **Hot reloading**: Add new folders to `.env` and they are picked up live, no restart needed
+   - **Progress logging**: See N/total progress for each file enqueued in logs
 
 ## Screenshots
 
@@ -217,6 +221,7 @@ python --version
 
 - **Metadata Matching**: Movie metadata from TMDB may not always match the actual media file. This occurs due to how media file names are parsed and handled by the system. File names with non-standard formatting, special characters, year mismatches, or quality indicators (like "1080p", "BluRay") can interfere with accurate metadata retrieval. This is a known limitation that we plan to improve in future versions by implementing better file name parsing and fuzzy matching algorithms.
 
+
 ## Recent Improvements
 
 - **Enhanced Queue System**: Implemented intelligent soft queue management with automatic shuffle handling and restoration
@@ -227,6 +232,9 @@ python --version
 - **Queue Persistence**: Queue state is now automatically saved and restored across bot restarts
 - **Filename Cleanup**: Strip HC/hardsub markers and additional torrent/scene noise from display and TMDB search inputs; preserves numeric title tokens (e.g., "2 Fast 2 Furious")
 - **Pagination Config**: `ITEMS_PER_PAGE` from `.env` now controls playlist page size (default remains 20)
+- **Media Size Caching**: Media library size is now cached and updated after each scan, making `!status` and `!list` instant even for large libraries
+- **Hot Watch Folder Reloading**: Add new folders to `.env` and they are picked up live, no restart needed
+- **Log Progress**: Each file enqueued from watch folders logs its progress (N/total)
 
 ## Versioning and Releases
 

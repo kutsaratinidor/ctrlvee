@@ -108,10 +108,11 @@ class PageSelectModal(discord.ui.Modal, title='Go to Page'):
             )
 
 class PlaylistCommands(commands.Cog):
-    def __init__(self, bot: commands.Bot, vlc_controller, tmdb_service):
+    def __init__(self, bot: commands.Bot, vlc_controller, tmdb_service, watch_service):
         self.bot = bot
         self.vlc = vlc_controller
         self.tmdb = tmdb_service
+        self.watch_service = watch_service
 
     def _get_playlist_items(self) -> List[dict]:
         """Get current playlist items"""
@@ -253,7 +254,15 @@ class PlaylistCommands(commands.Cog):
                 inline=False
             )
             
-            embed.set_footer(text=f"📑 Showing items 1-{len(current_items)} of {len(items)}")
+            # Add media library size to footer
+            size_bytes = self.watch_service.get_total_media_size() if self.watch_service else 0
+            def human_size(num):
+                for unit in ['B','KB','MB','GB','TB']:
+                    if num < 1024.0:
+                        return f"{num:.2f} {unit}"
+                    num /= 1024.0
+                return f"{num:.2f} PB"
+            embed.set_footer(text=f"📑 Showing items 1-{len(current_items)} of {len(items)} | Media Library Size: {human_size(size_bytes)}")
             await ctx.send(embed=embed, view=view)
             
         except Exception as e:

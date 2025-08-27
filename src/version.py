@@ -4,4 +4,4 @@ __all__ = ["__version__"]
 # - Increment PATCH for backward-compatible fixes
 # - Increment MINOR for backward-compatible feature additions
 # - Increment MAJOR for breaking changes
-__version__ = "0.2.0"
+__version__ = "0.3.0"

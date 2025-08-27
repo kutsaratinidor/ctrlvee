@@ -14,6 +14,21 @@ MEDIA_EXTENSIONS = {
 
 
 class WatchFolderService:
+    def get_total_media_size(self) -> int:
+        """Return the cached total size in bytes of all media files in the watched folders."""
+        return getattr(self, '_cached_media_size', 0)
+
+    def _update_media_size_cache(self):
+        total = 0
+        for folder in self.folders:
+            if not os.path.isdir(folder):
+                continue
+            for path in self._iter_media_files(folder):
+                try:
+                    total += os.path.getsize(path)
+                except Exception:
+                    continue
+        self._cached_media_size = total
     """Poll-based watch folder service that adds new media files to VLC playlist."""
 
     def __init__(self, vlc_controller, folders: Optional[List[str]] = None, scan_interval: Optional[int] = None):
@@ -25,6 +40,8 @@ class WatchFolderService:
         self._thread: Optional[threading.Thread] = None
         self._seen: Set[str] = set()
         self._notifier: Optional[Callable[[List[str]], None]] = None
+        self._cached_media_size = 0
+        self._update_media_size_cache()
 
     def set_notifier(self, notifier: Callable[[List[str]], None]):
         """Set a callback that will be called with a list of successfully enqueued file paths.
@@ -90,6 +107,25 @@ class WatchFolderService:
             return False
 
     def _scan_all(self, add_to_playlist: bool):
+        # Reload .env to pick up new folders
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(override=True)
+            # Parse the latest WATCH_FOLDERS from the environment
+            env_val = os.environ.get('WATCH_FOLDERS', '')
+            parsed_folders = [p.strip() for p in env_val.split(',') if p.strip()]
+            # No log for every reload; only log when new folders are added
+        except Exception:
+            self.logger.warning("Failed to reload .env for hot watch folder changes.")
+            parsed_folders = self.folders
+        # Hot-reload folders from env
+        current_folders = set(self.folders)
+        config_folders = set(parsed_folders)
+        new_folders = config_folders - current_folders
+        if new_folders:
+            self.logger.info(f"Hot-loading new watch folders: {', '.join(new_folders)}")
+            self.folders.extend(f for f in new_folders if f not in self.folders)
+
         new_files = []
         for folder in self.folders:
             if not os.path.isdir(folder):
@@ -113,20 +149,24 @@ class WatchFolderService:
 
         # Enqueue each new file by path
         enqueued: List[str] = []
-        for path in new_files:
+        total = len(new_files)
+        for idx, path in enumerate(new_files, 1):
             try:
                 if not self._stable_file(path):
-                    self.logger.info(f"Skipping (unstable/moving): {path}")
+                    self.logger.info(f"Skipping (unstable/moving): {idx}/{total} {path}")
                     continue
-                self.logger.info(f"Enqueuing via VLC: {path}")
+                self.logger.info(f"Enqueuing via VLC: {idx}/{total} {path}")
                 ok = self.vlc.enqueue_path(path)
                 if ok:
-                    self.logger.info(f"Enqueued: {path}")
+                    self.logger.info(f"Enqueued: {idx}/{total} {path}")
                     enqueued.append(path)
                 else:
-                    self.logger.warning(f"Failed to enqueue: {path}")
+                    self.logger.warning(f"Failed to enqueue: {idx}/{total} {path}")
             except Exception as e:
-                self.logger.error(f"Error enqueuing {path}: {e}")
+                self.logger.error(f"Error enqueuing {idx}/{total} {path}: {e}")
+
+        # Update cached media size after each scan
+        self._update_media_size_cache()
 
         # Notify if any were added
         if enqueued and self._notifier:

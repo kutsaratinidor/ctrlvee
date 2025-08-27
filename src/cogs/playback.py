@@ -10,10 +10,11 @@ from ..config import Config
 logger = logging.getLogger(__name__)
 
 class PlaybackCommands(commands.Cog):
-    def __init__(self, bot, vlc_controller, tmdb_service):
+    def __init__(self, bot, vlc_controller, tmdb_service, watch_service):
         self.bot = bot
         self.vlc = vlc_controller
         self.tmdb = tmdb_service
+        self.watch_service = watch_service
         self.last_state_change = {}
         self.logger = logging.getLogger(__name__)
         self.last_known_state = None
@@ -746,12 +747,21 @@ class PlaybackCommands(commands.Cog):
                     break
             logger.info(f"Current position in playlist: {current_position if current_position else 'not found'}")
         
-        # Initialize embed - this needs to be outside the if block
+        # Compute media library size
+        size_bytes = self.watch_service.get_total_media_size() if self.watch_service else 0
+        def human_size(num):
+            for unit in ['B','KB','MB','GB','TB']:
+                if num < 1024.0:
+                    return f"{num:.2f} {unit}"
+                num /= 1024.0
+            return f"{num:.2f} PB"
+
         embed = discord.Embed(
             title="VLC Status",
             color=discord.Color.blue()
         )
         embed.add_field(name="State", value=state.capitalize(), inline=True)
+        embed.add_field(name="Media Library Size", value=human_size(size_bytes), inline=True)
         
         if state != 'stopped':
             # Get the name from information/category/info[@name='filename']
