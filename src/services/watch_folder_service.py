@@ -19,15 +19,21 @@ class WatchFolderService:
         return getattr(self, '_cached_media_size', 0)
 
     def _update_media_size_cache(self):
-        total = 0
+        # Gather all media files first for progress tracking
+        all_files = []
         for folder in self.folders:
             if not os.path.isdir(folder):
                 continue
-            for path in self._iter_media_files(folder):
-                try:
-                    total += os.path.getsize(path)
-                except Exception:
-                    continue
+            all_files.extend(list(self._iter_media_files(folder)))
+        total_files = len(all_files)
+        total = 0
+        for idx, path in enumerate(all_files, 1):
+            try:
+                total += os.path.getsize(path)
+            except Exception:
+                continue
+            if idx == 1 or idx % 100 == 0 or idx == total_files:
+                self.logger.info(f"Calculating media size: {idx}/{total_files} files processed...")
         self._cached_media_size = total
     """Poll-based watch folder service that adds new media files to VLC playlist."""
 
