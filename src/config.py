@@ -41,8 +41,11 @@ class Config:
     WATCH_SCAN_INTERVAL: int = int(os.getenv('WATCH_SCAN_INTERVAL', '10'))
     # Whether to enqueue discovered files on the initial scan (default: true)
     WATCH_ENQUEUE_ON_START: bool = os.getenv('WATCH_ENQUEUE_ON_START', 'true').strip().lower() in {'1','true','yes','y'}
-    # Discord channel ID to announce newly added files; 0 disables announcements
-    WATCH_ANNOUNCE_CHANNEL_ID: int = int(os.getenv('WATCH_ANNOUNCE_CHANNEL_ID', '0'))
+    # Always load announce channel IDs from the environment at runtime
+    @staticmethod
+    def get_announce_channel_ids() -> list[int]:
+        val = os.getenv('WATCH_ANNOUNCE_CHANNEL_ID', '0')
+        return [int(cid.strip()) for cid in val.split(',') if cid.strip() and cid.strip() != '0']
     # Max items to list per announcement message
     WATCH_ANNOUNCE_MAX_ITEMS: int = int(os.getenv('WATCH_ANNOUNCE_MAX_ITEMS', '10'))
     
@@ -94,6 +97,7 @@ class Config:
     def print_config(cls) -> None:
         """Log the current configuration (excluding sensitive values)"""
         logger = logging.getLogger(__name__)
+        announce_ids = cls.get_announce_channel_ids()
         config_lines = [
             "Current Configuration:",
             "-" * 50,
@@ -105,7 +109,7 @@ class Config:
             f"Watch Folders: {', '.join(cls.WATCH_FOLDERS) if cls.WATCH_FOLDERS else 'Disabled'}",
             f"Watch Scan Interval: {cls.WATCH_SCAN_INTERVAL}s",
             f"Watch Enqueue On Start: {cls.WATCH_ENQUEUE_ON_START}",
-            f"Watch Announce Channel: {cls.WATCH_ANNOUNCE_CHANNEL_ID if cls.WATCH_ANNOUNCE_CHANNEL_ID else 'Disabled'}",
+            f"Watch Announce Channels: {announce_ids if announce_ids else 'Disabled'}",
             f"Watch Announce Max Items: {cls.WATCH_ANNOUNCE_MAX_ITEMS}",
             f"TMDB API Key: {'Configured' if cls.TMDB_API_KEY else 'Not Configured'}",
             f"Discord Token: {'Configured' if cls.DISCORD_TOKEN else 'Not Configured'}",

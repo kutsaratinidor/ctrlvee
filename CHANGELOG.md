@@ -1,17 +1,25 @@
-## 0.4.0
+
+## 1.0.0
 
 ### Added
-- **Scheduling Feature**: Users can now schedule movies by playlist number and PH time using `!schedule <number> <YYYY-MM-DD> <HH:MM>`. Includes:
-	- Conflict detection (prevents double-booking the same movie at the same time)
-	- Duration display in schedule and confirmation
-	- Schedule persistence across restarts
-	- Metadata embed from TMDB when a scheduled movie is played
-	- All schedule confirmations and listings are now Discord embeds
-- `!schedules` to list all upcoming scheduled movies
-- `!unschedule <number>` to remove all schedules for a movie
+- **Multiple Announce Channel Support**: Announcements can now be sent to multiple Discord channels. Configure `WATCH_ANNOUNCE_CHANNEL_ID` in `.env` as a comma-separated list of channel IDs.
+- **Dynamic Config Loading**: Announcement channel IDs are now always loaded dynamically from `.env` at runtime.
+- **Startup Diagnostics**: The bot prints the resolved announce channel IDs as a list on startup for easier debugging.
 
 ### Changed
-- Bump version to 0.4.0
+- Refactored config: `WATCH_ANNOUNCE_CHANNEL_ID` is no longer a static class variable, but is accessed via a static method for live reloads.
+- Improved logging for channel resolution and announcement delivery.
+
+### Breaking Changes
+- The config variable for announce channels must now be set as `WATCH_ANNOUNCE_CHANNEL_ID` (singular, not plural) in `.env`.
+- Code and cogs that accessed `Config.WATCH_ANNOUNCE_CHANNEL_ID` must now use `Config.get_announce_channel_ids()`.
+
+### Migration Notes
+- Update your `.env` to use `WATCH_ANNOUNCE_CHANNEL_ID=123,456,...` (comma-separated, no spaces).
+- Update any custom code to use the new static method for channel IDs.
+
+### Other
+- Bump version to 1.0.0 for breaking changes and new features.
 
 ## 0.3.0
 

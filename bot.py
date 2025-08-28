@@ -90,26 +90,39 @@ async def on_ready():
 
     # Start watch service if configured
     try:
-        # Set announcement notifier if channel configured
-        if Config.WATCH_ANNOUNCE_CHANNEL_ID:
-            channel = bot.get_channel(Config.WATCH_ANNOUNCE_CHANNEL_ID)
-            if not channel:
-                try:
-                    channel = await bot.fetch_channel(Config.WATCH_ANNOUNCE_CHANNEL_ID)
-                except Exception:
-                    channel = None
+        # Set announcement notifier for multiple channels if configured
+        ids = Config.get_announce_channel_ids()
+        logger.info(f"Configured announce channel IDs: {list(ids) if ids else 'None'}")
+        if ids:
+            async def get_channels():
+                channels = []
+                for cid in Config.get_announce_channel_ids():
+                    ch = bot.get_channel(cid)
+                    logger.debug(f"Attempting to resolve channel ID {cid}: bot.get_channel -> {ch}")
+                    if not ch:
+                        try:
+                            ch = await bot.fetch_channel(cid)
+                            logger.debug(f"Fetched channel {cid} via fetch_channel: {ch}")
+                        except Exception as e:
+                            logger.error(f"Failed to fetch channel {cid}: {e}")
+                            ch = None
+                    if ch:
+                        channels.append(ch)
+                logger.info(f"Resolved announce channels: {[ch.id for ch in channels]}")
+                return channels
 
             def notifier(paths):
-                # Dispatch into the asyncio loop to send messages
+                logger.info(f"Notifier called with {len(paths)} new files: {paths}")
                 async def _send_announcement():
-                    if not channel:
+                    channels = await get_channels()
+                    logger.info(f"Announcing to channels: {[ch.id for ch in channels]}")
+                    if not channels:
+                        logger.warning("No announce channels resolved. Announcement skipped.")
                         return
-                    # Batch and truncate
                     max_items = max(1, Config.WATCH_ANNOUNCE_MAX_ITEMS)
                     shown = paths[:max_items]
                     remaining = len(paths) - len(shown)
                     title = f"📥 {len(paths)} new file(s) added to VLC playlist"
-                    # Format without revealing file paths: show icon + cleaned title only
                     desc_lines = []
                     for p in shown:
                         try:
@@ -118,8 +131,8 @@ async def on_ready():
                             pretty = MediaUtils.clean_filename_for_display(name)
                             icon = MediaUtils.get_media_icon(name)
                             desc_lines.append(f"• {icon} {pretty}")
-                        except Exception:
-                            # Fallback to just the basename on any unexpected error
+                        except Exception as e:
+                            logger.error(f"Error formatting announcement line for {p}: {e}")
                             try:
                                 import os
                                 desc_lines.append(f"• {os.path.basename(p)}")
@@ -128,13 +141,14 @@ async def on_ready():
                     if remaining > 0:
                         desc_lines.append(f"… and {remaining} more")
                     embed = discord.Embed(title=title, description="\n".join(desc_lines), color=discord.Color.green())
-                    try:
-                        await channel.send(embed=embed)
-                    except discord.Forbidden:
-                        logger.warning("Missing permission to send announcements in the configured channel.")
-                    except Exception as e:
-                        logger.error(f"Failed to send announcement: {e}")
-
+                    for ch in channels:
+                        try:
+                            logger.info(f"Sending announcement to channel {ch.id}")
+                            await ch.send(embed=embed)
+                        except discord.Forbidden:
+                            logger.warning(f"Missing permission to send announcements in channel {ch.id}.")
+                        except Exception as e:
+                            logger.error(f"Failed to send announcement to channel {ch.id}: {e}")
                 asyncio.run_coroutine_threadsafe(_send_announcement(), bot.loop)
 
             watch_service.set_notifier(notifier)

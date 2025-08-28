@@ -183,7 +183,7 @@ python --version
    - `WATCH_FOLDERS`: Comma-separated absolute paths to watch (optional)
    - `WATCH_SCAN_INTERVAL`: Poll interval in seconds (default: 10)
    - `WATCH_ENQUEUE_ON_START`: If true, enqueue files discovered on the first scan (default: true)
-   - `WATCH_ANNOUNCE_CHANNEL_ID`: Discord channel ID for adding-file announcements (0 to disable)
+   - `WATCH_ANNOUNCE_CHANNEL_ID`: Comma-separated list of Discord channel IDs for adding-file announcements (e.g. `123456789,987654321`). Set to 0 or leave empty to disable. **(v1.0.0: Now supports multiple channels!)**
    - `WATCH_ANNOUNCE_MAX_ITEMS`: Max file paths to show per announcement (default: 10)
 
 ## Usage
@@ -240,7 +240,15 @@ python --version
 - **Metadata Matching**: Movie metadata from TMDB may not always match the actual media file. This occurs due to how media file names are parsed and handled by the system. File names with non-standard formatting, special characters, year mismatches, or quality indicators (like "1080p", "BluRay") can interfere with accurate metadata retrieval. This is a known limitation that we plan to improve in future versions by implementing better file name parsing and fuzzy matching algorithms.
 
 
+
 ## Recent Improvements
+
+- **v1.0.0 (Breaking Change): Multi-Channel Announcements & Config Refactor**
+   - Announcements can now be sent to multiple Discord channels. Set `WATCH_ANNOUNCE_CHANNEL_ID` in `.env` to a comma-separated list of channel IDs.
+   - The config variable for announce channels is now always loaded dynamically at runtime.
+   - The bot prints the resolved announce channel IDs as a list on startup for easier debugging.
+   - **Migration:** Update your `.env` to use `WATCH_ANNOUNCE_CHANNEL_ID=123,456,...` (comma-separated, no spaces). Update any custom code to use `Config.get_announce_channel_ids()`.
+   - **Breaking:** `Config.WATCH_ANNOUNCE_CHANNEL_ID` is no longer a static class variable; use the static method instead.
 
 - **Enhanced Queue System**: Implemented intelligent soft queue management with automatic shuffle handling and restoration
 - **Code Refactoring**: Major cleanup removed debug commands, simplified user messaging, and improved code organization
