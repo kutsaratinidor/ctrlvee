@@ -38,6 +38,7 @@ watch_service = WatchFolderService(vlc)
 # Import cogs
 from src.cogs.playback import PlaybackCommands
 from src.cogs.playlist import PlaylistCommands
+from src.cogs.scheduler import Scheduler
 from src.version import __version__
 
 @bot.event
@@ -48,6 +49,7 @@ async def setup_hook():
         # Add cogs
         await bot.add_cog(PlaybackCommands(bot, vlc, tmdb_service, watch_service))
         await bot.add_cog(PlaylistCommands(bot, vlc, tmdb_service, watch_service))
+        await bot.add_cog(Scheduler(bot, vlc))
         logger.info("Cogs loaded successfully")
     except Exception as e:
         logger.error(f"Error loading cogs: {e}")
@@ -223,23 +225,24 @@ async def controls(ctx):
         """
         embed.add_field(name="📑 Queue Management", value=queue_commands, inline=False)
 
-        # Status
+        # Status & Scheduling
         status_commands = """
 `!status` - Show current VLC status (state, volume, playing item)
+`!schedule <number> <YYYY-MM-DD> <HH:MM>` - Schedule a movie by playlist number (Philippines time)
+`!schedules` - List all upcoming scheduled movies
+`!unschedule <number>` - Remove all schedules for a movie number
         """
-        embed.add_field(name="ℹ️ Status", value=status_commands, inline=False)
+        embed.add_field(name="ℹ️ Status & Scheduling", value=status_commands, inline=False)
 
         # Add footer note about permissions
         roles_str = ", ".join(f"'{role}'" for role in Config.ALLOWED_ROLES)
         embed.set_footer(text=f"⚠️ Most commands require one of these roles: {roles_str}")
 
-        try:
-            await ctx.send(embed=embed)
-        except discord.Forbidden:
-            await ctx.send("❌ I need the 'Embed Links' permission to show the help message.")
+        await ctx.send(embed=embed)
+    except discord.Forbidden:
+        await ctx.send("❌ I need the 'Embed Links' permission to show the help message.")
     except Exception as e:
         await ctx.send(f"An error occurred: {str(e)}")
-
 @bot.command(name="version")
 async def version(ctx):
     """Show the bot version and basic configuration info"""

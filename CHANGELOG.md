@@ -1,3 +1,18 @@
+## 0.4.0
+
+### Added
+- **Scheduling Feature**: Users can now schedule movies by playlist number and PH time using `!schedule <number> <YYYY-MM-DD> <HH:MM>`. Includes:
+	- Conflict detection (prevents double-booking the same movie at the same time)
+	- Duration display in schedule and confirmation
+	- Schedule persistence across restarts
+	- Metadata embed from TMDB when a scheduled movie is played
+	- All schedule confirmations and listings are now Discord embeds
+- `!schedules` to list all upcoming scheduled movies
+- `!unschedule <number>` to remove all schedules for a movie
+
+### Changed
+- Bump version to 0.4.0
+
 ## 0.3.0
 
 ### Added

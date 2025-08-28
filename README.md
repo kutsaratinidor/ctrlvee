@@ -3,7 +3,19 @@
 A Discord bot that controls VLC media player, manages playlists, provides movie metadata integration, and features an intelligent queue system on Windows, macOS, and Linux. This idea was due to a need for users on a discord server to be able to control the screen shared VLC setup I have even if I am away. It allows more options for them for viewing instead of just relying on the randomness of the playlist. It also allows me to not be around or remoting into that computer all the time. I have not seen this to be available and it makes sense because you need to have local access to the host where VLC is running. I used Github Copilot to build this and refine the bot. It used to be just one single python file, but after asking it to be refactored, it rebuilt and implemented it in a more proper way. 
 
 
+
 ## Features
+- **VLC Playback Control**
+   ...existing code...
+
+- **Scheduling Movies**
+   - Schedule a movie by playlist number and PH time with `!schedule <number> <YYYY-MM-DD> <HH:MM>`
+   - Prevents double-booking the same movie at the same time
+   - Shows movie duration in schedule and confirmation
+   - Schedules persist across bot restarts
+   - When a scheduled movie is played, the bot posts a TMDB metadata embed
+   - `!schedules` to list all upcoming scheduled movies
+   - `!unschedule <number>` to remove all schedules for a movie
 
 - **VLC Playback Control**
   - Basic controls (play, pause, stop, restart)
@@ -181,8 +193,9 @@ python --version
    python bot.py
    ```
 
+
 2. Available commands in Discord:
-   
+
    **Playback Controls:**
    - `!play` - Start/resume playback
    - `!pause` - Pause playback
@@ -206,6 +219,11 @@ python --version
    - `!queue_next <number>` - Queue a playlist item to play next (temporarily disables shuffle if needed)
    - `!queue_status` - Show current queue with item titles and playlist positions
    - `!clear_queue` - Clear all queue tracking
+
+   **Scheduling:**
+   - `!schedule <number> <YYYY-MM-DD> <HH:MM>` - Schedule a movie by playlist number and PH time
+   - `!schedules` - List all upcoming scheduled movies
+   - `!unschedule <number>` - Remove all schedules for a movie
 
    **Status & Information:**
    - `!status` - Show current VLC status (state, volume, playing item)

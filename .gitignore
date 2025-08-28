@@ -33,6 +33,9 @@ venv/
 # VLC queue backup
 queue_backup.json
 
+# VLC schedule backup
+schedule_backup.json
+
 # IDE specific files
 .idea/
 .vscode/
