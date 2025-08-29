@@ -4,26 +4,34 @@ import re
 
 class MediaUtils:
     @staticmethod
-    def get_media_duration(item) -> int | None:
-        """Try to extract duration (in seconds) from a VLC playlist item (Element). Returns None if unavailable or invalid."""
+    def get_media_duration(item) -> int | str | None:
+        """Try to extract duration (in seconds) from a VLC playlist item (Element). Returns int, 'Loading...', or None."""
+        import logging
+        logger = logging.getLogger(__name__)
         # Try attribute first
         dur_attr = item.get('duration')
+        logger.debug(f"VLC item duration attribute: {dur_attr}")
         if dur_attr:
             try:
                 seconds = int(dur_attr)
                 if seconds > 0:
                     return seconds
-            except Exception:
-                pass
+                elif seconds == 0:
+                    return 'Loading...'
+            except Exception as e:
+                logger.debug(f"Error parsing duration attribute: {e}")
         # Try child element
         dur_elem = item.find('duration')
+        logger.debug(f"VLC item duration element: {getattr(dur_elem, 'text', None)}")
         if dur_elem is not None and dur_elem.text:
             try:
                 seconds = int(dur_elem.text)
                 if seconds > 0:
                     return seconds
-            except Exception:
-                pass
+                elif seconds == 0:
+                    return 'Loading...'
+            except Exception as e:
+                logger.debug(f"Error parsing duration element: {e}")
         return None
     @staticmethod
     def parse_movie_filename(filename: str) -> Tuple[str, Optional[int]]:

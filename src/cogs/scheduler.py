@@ -84,13 +84,12 @@ class Scheduler(commands.Cog):
             playlist = self.vlc.get_playlist()
             items = playlist.findall('.//leaf') if playlist is not None else []
             idx = number - 1
-            if 0 <= idx < len(items):
-                filename = items[idx].get('name', 'Unknown')
-                title = MediaUtils.clean_movie_title(filename)
-                duration = MediaUtils.get_media_duration(items[idx])
-            else:
-                title = "Unknown"
-                duration = None
+            if not (0 <= idx < len(items)):
+                await ctx.send(f"❌ Movie number {number} is out of bounds. There are {len(items)} items in the playlist.")
+                return
+            filename = items[idx].get('name', 'Unknown')
+            title = MediaUtils.clean_movie_title(filename)
+            duration = MediaUtils.get_media_duration(items[idx])
             entry = {
                 "number": number,
                 "title": title,
@@ -101,7 +100,12 @@ class Scheduler(commands.Cog):
             }
             self.scheduled.append(entry)
             self._save_schedule_backup()
-            dur_str = MediaUtils.format_time(duration) if duration else "?"
+            if duration == 'Loading...':
+                dur_str = 'Loading...'
+            elif duration:
+                dur_str = MediaUtils.format_time(duration)
+            else:
+                dur_str = "Unknown"
             embed = discord.Embed(
                 title="Movie Scheduled",
                 color=discord.Color.green()
@@ -123,7 +127,13 @@ class Scheduler(commands.Cog):
         embed = discord.Embed(title="Upcoming Scheduled Movies", color=discord.Color.purple())
         for s in sorted(self.scheduled, key=lambda x: x["dt"]):
             dt_str = s["dt"].strftime('%Y-%m-%d %H:%M %Z') if isinstance(s["dt"], datetime) else str(s["dt"])
-            dur_str = MediaUtils.format_time(s.get("duration")) if s.get("duration") else "?"
+            duration = s.get("duration")
+            if duration == 'Loading...' or duration == 0:
+                dur_str = 'Loading...'
+            elif duration:
+                dur_str = MediaUtils.format_time(duration)
+            else:
+                dur_str = "Unknown"
             embed.add_field(
                 name=f"#{s['number']} — {s.get('title', 'Unknown')}",
                 value=f"Scheduled for {dt_str}\nDuration: {dur_str}",
