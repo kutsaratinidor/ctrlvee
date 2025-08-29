@@ -1,15 +1,29 @@
 
+
 import discord
 from discord.ext import commands, tasks
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import asyncio
 import logging
 import json
 import os
 from ..utils.media_utils import MediaUtils
 
-PH_TZ = ZoneInfo("Asia/Manila")
+# Cross-platform timezone handling for PH time
+def get_ph_timezone():
+    try:
+        return ZoneInfo("Asia/Manila")
+    except ZoneInfoNotFoundError:
+        try:
+            # On Windows, try Singapore Standard Time (same UTC+8)
+            return ZoneInfo("Singapore Standard Time")
+        except Exception:
+            from tzlocal import get_localzone
+            # Fallback: use system local timezone (may be incorrect)
+            return get_localzone()
+
+PH_TZ = get_ph_timezone()
 logger = logging.getLogger(__name__)
 
 

@@ -1,3 +1,10 @@
+## 1.1.1
+
+### Fixed
+- **Cross-Platform Timezone Handling**: The bot now correctly handles the "Asia/Manila" timezone on both Windows and Unix systems. On Windows, it falls back to "Singapore Standard Time" or the system local timezone if needed. This prevents errors when scheduling movies in PH time on Windows.
+
+### Other
+- Bump version to 1.1.1 for this fix.
 ## 1.1.0
 
 ### Added
