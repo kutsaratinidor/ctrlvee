@@ -57,6 +57,32 @@ async def setup_hook():
 
 @bot.event
 async def on_ready():
+    # Send embedded startup message to all announce channels
+    announce_ids = Config.get_announce_channel_ids()
+    if announce_ids:
+        embed = discord.Embed(
+            title="🤖 CtrlVee Bot is Online!",
+            description=(
+                f"Version: {__version__}\n"
+                f"Command prefix: `{Config.DISCORD_COMMAND_PREFIX}`\n"
+                "Ready to receive commands."
+            ),
+            color=discord.Color.green()
+        )
+        embed.set_footer(text="Thank you for using CtrlVee!")
+        for cid in announce_ids:
+            channel = bot.get_channel(cid)
+            if not channel:
+                try:
+                    channel = await bot.fetch_channel(cid)
+                except Exception as e:
+                    logger.warning(f"Could not resolve announce channel {cid}: {e}")
+                    continue
+            try:
+                await channel.send(embed=embed)
+                logger.info(f"Sent startup message to channel {cid}")
+            except Exception as e:
+                logger.warning(f"Failed to send startup message to channel {cid}: {e}")
     """Called when the bot is ready"""
     logger.info(f'{bot.user} has connected to Discord!')
     

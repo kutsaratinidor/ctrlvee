@@ -1,3 +1,13 @@
+## 1.2.0
+
+### Added
+- **Embedded Startup Message:** On startup, the bot now sends an embedded "CtrlVee Bot is Online!" message to all configured announcement channels, showing the version and command prefix.
+
+### Improved
+- **Media Duration Handling:** Improved cross-platform extraction of media duration from VLC playlist items, with robust fallback for Windows and missing/invalid data.
+
+### Other
+- Bump version to 1.2.0 for these enhancements.
 ## 1.1.1
 
 ### Fixed

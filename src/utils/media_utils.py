@@ -4,6 +4,28 @@ import re
 
 class MediaUtils:
     @staticmethod
+    def get_media_duration(item) -> int | None:
+        """Try to extract duration (in seconds) from a VLC playlist item (Element). Returns None if unavailable or invalid."""
+        # Try attribute first
+        dur_attr = item.get('duration')
+        if dur_attr:
+            try:
+                seconds = int(dur_attr)
+                if seconds > 0:
+                    return seconds
+            except Exception:
+                pass
+        # Try child element
+        dur_elem = item.find('duration')
+        if dur_elem is not None and dur_elem.text:
+            try:
+                seconds = int(dur_elem.text)
+                if seconds > 0:
+                    return seconds
+            except Exception:
+                pass
+        return None
+    @staticmethod
     def parse_movie_filename(filename: str) -> Tuple[str, Optional[int]]:
         """Parse a movie filename into a clean title and optional release year.
         

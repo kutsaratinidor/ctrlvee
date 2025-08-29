@@ -87,15 +87,7 @@ class Scheduler(commands.Cog):
             if 0 <= idx < len(items):
                 filename = items[idx].get('name', 'Unknown')
                 title = MediaUtils.clean_movie_title(filename)
-                # Try to get duration (in seconds) from attribute or child
-                duration = None
-                dur_attr = items[idx].get('duration')
-                if dur_attr and dur_attr.isdigit():
-                    duration = int(dur_attr)
-                else:
-                    dur_elem = items[idx].find('duration')
-                    if dur_elem is not None and dur_elem.text and dur_elem.text.isdigit():
-                        duration = int(dur_elem.text)
+                duration = MediaUtils.get_media_duration(items[idx])
             else:
                 title = "Unknown"
                 duration = None
