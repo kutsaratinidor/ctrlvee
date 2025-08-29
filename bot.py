@@ -23,7 +23,7 @@ Config.print_config()
 # Bot setup
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix='!', intents=intents)
+bot = commands.Bot(command_prefix=Config.DISCORD_COMMAND_PREFIX, intents=intents)
 
 # Initialize services
 from src.services.vlc_controller import VLCController
@@ -190,7 +190,7 @@ async def on_command_error(ctx, error):
         logger.warning(f"- Required roles (any of): {allowed_roles}")
         await ctx.send(f"You need one of these roles to use this command: {allowed_roles}\nYou have these roles: {user_roles}")
     elif isinstance(error, commands.CommandNotFound):
-        await ctx.send(f"Command not found. Use `!controls` to see available commands.")
+        await ctx.send(f"Command not found. Use `{Config.DISCORD_COMMAND_PREFIX}controls` to see available commands.")
     else:
         logger.error(f"Command error: {str(error)}")
         logger.error(f"Error type: {type(error)}")
@@ -200,51 +200,52 @@ async def on_command_error(ctx, error):
 async def controls(ctx):
     """Show all available VLC controls"""
     try:
+        prefix = Config.DISCORD_COMMAND_PREFIX
         embed = discord.Embed(
             title="VLC Bot Help",
-            description="Control VLC media player through Discord!",
+            description=f"Control VLC media player through Discord!\n\n**Current command prefix:** `{prefix}`\nUse `{prefix}controls` to show this help.",
             color=discord.Color.blue()
         )
 
         # Basic Playback Controls
-        playback_commands = """
-`!play` - Start or resume playback
-`!pause` - Pause playback
-`!stop` - Stop playback
-`!restart` - Restart current file from the beginning
-`!next` - Play next track
-`!previous` - Play previous track
-`!rewind [seconds]` - Rewind by specified seconds (default: 10)
-`!forward [seconds]` - Fast forward by specified seconds (default: 10)
-`!shuffle` - Toggle shuffle mode on/off
-`!shuffle_on` - Enable shuffle mode
-`!shuffle_off` - Disable shuffle mode
+        playback_commands = f"""
+`{prefix}play` - Start or resume playback
+`{prefix}pause` - Pause playback
+`{prefix}stop` - Stop playback
+`{prefix}restart` - Restart current file from the beginning
+`{prefix}next` - Play next track
+`{prefix}previous` - Play previous track
+`{prefix}rewind [seconds]` - Rewind by specified seconds (default: 10)
+`{prefix}forward [seconds]` - Fast forward by specified seconds (default: 10)
+`{prefix}shuffle` - Toggle shuffle mode on/off
+`{prefix}shuffle_on` - Enable shuffle mode
+`{prefix}shuffle_off` - Disable shuffle mode
         """
         embed.add_field(name="🎮 Playback Controls", value=playback_commands, inline=False)
 
         # Playlist Management
-        playlist_commands = """
-`!list` - Show playlist with interactive navigation
-`!search <query>` - Search for items in playlist
-`!play_search <query>` - Search and play a specific item
-`!play_num <number>` - Play item by its number in playlist
+        playlist_commands = f"""
+`{prefix}list` - Show playlist with interactive navigation
+`{prefix}search <query>` - Search for items in playlist
+`{prefix}play_search <query>` - Search and play a specific item
+`{prefix}play_num <number>` - Play item by its number in playlist
         """
         embed.add_field(name="📋 Playlist Management", value=playlist_commands, inline=False)
 
         # Queue Management
-        queue_commands = """
-`!queue_next <number>` - Queue a playlist item to play next (shows item title & positions)
-`!queue_status` - Show current queue with item titles and playlist positions
-`!clear_queue` - Clear all queue tracking
+        queue_commands = f"""
+`{prefix}queue_next <number>` - Queue a playlist item to play next (shows item title & positions)
+`{prefix}queue_status` - Show current queue with item titles and playlist positions
+`{prefix}clear_queue` - Clear all queue tracking
         """
         embed.add_field(name="📑 Queue Management", value=queue_commands, inline=False)
 
         # Status & Scheduling
-        status_commands = """
-`!status` - Show current VLC status (state, volume, playing item)
-`!schedule <number> <YYYY-MM-DD> <HH:MM>` - Schedule a movie by playlist number (Philippines time)
-`!schedules` - List all upcoming scheduled movies
-`!unschedule <number>` - Remove all schedules for a movie number
+        status_commands = f"""
+`{prefix}status` - Show current VLC status (state, volume, playing item)
+`{prefix}schedule <number> <YYYY-MM-DD> <HH:MM>` - Schedule a movie by playlist number (Philippines time)
+`{prefix}schedules` - List all upcoming scheduled movies
+`{prefix}unschedule <number>` - Remove all schedules for a movie number
         """
         embed.add_field(name="ℹ️ Status & Scheduling", value=status_commands, inline=False)
 

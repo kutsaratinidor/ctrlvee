@@ -185,6 +185,7 @@ python --version
    - `WATCH_ENQUEUE_ON_START`: If true, enqueue files discovered on the first scan (default: true)
    - `WATCH_ANNOUNCE_CHANNEL_ID`: Comma-separated list of Discord channel IDs for adding-file announcements (e.g. `123456789,987654321`). Set to 0 or leave empty to disable. **(v1.0.0: Now supports multiple channels!)**
    - `WATCH_ANNOUNCE_MAX_ITEMS`: Max file paths to show per announcement (default: 10)
+   - `DISCORD_COMMAND_PREFIX`: The command prefix for bot commands (default: `!`). You can set this to any string, e.g. `!!` or `$`. Multi-character prefixes are supported.
 
 ## Usage
 
@@ -192,6 +193,7 @@ python --version
    ```
    python bot.py
    ```
+   The command prefix can be customized via the `DISCORD_COMMAND_PREFIX` variable in your `.env` file. For example, set `DISCORD_COMMAND_PREFIX=!!` to use `!!play`, `!!pause`, etc.
 
 
 2. Available commands in Discord:

@@ -24,6 +24,9 @@ class Config:
     VLC_HOST: str = os.getenv('VLC_HOST', 'localhost')
     VLC_PORT: int = int(os.getenv('VLC_PORT', '8080'))
     VLC_PASSWORD: str = os.getenv('VLC_PASSWORD', 'vlc')
+
+    # Discord Command Prefix
+    DISCORD_COMMAND_PREFIX: str = os.getenv('DISCORD_COMMAND_PREFIX', '!')
     
     # TMDB Settings
     TMDB_API_KEY: str = os.getenv('TMDB_API_KEY', '')
@@ -99,6 +102,7 @@ class Config:
         logger = logging.getLogger(__name__)
         announce_ids = cls.get_announce_channel_ids()
         config_lines = [
+            f"Discord Command Prefix: {cls.DISCORD_COMMAND_PREFIX}",
             "Current Configuration:",
             "-" * 50,
             f"VLC Host: {cls.VLC_HOST}",

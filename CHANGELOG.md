@@ -1,3 +1,16 @@
+## 1.1.0
+
+### Added
+- **Configurable Command Prefix**: You can now set the bot's command prefix using the `DISCORD_COMMAND_PREFIX` variable in your `.env` file. Supports any string, including multi-character prefixes (e.g., `!`, `!!`, `$`).
+
+### Changed
+- The command prefix is now shown in the config printout and documented in the README and template.env.
+
+### Migration Notes
+- Add `DISCORD_COMMAND_PREFIX=!!` (or your preferred prefix) to your `.env` to change the prefix. If not set, the default is `!`.
+
+### Other
+- Bump version to 1.1.0 for this feature.
 
 ## 1.0.0
 
