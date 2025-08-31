@@ -1,3 +1,14 @@
+## 1.3.0
+
+### Added
+- **10-Minute Pre-Announcement:** The bot now sends a reminder to all announce channels 10 minutes before a scheduled movie starts.
+- **Optional Role Mention:** You can set `WATCH_ANNOUNCE_ROLE_ID` in `.env` to mention a specific role in the pre-announcement. If unset or 0, no role is mentioned.
+
+### Fixed
+- **Scheduler Robustness:** Added a safeguard to always initialize the pre-announcement tracking set, preventing rare attribute errors.
+
+### Other
+- Bump version to 1.3.0 for these features and fixes.
 ## 1.2.0
 
 ### Added

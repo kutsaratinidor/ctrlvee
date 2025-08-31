@@ -14,6 +14,8 @@ logging.basicConfig(
 )
 
 class Config:
+    # Optional: Role ID to mention in scheduled movie announcements (set to 0 or leave empty to disable)
+    WATCH_ANNOUNCE_ROLE_ID: int = int(os.getenv('WATCH_ANNOUNCE_ROLE_ID', '0'))
     """Configuration settings loaded from environment variables"""
     
     # Discord Bot Settings

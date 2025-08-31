@@ -38,6 +38,13 @@ class Scheduler(commands.Cog):
         self.vlc = vlc_controller
         self.tmdb = TMDBService()
         self.scheduled = self._load_schedule_backup()
+        self.pre_announce_sent = set()  # (number, dt) tuples
+        self.check_schedules.start()
+    def __init__(self, bot, vlc_controller):
+        self.bot = bot
+        self.vlc = vlc_controller
+        self.tmdb = TMDBService()
+        self.scheduled = self._load_schedule_backup()
         self.check_schedules.start()
 
     def cog_unload(self):
@@ -155,7 +162,34 @@ class Scheduler(commands.Cog):
 
     @tasks.loop(seconds=30)
     async def check_schedules(self):
+        from src.config import Config
         now = datetime.now(PH_TZ)
+        # Pre-announce 10 minutes before
+        # Safeguard: ensure pre_announce_sent always exists
+        if not hasattr(self, 'pre_announce_sent') or self.pre_announce_sent is None:
+            self.pre_announce_sent = set()
+        for s in self.scheduled:
+            pre_announce_key = (s['number'], s['dt'])
+            if pre_announce_key not in self.pre_announce_sent:
+                delta = (s['dt'] - now).total_seconds()
+                if 0 < delta <= 600:  # 10 minutes
+                    announce_ids = Config.get_announce_channel_ids()
+                    role_id = getattr(Config, 'WATCH_ANNOUNCE_ROLE_ID', 0)
+                    mention = f'<@&{role_id}>' if role_id else ''
+                    for cid in announce_ids:
+                        channel = self.bot.get_channel(cid)
+                        if not channel:
+                            try:
+                                channel = await self.bot.fetch_channel(cid)
+                            except Exception:
+                                continue
+                        try:
+                            msg = f"{mention} ⏰ Reminder: Scheduled movie #{s['number']} ({s.get('title', 'Unknown')}) will start in 10 minutes!"
+                            await channel.send(msg.strip())
+                        except Exception:
+                            pass
+                    self.pre_announce_sent.add(pre_announce_key)
+        # Run scheduled movies
         to_run = [s for s in self.scheduled if s["dt"] <= now]
         for s in to_run:
             try:
