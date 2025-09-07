@@ -1007,6 +1007,40 @@ class PlaybackCommands(commands.Cog):
             logger.error(f"Error in clear_queue command: {e}")
             await ctx.send(f'Error clearing queue: {str(e)}')
 
+    @commands.command(name='remove_queue', aliases=['qremove','unqueue'])
+    @commands.has_any_role(*Config.ALLOWED_ROLES)
+    async def remove_queue(self, ctx, ref: str):
+        """Remove a queued entry by queue order (e.g., 1) or playlist number (#10).
+
+        Usage:
+        - {prefix}remove_queue 1           # remove by queue order
+        - {prefix}remove_queue #10         # remove by playlist number
+        """
+        try:
+            if ref.startswith('#'):
+                num = int(ref[1:])
+                result = self.vlc.remove_from_queue_by_playlist_number(num)
+            else:
+                num = int(ref)
+                result = self.vlc.remove_from_queue_by_order(num)
+
+            if not result.get('success'):
+                await ctx.send(f"❌ {result.get('error', 'Failed to remove from queue')}")
+                return
+
+            name = result.get('item_name', 'Unknown')
+            embed = discord.Embed(
+                title="✅ Removed from Queue",
+                description=f"{name} has been removed from the queue.",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
+        except ValueError:
+            await ctx.send("❌ Invalid reference. Use a number (queue order) or #<playlist number>.")
+        except Exception as e:
+            logger.error(f"Error in remove_queue command: {e}")
+            await ctx.send(f"Error removing from queue: {str(e)}")
+
     @commands.has_any_role(*Config.ALLOWED_ROLES)
     @commands.command(name='shuffle_on', aliases=['shuffle_enable'])
     async def shuffle_on(self, ctx):

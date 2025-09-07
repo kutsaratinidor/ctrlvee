@@ -58,6 +58,13 @@ A Discord bot that controls VLC media player, manages playlists, provides movie 
    - Lightweight polling (no extra dependencies)
    - **Hot reloading**: Add new folders to `.env` and they are picked up live, no restart needed
    - **Progress logging**: See N/total progress for each file enqueued in logs
+   - If exactly one item is added in a scan, the bot posts a TMDB metadata embed for it (when TMDB is configured)
+
+- **Playlist Autosave (Optional)**
+   - Periodically saves the current VLC playlist to a file
+   - If `PLAYLIST_AUTOSAVE_FILE` ends with `.xspf`, a valid XSPF playlist is written (directly loadable in VLC)
+   - Otherwise a JSON export is written with basic fields (id, name, current)
+   - Control frequency with `PLAYLIST_AUTOSAVE_INTERVAL` (seconds; minimum 10)
 
 ## Screenshots
 
@@ -186,6 +193,8 @@ python --version
    - `WATCH_ANNOUNCE_CHANNEL_ID`: Comma-separated list of Discord channel IDs for adding-file announcements (e.g. `123456789,987654321`). Set to 0 or leave empty to disable. **(v1.0.0: Now supports multiple channels!)**
    - `WATCH_ANNOUNCE_MAX_ITEMS`: Max file paths to show per announcement (default: 10)
    - `DISCORD_COMMAND_PREFIX`: The command prefix for bot commands (default: `!`). You can set this to any string, e.g. `!!` or `$`. Multi-character prefixes are supported.
+   - `PLAYLIST_AUTOSAVE_FILE`: Path (absolute or relative to project root) to save the current playlist. If it ends with `.xspf`, an XSPF playlist is written; otherwise JSON. Leave blank to disable.
+   - `PLAYLIST_AUTOSAVE_INTERVAL`: Interval in seconds between autosaves (min 10; default 300)
 
 ## Usage
 
@@ -221,6 +230,7 @@ python --version
    - `!queue_next <number>` - Queue a playlist item to play next (temporarily disables shuffle if needed)
    - `!queue_status` - Show current queue with item titles and playlist positions
    - `!clear_queue` - Clear all queue tracking
+   - `!remove_queue <N|#N>` - Remove by queue order (N) or playlist number (#N)
 
    **Scheduling:**
    - `!schedule <number> <YYYY-MM-DD> <HH:MM>` - Schedule a movie by playlist number and PH time
@@ -244,6 +254,11 @@ python --version
 
 
 ## Recent Improvements
+
+- **v1.5.0: Playlist Autosave + Watch-Folder Robustness**
+   - New autosave feature: save to XSPF (preferred) or JSON periodically via `PLAYLIST_AUTOSAVE_FILE` and `PLAYLIST_AUTOSAVE_INTERVAL`
+   - Info-level logs indicate when and where the playlist is saved
+   - More robust watch-folder hot reload and prevention of duplicate enqueues when changing folder order
 
 - **v1.0.0 (Breaking Change): Multi-Channel Announcements & Config Refactor**
    - Announcements can now be sent to multiple Discord channels. Set `WATCH_ANNOUNCE_CHANNEL_ID` in `.env` to a comma-separated list of channel IDs.

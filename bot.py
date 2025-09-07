@@ -1,6 +1,8 @@
 import sys
+import os
 import asyncio
 import logging
+import threading
 from src.config import Config
 from discord.ext import commands
 import discord
@@ -35,6 +37,10 @@ vlc = VLCController()
 tmdb_service = TMDBService()
 watch_service = WatchFolderService(vlc)
 
+# Optional: background playlist autosave
+_autosave_thread = None
+_autosave_stop = threading.Event()
+
 # Import cogs
 from src.cogs.playback import PlaybackCommands
 from src.cogs.playlist import PlaylistCommands
@@ -57,9 +63,10 @@ async def setup_hook():
 
 @bot.event
 async def on_ready():
-    # Send embedded startup message to all announce channels
-    announce_ids = Config.get_announce_channel_ids()
-    if announce_ids:
+    async def send_startup_announcement():
+        announce_ids = Config.get_announce_channel_ids()
+        if not announce_ids:
+            return
         embed = discord.Embed(
             title="🤖 CtrlVee Bot is Online!",
             description=(
@@ -83,6 +90,24 @@ async def on_ready():
                 logger.info(f"Sent startup message to channel {cid}")
             except Exception as e:
                 logger.warning(f"Failed to send startup message to channel {cid}: {e}")
+
+    # If initial enqueue on start is enabled, delay the announcement until after initial scan completes
+    if Config.WATCH_ENQUEUE_ON_START and watch_service:
+        logger.info("Delaying startup announcement until watch folder initial scan completes...")
+        loop = asyncio.get_event_loop()
+        def wait_and_announce():
+            try:
+                # Wait up to 2 minutes for the initial scan to finish
+                done = watch_service.wait_initial_scan_done(timeout=120)
+                logger.info(f"Initial scan completion wait result: {done}")
+            except Exception as e:
+                logger.error(f"Error while waiting for initial scan: {e}")
+            finally:
+                asyncio.run_coroutine_threadsafe(send_startup_announcement(), loop)
+        # Run the waiting in a lightweight thread so we don't block the event loop
+        threading.Thread(target=wait_and_announce, name="AnnounceAfterInitialScan", daemon=True).start()
+    else:
+        await send_startup_announcement()
     """Called when the bot is ready"""
     logger.info(f'{bot.user} has connected to Discord!')
     
@@ -167,10 +192,26 @@ async def on_ready():
                     if remaining > 0:
                         desc_lines.append(f"… and {remaining} more")
                     embed = discord.Embed(title=title, description="\n".join(desc_lines), color=discord.Color.green())
+
+                    # If exactly one item was added, try to fetch TMDB metadata and send an additional embed
+                    tmdb_embed = None
+                    try:
+                        if len(paths) == 1 and tmdb_service:
+                            import os
+                            fname = os.path.basename(paths[0])
+                            clean_title, year = MediaUtils.parse_movie_filename(fname)
+                            if clean_title:
+                                logger.info(f"Fetching TMDB metadata for single added item: '{clean_title}' year={year}")
+                                tmdb_embed = tmdb_service.get_movie_metadata(clean_title, year)
+                    except Exception as e:
+                        logger.error(f"Failed to prepare TMDB embed for single-item announcement: {e}")
+
                     for ch in channels:
                         try:
                             logger.info(f"Sending announcement to channel {ch.id}")
                             await ch.send(embed=embed)
+                            if tmdb_embed:
+                                await ch.send(embed=tmdb_embed)
                         except discord.Forbidden:
                             logger.warning(f"Missing permission to send announcements in channel {ch.id}.")
                         except Exception as e:
@@ -184,6 +225,57 @@ async def on_ready():
             logger.info("WatchFolderService started")
         else:
             logger.info("WatchFolderService not started (disabled or already running)")
+
+        # Start autosave thread if configured
+        if Config.PLAYLIST_AUTOSAVE_FILE:
+            def _resolve_autosave_path(filename: str) -> str:
+                if os.path.isabs(filename):
+                    return filename
+                # Save to same directory as bot.py
+                base_dir = os.path.dirname(os.path.abspath(__file__))
+                # __file__ is in src/, go up one level to project root
+                project_root = os.path.abspath(os.path.join(base_dir, os.pardir, os.pardir))
+                return os.path.join(project_root, filename)
+
+            autosave_path = _resolve_autosave_path(Config.PLAYLIST_AUTOSAVE_FILE)
+            interval = max(10, int(Config.PLAYLIST_AUTOSAVE_INTERVAL))
+
+            def autosave_worker():
+                logger.info(f"Playlist autosave enabled -> file='{autosave_path}', interval={interval}s")
+                while not _autosave_stop.is_set():
+                    try:
+                        if autosave_path.lower().endswith('.xspf'):
+                            xspf = vlc.export_playlist_xspf()
+                            if xspf is not None:
+                                logger.info(f"Saving playlist (XSPF) -> {autosave_path}")
+                                with open(autosave_path, 'w', encoding='utf-8') as f:
+                                    f.write(xspf)
+                                logger.debug(f"Playlist autosaved (XSPF) to {autosave_path}")
+                            else:
+                                logger.debug("Playlist autosave skipped (no playlist available)")
+                        else:
+                            data = vlc.export_playlist()
+                            if data is not None:
+                                logger.info(f"Saving playlist (JSON) -> {autosave_path}")
+                                with open(autosave_path, 'w', encoding='utf-8') as f:
+                                    import json
+                                    json.dump({
+                                        'saved_at': __import__('time').time(),
+                                        'items': data
+                                    }, f, indent=2)
+                                logger.debug(f"Playlist autosaved to {autosave_path} ({len(data)} items)")
+                            else:
+                                logger.debug("Playlist autosave skipped (no playlist available)")
+                    except Exception as e:
+                        logger.error(f"Playlist autosave error: {e}")
+                    finally:
+                        _autosave_stop.wait(interval)
+
+            global _autosave_thread
+            if not _autosave_thread or not _autosave_thread.is_alive():
+                _autosave_stop.clear()
+                _autosave_thread = threading.Thread(target=autosave_worker, name="PlaylistAutosave", daemon=True)
+                _autosave_thread.start()
     except Exception as e:
         logger.error(f"Failed to start WatchFolderService: {e}")
 
@@ -263,6 +355,7 @@ async def controls(ctx):
 `{prefix}queue_next <number>` - Queue a playlist item to play next (shows item title & positions)
 `{prefix}queue_status` - Show current queue with item titles and playlist positions
 `{prefix}clear_queue` - Clear all queue tracking
+`{prefix}remove_queue <N|#N>` - Remove from queue by queue order (N) or playlist number (#N)
         """
         embed.add_field(name="📑 Queue Management", value=queue_commands, inline=False)
 

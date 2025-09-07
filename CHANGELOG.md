@@ -1,3 +1,43 @@
+## 1.5.0
+
+### Added
+- Optional Playlist Autosave: periodically saves the current VLC playlist to a file.
+	- Supports XSPF when `PLAYLIST_AUTOSAVE_FILE` ends with `.xspf` (load directly in VLC).
+	- Falls back to JSON when the filename uses a different extension.
+	- Controlled via `.env`:
+		- `PLAYLIST_AUTOSAVE_FILE` (blank to disable)
+		- `PLAYLIST_AUTOSAVE_INTERVAL` (seconds; min 10)
+
+### Changed
+- Autosave now prints an info log whenever a playlist is saved (file path and format), for easy tracking.
+- Startup announcement can be delayed until the initial watch-folder enqueue is finished when `WATCH_ENQUEUE_ON_START=true`.
+
+### Fixed
+- Watch Folders: improved hot-reload parsing and normalization (comma or semicolon separators, trims quotes, absolute normpaths).
+- Watch Folders: prevent re-enqueueing previously discovered files when the order of `WATCH_FOLDERS` changes by marking files as seen on the first pass even if not enqueued.
+
+### Other
+- Bump version to 1.5.0.
+
+## 1.4.1
+
+### Improved
+- Watch Folder Service performance: replaced per-file sleep-based stability checks with non-blocking, cross-scan tracking. This removes a 2s sleep per file and greatly speeds up large imports.
+- Incremental media size caching: adds sizes of newly enqueued files instead of rescanning the entire library every cycle.
+- New config `WATCH_STABLE_AGE` (seconds) controls how long a file must remain unchanged to be considered stable (default 2s).
+
+### Other
+- Bump version to 1.4.1.
+
+## 1.4.0
+
+### Added
+- Command: `remove_queue` (aliases: `qremove`, `unqueue`) to remove a queued entry either by queue order (e.g., `1`) or by playlist number (e.g., `#10`).
+- Watch-folder announcements now include TMDB metadata when exactly one item is added (if TMDB API key is configured).
+
+### Other
+- Bump version to 1.4.0 for these additions.
+
 ## 1.3.0
 
 ### Added

@@ -182,6 +182,80 @@ class VLCController:
     def get_playlist(self):
         """Get the current VLC playlist"""
         return self._make_request("playlist.xml")
+
+    def export_playlist(self) -> Optional[list]:
+        """Export current playlist to a list of dicts with basic fields.
+
+        Returns a list like:
+            [{ 'id': '123', 'name': 'Title', 'current': True/False }]
+
+        Returns None if playlist cannot be fetched.
+        """
+        try:
+            playlist = self.get_playlist()
+            if not playlist:
+                return None
+            items = []
+            for item in playlist.findall('.//leaf'):
+                items.append({
+                    'id': item.get('id'),
+                    'name': item.get('name', ''),
+                    'current': (item.get('current') is not None)
+                })
+            return items
+        except Exception as e:
+            self.logger.error(f"Failed to export playlist: {e}")
+            return None
+
+    def export_playlist_xspf(self) -> Optional[str]:
+        """Export current playlist in XSPF format (as a UTF-8 XML string).
+
+        VLC can load this .xspf file directly.
+        """
+        try:
+            playlist = self.get_playlist()
+            if not playlist:
+                return None
+
+            ns = "http://xspf.org/ns/0/"
+            ET.register_namespace('', ns)
+            pl_el = ET.Element(ET.QName(ns, 'playlist'), version="1")
+            title_el = ET.SubElement(pl_el, ET.QName(ns, 'title'))
+            title_el.text = "CtrlVee Playlist Export"
+            tl_el = ET.SubElement(pl_el, ET.QName(ns, 'trackList'))
+
+            count = 0
+            for leaf in playlist.findall('.//leaf'):
+                uri = leaf.get('uri')
+                name = leaf.get('name', '')
+
+                # Fallback: if no uri but name looks like an absolute existing path, convert to file URI
+                if not uri and name:
+                    try:
+                        import pathlib
+                        p = pathlib.Path(name)
+                        if p.is_absolute() and p.exists():
+                            uri = p.resolve().as_uri()
+                    except Exception:
+                        pass
+
+                if not uri:
+                    # Skip items without a resolvable URI
+                    continue
+
+                tr_el = ET.SubElement(tl_el, ET.QName(ns, 'track'))
+                loc_el = ET.SubElement(tr_el, ET.QName(ns, 'location'))
+                loc_el.text = uri
+                if name:
+                    t_el = ET.SubElement(tr_el, ET.QName(ns, 'title'))
+                    t_el.text = name
+                count += 1
+
+            # Always return a valid XSPF document, even if empty
+            return ET.tostring(pl_el, encoding='utf-8', xml_declaration=True).decode('utf-8')
+        except Exception as e:
+            self.logger.error(f"Failed to export playlist as XSPF: {e}")
+            return None
             
     def play(self):
         """Start or resume playback"""
@@ -557,6 +631,47 @@ class VLCController:
         self._shuffle_restore_queue.clear()  # Also clear shuffle restore queue
         self._save_queue_backup()
         self.logger.info("Cleared all queue tracking state including shuffle restore queue")
+
+    def remove_from_queue_by_order(self, queue_order: int):
+        """Remove a queued item by its queue order number.
+
+        Returns dict with success and optional details.
+        """
+        try:
+            target_id = None
+            for item_id, info in self._queued_items.items():
+                if info.get('queue_order') == int(queue_order):
+                    target_id = item_id
+                    break
+            if not target_id:
+                return {"success": False, "error": f"Queue order {queue_order} not found"}
+            name = self._queued_items[target_id].get('item_name', 'Unknown')
+            self._remove_from_queue(target_id)
+            return {"success": True, "removed_item_id": target_id, "item_name": name}
+        except Exception as e:
+            self.logger.error(f"remove_from_queue_by_order error: {e}")
+            return {"success": False, "error": str(e)}
+
+    def remove_from_queue_by_playlist_number(self, number: int):
+        """Remove a queued item by its playlist number (1-based)."""
+        try:
+            playlist_map, _ = self._parse_playlist_info()
+            # Find item_id with matching position
+            target_id = None
+            for item_id, info in playlist_map.items():
+                if info.get('position') == int(number):
+                    target_id = item_id
+                    break
+            if not target_id:
+                return {"success": False, "error": f"Playlist number {number} not found"}
+            if target_id not in self._queued_items:
+                return {"success": False, "error": f"Playlist #{number} is not queued"}
+            name = self._queued_items[target_id].get('item_name', playlist_map[target_id]['name'])
+            self._remove_from_queue(target_id)
+            return {"success": True, "removed_item_id": target_id, "item_name": name}
+        except Exception as e:
+            self.logger.error(f"remove_from_queue_by_playlist_number error: {e}")
+            return {"success": False, "error": str(e)}
     
     def enqueue_item(self, item_id):
         """Add an item to the end of the playlist"""

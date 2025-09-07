@@ -35,6 +35,9 @@ class Config:
     
     # Queue Settings
     QUEUE_BACKUP_FILE: str = os.getenv('QUEUE_BACKUP_FILE', 'queue_backup.json')
+    # Optional: periodically save current VLC playlist to a file (relative to bot dir if not absolute)
+    PLAYLIST_AUTOSAVE_FILE: str = os.getenv('PLAYLIST_AUTOSAVE_FILE', '').strip()
+    PLAYLIST_AUTOSAVE_INTERVAL: int = int(os.getenv('PLAYLIST_AUTOSAVE_INTERVAL', '300'))
     
     # Playlist Settings
     ITEMS_PER_PAGE: int = int(os.getenv('ITEMS_PER_PAGE', '20'))
@@ -44,6 +47,8 @@ class Config:
     WATCH_FOLDERS = [p.strip() for p in os.getenv('WATCH_FOLDERS', '').split(',') if p.strip()]
     # Polling interval in seconds for watch service
     WATCH_SCAN_INTERVAL: int = int(os.getenv('WATCH_SCAN_INTERVAL', '10'))
+    # Minimum age (seconds) a file must remain unchanged before it is considered stable
+    WATCH_STABLE_AGE: float = float(os.getenv('WATCH_STABLE_AGE', '2'))
     # Whether to enqueue discovered files on the initial scan (default: true)
     WATCH_ENQUEUE_ON_START: bool = os.getenv('WATCH_ENQUEUE_ON_START', 'true').strip().lower() in {'1','true','yes','y'}
     # Always load announce channel IDs from the environment at runtime
@@ -83,6 +88,13 @@ class Config:
                 errors.append("ITEMS_PER_PAGE must be greater than 0")
         except ValueError:
             errors.append("ITEMS_PER_PAGE must be a valid integer")
+        # Validate autosave interval if feature enabled
+        if cls.PLAYLIST_AUTOSAVE_FILE:
+            try:
+                if cls.PLAYLIST_AUTOSAVE_INTERVAL < 10:
+                    errors.append("PLAYLIST_AUTOSAVE_INTERVAL should be at least 10 seconds if autosave is enabled")
+            except ValueError:
+                errors.append("PLAYLIST_AUTOSAVE_INTERVAL must be a valid integer (seconds)")
 
         # Validate watch folders if provided
         for folder in cls.WATCH_FOLDERS:
@@ -95,6 +107,11 @@ class Config:
                 errors.append("WATCH_SCAN_INTERVAL must be greater than 0")
         except ValueError:
             errors.append("WATCH_SCAN_INTERVAL must be a valid integer")
+        try:
+            if cls.WATCH_STABLE_AGE < 0:
+                errors.append("WATCH_STABLE_AGE must be 0 or greater")
+        except ValueError:
+            errors.append("WATCH_STABLE_AGE must be a valid number (seconds)")
             
         return errors
     
@@ -114,9 +131,14 @@ class Config:
             f"Items Per Page: {cls.ITEMS_PER_PAGE}",
             f"Watch Folders: {', '.join(cls.WATCH_FOLDERS) if cls.WATCH_FOLDERS else 'Disabled'}",
             f"Watch Scan Interval: {cls.WATCH_SCAN_INTERVAL}s",
+            f"Watch Stable Age: {cls.WATCH_STABLE_AGE}s",
             f"Watch Enqueue On Start: {cls.WATCH_ENQUEUE_ON_START}",
             f"Watch Announce Channels: {announce_ids if announce_ids else 'Disabled'}",
             f"Watch Announce Max Items: {cls.WATCH_ANNOUNCE_MAX_ITEMS}",
+            (
+                f"Playlist Autosave: file='{cls.PLAYLIST_AUTOSAVE_FILE}', interval={cls.PLAYLIST_AUTOSAVE_INTERVAL}s"
+                if cls.PLAYLIST_AUTOSAVE_FILE else "Playlist Autosave: Disabled"
+            ),
             f"TMDB API Key: {'Configured' if cls.TMDB_API_KEY else 'Not Configured'}",
             f"Discord Token: {'Configured' if cls.DISCORD_TOKEN else 'Not Configured'}",
             "-" * 50
