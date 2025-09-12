@@ -196,6 +196,13 @@ python --version
    - `PLAYLIST_AUTOSAVE_FILE`: Path (absolute or relative to project root) to save the current playlist. If it ends with `.xspf`, an XSPF playlist is written; otherwise JSON. Leave blank to disable.
    - `PLAYLIST_AUTOSAVE_INTERVAL`: Interval in seconds between autosaves (min 10; default 300)
 
+      - `KOFI_URL`: (optional) A full https:// URL to your Ko‑fi or support page. When set, certain embeds (status and notification embeds) will display a "Support CtrlVee" field with a clickable link. Leave blank to disable.
+
+         Example:
+         ```bash
+         KOFI_URL=https://ko-fi.com/yourpage
+         ```
+
 ## Usage
 
 1. Start the bot:

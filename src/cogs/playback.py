@@ -134,6 +134,25 @@ class PlaybackCommands(commands.Cog):
                 inline=False
             )
         
+        # Add a visible, clickable Ko-fi support field to the embed
+        try:
+            if Config.KOFI_URL:
+                try:
+                    embed.add_field(name="Support CtrlVee", value=f"☕ {f'<{Config.KOFI_URL}>'}", inline=False)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # If embed has no thumbnail, attempt to set bot avatar as thumbnail to increase visibility
+        try:
+            if not embed.thumbnail or not getattr(embed.thumbnail, 'url', None):
+                bot_user = getattr(self.bot, 'user', None)
+                if bot_user and getattr(bot_user, 'display_avatar', None):
+                    embed.set_thumbnail(url=bot_user.display_avatar.url)
+        except Exception:
+            pass
+
         await ctx.send(embed=embed)
         
     async def _monitor_vlc_state(self):
@@ -420,7 +439,12 @@ class PlaybackCommands(commands.Cog):
                 guild_id = str(ctx.guild.id) if ctx.guild else 'dm'
                 self.last_state_change[guild_id] = asyncio.get_event_loop().time()
                 logger.info("Playback started/resumed")
-                await ctx.send('Playback started/resumed')
+                embed = discord.Embed(
+                    title="▶️ Playback started",
+                    description="Playback started/resumed",
+                    color=discord.Color.green()
+                )
+                await ctx.send(embed=embed)
 
     @commands.command(name='pause')
     @commands.has_any_role(*Config.ALLOWED_ROLES)
@@ -453,10 +477,20 @@ class PlaybackCommands(commands.Cog):
         """Stop playback"""
         if self.vlc.stop():
             logger.info("Playback stopped")
-            await ctx.send('Playback stopped')
+            embed = discord.Embed(
+                title="⏹️ Playback stopped",
+                description="Playback has been stopped",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
         else:
             logger.error("Failed to stop playback")
-            await ctx.send('Error: Could not stop playback')
+            embed = discord.Embed(
+                title="⏹️ Playback stop failed",
+                description="Error: Could not stop playback",
+                color=discord.Color.dark_red()
+            )
+            await ctx.send(embed=embed)
 
     @commands.command(name='restart')
     @commands.has_any_role(*Config.ALLOWED_ROLES)
@@ -474,26 +508,56 @@ class PlaybackCommands(commands.Cog):
     async def rewind(self, ctx, seconds: int = 10):
         """Rewind playback by specified number of seconds"""
         if seconds <= 0:
-            await ctx.send('Please specify a positive number of seconds')
+            embed = discord.Embed(
+                title="⏪ Rewind failed",
+                description="Please specify a positive number of seconds",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
             return
 
         if self.vlc.seek(f"-{seconds}"):
-            await ctx.send(f'Rewound {seconds} seconds')
+            embed = discord.Embed(
+                title="⏪ Rewound",
+                description=f"Rewound {seconds} seconds",
+                color=discord.Color.green()
+            )
+            await ctx.send(embed=embed)
         else:
-            await ctx.send('Error: Could not rewind')
+            embed = discord.Embed(
+                title="⏪ Rewind failed",
+                description="Error: Could not rewind",
+                color=discord.Color.dark_red()
+            )
+            await ctx.send(embed=embed)
  
     @commands.command(name='forward', aliases=['ff'])
     @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def forward(self, ctx, seconds: int = 10):
         """Fast forward playback by specified number of seconds"""
         if seconds <= 0:
-            await ctx.send('Please specify a positive number of seconds')
+            embed = discord.Embed(
+                title="⏩ Fast-forward failed",
+                description="Please specify a positive number of seconds",
+                color=discord.Color.red()
+            )
+            await ctx.send(embed=embed)
             return
 
         if self.vlc.seek(f"+{seconds}"):
-            await ctx.send(f'Fast forwarded {seconds} seconds')
+            embed = discord.Embed(
+                title="⏩ Fast-forwarded",
+                description=f"Fast forwarded {seconds} seconds",
+                color=discord.Color.green()
+            )
+            await ctx.send(embed=embed)
         else:
-            await ctx.send('Error: Could not fast forward')
+            embed = discord.Embed(
+                title="⏩ Fast-forward failed",
+                description="Error: Could not fast forward",
+                color=discord.Color.dark_red()
+            )
+            await ctx.send(embed=embed)
     
     @commands.command(name='play_num')
     @commands.has_any_role(*Config.ALLOWED_ROLES)
@@ -833,6 +897,25 @@ class PlaybackCommands(commands.Cog):
                 # Add position note as a field with bold formatting after progress
                 if current_position is not None:
                     embed.add_field(name="Quick Replay", value=f"💡 Use **!play_num {current_position}** to play this item again", inline=False)
+                
+                # Ensure Support field (Ko-fi) is present and a thumbnail is set for visibility
+                try:
+                    if Config.KOFI_URL:
+                        try:
+                            embed.add_field(name="Support CtrlVee", value=f"☕ {f'<{Config.KOFI_URL}>'}", inline=False)
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+
+                # If embed has no thumbnail, attempt to set bot avatar as thumbnail to increase visibility
+                try:
+                    if not embed.thumbnail or not getattr(embed.thumbnail, 'url', None):
+                        bot_user = getattr(self.bot, 'user', None)
+                        if bot_user and getattr(bot_user, 'display_avatar', None):
+                            embed.set_thumbnail(url=bot_user.display_avatar.url)
+                except Exception:
+                    pass
             else:
                 # Playing but no name found
                 embed.add_field(name="Now Playing", value="Unknown item", inline=False)

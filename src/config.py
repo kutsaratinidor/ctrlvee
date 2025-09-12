@@ -42,6 +42,9 @@ class Config:
     # Playlist Settings
     ITEMS_PER_PAGE: int = int(os.getenv('ITEMS_PER_PAGE', '20'))
 
+    # Optional Ko-fi / support URL to show in embeds
+    KOFI_URL: str = os.getenv('KOFI_URL', '').strip()
+
     # Watch Folders
     # Comma-separated absolute paths. If empty, watch service is disabled.
     WATCH_FOLDERS = [p.strip() for p in os.getenv('WATCH_FOLDERS', '').split(',') if p.strip()]
@@ -141,6 +144,7 @@ class Config:
             ),
             f"TMDB API Key: {'Configured' if cls.TMDB_API_KEY else 'Not Configured'}",
             f"Discord Token: {'Configured' if cls.DISCORD_TOKEN else 'Not Configured'}",
+            f"Ko-fi URL: {cls.KOFI_URL if cls.KOFI_URL else 'Not Configured'}",
             "-" * 50
         ]
         # Log each line separately for better formatting

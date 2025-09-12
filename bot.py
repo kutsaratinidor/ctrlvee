@@ -77,6 +77,34 @@ async def on_ready():
             color=discord.Color.green()
         )
         embed.set_footer(text="Thank you for using CtrlVee!")
+        # If a Ko-fi URL is configured, make it clearly visible and clickable
+        try:
+            if Config.KOFI_URL:
+                # Set the embed URL so the title becomes clickable
+                try:
+                    embed.url = Config.KOFI_URL
+                except Exception:
+                    pass
+
+                # Add a visible field with the clickable link (angle brackets ensure a clean URL)
+                try:
+                    embed.add_field(name="Support CtrlVee", value=f"☕ {f'<{Config.KOFI_URL}>'}", inline=False)
+                except Exception:
+                    pass
+
+
+        except Exception:
+            # Non-fatal: don't block startup announcement on footer issues
+            pass
+        # Prepare local avatar attachment if available
+        avatar_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'screenshots', 'avatar.png')
+        has_avatar_file = os.path.exists(avatar_path)
+        if has_avatar_file:
+            try:
+                embed.set_thumbnail(url='attachment://avatar.png')
+            except Exception:
+                pass
+
         for cid in announce_ids:
             channel = bot.get_channel(cid)
             if not channel:
@@ -86,7 +114,11 @@ async def on_ready():
                     logger.warning(f"Could not resolve announce channel {cid}: {e}")
                     continue
             try:
-                await channel.send(embed=embed)
+                if has_avatar_file:
+                    # Send the avatar image as an attachment so embed thumbnail displays
+                    await channel.send(embed=embed, file=discord.File(avatar_path, filename='avatar.png'))
+                else:
+                    await channel.send(embed=embed)
                 logger.info(f"Sent startup message to channel {cid}")
             except Exception as e:
                 logger.warning(f"Failed to send startup message to channel {cid}: {e}")
@@ -370,9 +402,40 @@ async def controls(ctx):
 
         # Add footer note about permissions
         roles_str = ", ".join(f"'{role}'" for role in Config.ALLOWED_ROLES)
-        embed.set_footer(text=f"⚠️ Most commands require one of these roles: {roles_str}")
+        footer_text = f"⚠️ Most commands require one of these roles: {roles_str}"
+        embed.set_footer(text=footer_text)
 
-        await ctx.send(embed=embed)
+        # Make embed more visible: try to use local avatar image as attachment thumbnail; fall back to bot avatar
+        sent_file = None
+        avatar_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'screenshots', 'avatar.png')
+        try:
+            if os.path.exists(avatar_path):
+                sent_file = discord.File(avatar_path, filename='avatar.png')
+                embed.set_thumbnail(url='attachment://avatar.png')
+            else:
+                # Fallback to bot avatar if available
+                if ctx.bot.user and getattr(ctx.bot.user, 'display_avatar', None):
+                    embed.set_thumbnail(url=ctx.bot.user.display_avatar.url)
+        except Exception:
+            try:
+                if ctx.bot.user and getattr(ctx.bot.user, 'display_avatar', None):
+                    embed.set_thumbnail(url=ctx.bot.user.display_avatar.url)
+            except Exception:
+                pass
+
+        # Add a clickable Ko-fi link as a field (angle brackets make it clickable in Discord)
+        if Config.KOFI_URL:
+            try:
+                embed.add_field(name="Support CtrlVee", value=f"☕ {f'<{Config.KOFI_URL}>'}", inline=False)
+            except Exception:
+                # Non-fatal if link rendering fails
+                pass
+
+        # Send with attachment if available
+        if sent_file:
+            await ctx.send(embed=embed, file=sent_file)
+        else:
+            await ctx.send(embed=embed)
     except discord.Forbidden:
         await ctx.send("❌ I need the 'Embed Links' permission to show the help message.")
     except Exception as e:

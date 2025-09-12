@@ -1,3 +1,11 @@
+## 1.5.1
+
+### Changed
+- UI: Convert playback control responses to Discord embeds for consistency (play/stop/rewind/forward). Embeds include icons and color cues.
+
+### Other
+- Bump version to 1.5.1.
+
 ## 1.5.0
 
 ### Added
