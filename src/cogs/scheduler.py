@@ -202,7 +202,11 @@ class Scheduler(commands.Cog):
                     self.vlc.play_item(item_id)
                     channel = self.bot.get_channel(s["channel"])
                     if channel:
-                        msg = f"🎬 Scheduled movie #{s['number']} ({s.get('title', 'Unknown')}) is now playing!"
+                        # Include configured announce role mention (if any)
+                        role_id = getattr(Config, 'WATCH_ANNOUNCE_ROLE_ID', 0)
+                        mention = f'<@&{role_id}>' if role_id else ''
+                        # Use .strip() so there is no leading space when mention is empty
+                        msg = f"{mention} 🎬 Scheduled movie #{s['number']} ({s.get('title', 'Unknown')}) is now playing!".strip()
                         await channel.send(msg)
                         # Try to fetch and send TMDB metadata embed
                         title = s.get('title', None)

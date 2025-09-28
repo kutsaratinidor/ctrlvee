@@ -1,3 +1,11 @@
+## 1.5.2
+
+### Changed
+- Scheduler: Now-playing announcements for scheduled movies include the configured announce role mention (if `WATCH_ANNOUNCE_ROLE_ID` is set).
+
+### Other
+- Bump version to 1.5.2.
+
 ## 1.5.1
 
 ### Changed
