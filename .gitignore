@@ -32,7 +32,7 @@ venv/
 
 # VLC queue backup
 queue_backup.json
-
+ctrlvee_playlist.xspf
 # VLC schedule backup
 schedule_backup.json
 

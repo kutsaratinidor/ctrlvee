@@ -263,7 +263,24 @@ class WatchFolderService:
         # Notify if any were added
         if enqueued and self._notifier:
             try:
-                self._notifier(enqueued)
+                # During the initial pass (bot startup) we keep the grouped behaviour
+                # to avoid flooding with thousands of messages. For subsequent scans
+                # we notify one-by-one so callers can present per-file metadata.
+                if is_first_pass:
+                    self._notifier(enqueued)
+                else:
+                    throttle_ms = max(0, int(getattr(Config, 'WATCH_ANNOUNCE_THROTTLE_MS', 500)))
+                    throttle_s = throttle_ms / 1000.0
+                    for p in enqueued:
+                        try:
+                            self._notifier([p])
+                        except Exception as e:
+                            self.logger.error(f"Notifier error for {p}: {e}")
+                        # Sleep between per-file notifications to avoid hammering TMDB/Discord
+                        try:
+                            time.sleep(throttle_s)
+                        except Exception:
+                            pass
             except Exception as e:
                 self.logger.error(f"Notifier error: {e}")
 

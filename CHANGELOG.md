@@ -1,3 +1,13 @@
+## 1.5.3
+
+### Changed
+- Watch Folders: per-file announcements after the initial scan (instead of grouping) so the bot can fetch and present TMDB metadata per file.
+- Watch Folders: added a configurable throttle `WATCH_ANNOUNCE_THROTTLE_MS` (default 500ms) to avoid hammering TMDB/Discord during bursts.
+- Playlist Autosave: skip saving when VLC is unreachable or when the playlist has no entries to avoid overwriting the saved playlist with an empty file.
+
+### Other
+- Bump version to 1.5.3.
+
 ## 1.5.2
 
 ### Changed

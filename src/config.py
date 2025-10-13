@@ -61,6 +61,8 @@ class Config:
         return [int(cid.strip()) for cid in val.split(',') if cid.strip() and cid.strip() != '0']
     # Max items to list per announcement message
     WATCH_ANNOUNCE_MAX_ITEMS: int = int(os.getenv('WATCH_ANNOUNCE_MAX_ITEMS', '10'))
+    # Throttle in milliseconds between per-file announcements (when not initial scan)
+    WATCH_ANNOUNCE_THROTTLE_MS: int = int(os.getenv('WATCH_ANNOUNCE_THROTTLE_MS', '500'))
     
     @classmethod
     def validate(cls) -> List[str]:

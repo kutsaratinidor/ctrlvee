@@ -276,28 +276,52 @@ async def on_ready():
                 logger.info(f"Playlist autosave enabled -> file='{autosave_path}', interval={interval}s")
                 while not _autosave_stop.is_set():
                     try:
-                        if autosave_path.lower().endswith('.xspf'):
-                            xspf = vlc.export_playlist_xspf()
-                            if xspf is not None:
-                                logger.info(f"Saving playlist (XSPF) -> {autosave_path}")
-                                with open(autosave_path, 'w', encoding='utf-8') as f:
-                                    f.write(xspf)
-                                logger.debug(f"Playlist autosaved (XSPF) to {autosave_path}")
-                            else:
-                                logger.debug("Playlist autosave skipped (no playlist available)")
+                        # Verify VLC is reachable and playlist has entries before saving
+                        status = vlc.get_status()
+                        if status is None:
+                            logger.debug("Playlist autosave skipped: VLC HTTP interface not reachable")
                         else:
-                            data = vlc.export_playlist()
-                            if data is not None:
-                                logger.info(f"Saving playlist (JSON) -> {autosave_path}")
-                                with open(autosave_path, 'w', encoding='utf-8') as f:
-                                    import json
-                                    json.dump({
-                                        'saved_at': __import__('time').time(),
-                                        'items': data
-                                    }, f, indent=2)
-                                logger.debug(f"Playlist autosaved to {autosave_path} ({len(data)} items)")
+                            # Check playlist entries
+                            playlist_xml = vlc.get_playlist()
+                            has_entries = False
+                            try:
+                                if playlist_xml is not None:
+                                    leaves = playlist_xml.findall('.//leaf')
+                                    if leaves and len(leaves) > 0:
+                                        has_entries = True
+                            except Exception:
+                                # If parsing playlist fails, be conservative and skip saving
+                                has_entries = False
+
+                            if not has_entries:
+                                logger.debug("Playlist autosave skipped: playlist is empty or has no entries")
                             else:
-                                logger.debug("Playlist autosave skipped (no playlist available)")
+                                if autosave_path.lower().endswith('.xspf'):
+                                    xspf = vlc.export_playlist_xspf()
+                                    if xspf:
+                                        logger.info(f"Saving playlist (XSPF) -> {autosave_path}")
+                                        with open(autosave_path, 'w', encoding='utf-8') as f:
+                                            f.write(xspf)
+                                        logger.debug(f"Playlist autosaved (XSPF) to {autosave_path}")
+                                    else:
+                                        logger.debug("Playlist autosave skipped (no XSPF data returned)")
+                                else:
+                                    data = vlc.export_playlist()
+                                    if data:
+                                        logger.info(f"Saving playlist (JSON) -> {autosave_path}")
+                                        with open(autosave_path, 'w', encoding='utf-8') as f:
+                                            import json
+                                            json.dump({
+                                                'saved_at': __import__('time').time(),
+                                                'items': data
+                                            }, f, indent=2)
+                                        try:
+                                            item_count = len(data) if hasattr(data, '__len__') else 'unknown'
+                                        except Exception:
+                                            item_count = 'unknown'
+                                        logger.debug(f"Playlist autosaved to {autosave_path} ({item_count} items)")
+                                    else:
+                                        logger.debug("Playlist autosave skipped (no playlist data returned)")
                     except Exception as e:
                         logger.error(f"Playlist autosave error: {e}")
                     finally:
@@ -334,11 +358,8 @@ async def on_message(message):
 async def on_command_error(ctx, error):
     if isinstance(error, commands.MissingAnyRole):
         allowed_roles = ", ".join(f"'{role}'" for role in Config.ALLOWED_ROLES)
-        user_roles = ", ".join(f"'{role.name}'" for role in ctx.author.roles if role.name != "@everyone")
-        logger.warning("Role check failed:")
-        logger.warning(f"- User has roles: {user_roles}")
-        logger.warning(f"- Required roles (any of): {allowed_roles}")
-        await ctx.send(f"You need one of these roles to use this command: {allowed_roles}\nYou have these roles: {user_roles}")
+        logger.warning(f"Role check failed: required roles (any of): {allowed_roles}")
+        await ctx.send(f"You need one of these roles to use this command: {allowed_roles}")
     elif isinstance(error, commands.CommandNotFound):
         await ctx.send(f"Command not found. Use `{Config.DISCORD_COMMAND_PREFIX}controls` to see available commands.")
     else:
