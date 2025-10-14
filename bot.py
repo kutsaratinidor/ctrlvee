@@ -275,7 +275,6 @@ async def on_ready():
                         try:
                             if season_num is not None and tmdb_service:
                                 # Try to derive a series title from the first path's folder or filename
-                                import os
                                 # Prefer parent folder name (likely the series title)
                                 series_name = None
                                 try:

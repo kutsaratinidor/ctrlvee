@@ -1,3 +1,11 @@
+## 1.5.5 - 2025-10-14
+
+### Fixed
+- Watch-folder notifier: avoid local 'os' shadowing which could raise UnboundLocalError in some environments when formatting announcement lines. This improves robustness when announcing files from deeply nested folders.
+
+### Other
+- Bump version to 1.5.5.
+
 ## 1.5.4 - 2025-10-14
 
 ### Added
