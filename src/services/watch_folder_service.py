@@ -269,14 +269,57 @@ class WatchFolderService:
                 if is_first_pass:
                     self._notifier(enqueued)
                 else:
+                    # Group enqueued files by season tokens so a batch (season) does
+                    # not spam one announcement per episode. We still allow single
+                    # episode notifications to be sent individually.
                     throttle_ms = max(0, int(getattr(Config, 'WATCH_ANNOUNCE_THROTTLE_MS', 500)))
                     throttle_s = throttle_ms / 1000.0
+
+                    def _extract_season_key(path: str) -> str:
+                        """Return a grouping key for season batches.
+
+                        We prefer patterns like S01E02, 1x02, "Season 1 Episode 02".
+                        The key includes the containing directory plus the season number
+                        so files from different folders but same season number are not
+                        grouped together.
+                        """
+                        fname = os.path.basename(path)
+                        parent = os.path.dirname(path)
+                        # Common patterns: S01E02 or s01e02
+                        m = re.search(r'[sS]?(\d{1,2})[xXeE](\d{2})', fname)
+                        if m:
+                            season = int(m.group(1))
+                            return f"{parent}::season:{season}"
+                        # Pattern like 'Season 1' or 'Season01' or 'Season_01'
+                        m2 = re.search(r'[sS]eason[\s_\-]?(\d{1,2})', fname)
+                        if m2:
+                            season = int(m2.group(1))
+                            return f"{parent}::season:{season}"
+                        # Pattern like '1x02'
+                        m3 = re.search(r'(?<!\d)(\d{1,2})[xX](\d{2})(?!\d)', fname)
+                        if m3:
+                            season = int(m3.group(1))
+                            return f"{parent}::season:{season}"
+                        # Fallback: group by parent folder only (one-off files will remain singletons)
+                        return f"{parent}::season:0"
+
+                    # Build groups
+                    groups = {}
                     for p in enqueued:
+                        key = _extract_season_key(p)
+                        groups.setdefault(key, []).append(p)
+
+                    # Notify per group: single-file groups are notified as singletons
+                    for key, paths in groups.items():
                         try:
-                            self._notifier([p])
+                            if len(paths) == 1:
+                                self._notifier(paths)
+                            else:
+                                # For multi-episode season batches, notify once with the whole list
+                                self._notifier(paths)
                         except Exception as e:
-                            self.logger.error(f"Notifier error for {p}: {e}")
-                        # Sleep between per-file notifications to avoid hammering TMDB/Discord
+                            self.logger.error(f"Notifier error for group {key}: {e}")
+                        # Sleep between group notifications to avoid hammering TMDB/Discord
                         try:
                             time.sleep(throttle_s)
                         except Exception:

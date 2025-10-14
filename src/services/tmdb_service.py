@@ -94,3 +94,91 @@ class TMDBService:
         except Exception as e:
             self.logger.error(f"Error getting movie metadata: {e}")
             return None
+
+    def get_tv_metadata(self, title: str, season: int | None = None):
+        """Get TV show or season metadata from TMDB.
+
+        Args:
+            title: Clean TV show title
+            season: Optional season number to fetch season-specific info
+        Returns:
+            discord.Embed or None
+        """
+        if not self.api_key:
+            self.logger.warning("No TMDB API key found")
+            return None
+
+        try:
+            self.logger.debug(f"Searching TMDB for TV title: {title}" + (f" (season {season})" if season else ""))
+            search = tmdb.Search()
+            response = search.tv(query=title)
+            if not response['results']:
+                self.logger.debug(f"No TV results found for: {title}")
+                return None
+
+            def norm(s: str) -> str:
+                return ''.join(ch for ch in s.lower() if ch.isalnum())
+
+            target = norm(title)
+            best = None
+            for item in response['results']:
+                item_name = item.get('name') or item.get('original_name') or ''
+                n = norm(item_name)
+                # TV has 'first_air_date' which may include year
+                item_year = None
+                fd = item.get('first_air_date')
+                if fd and len(fd) >= 4 and fd[:4].isdigit():
+                    item_year = int(fd[:4])
+
+                rank = (
+                    2 if (n == target) else
+                    1 if (target in n or n in target) else
+                    0
+                )
+                if best is None or rank > best[0]:
+                    best = (rank, item)
+
+            tv = best[1] if best else response['results'][0]
+            self.logger.debug(f"Selected TV match: {tv.get('name')} ({(tv.get('first_air_date') or '')[:4]})")
+
+            tv_info = tmdb.TV(tv['id']).info()
+
+            # Build embed
+            embed = discord.Embed(
+                title=tv_info.get('name') or tv_info.get('original_name'),
+                description=tv_info.get('overview') or '',
+                color=discord.Color.blue(),
+                url=f"https://www.themoviedb.org/tv/{tv_info['id']}"
+            )
+
+            if tv_info.get('first_air_date'):
+                embed.add_field(name="First Air Date", value=tv_info.get('first_air_date'), inline=True)
+            if tv_info.get('vote_average'):
+                embed.add_field(name="Rating", value=f"⭐ {tv_info.get('vote_average'):.1f}/10", inline=True)
+
+            # Season-specific info
+            if season is not None:
+                try:
+                    season_obj = tmdb.TV_Seasons(tv['id'], season).info()
+                    # Add episode count and season poster if available
+                    eps = season_obj.get('episode_count') or season_obj.get('episodes') and len(season_obj.get('episodes'))
+                    if eps:
+                        embed.add_field(name=f"Season {season} Episodes", value=str(eps), inline=True)
+                    if season_obj.get('poster_path'):
+                        embed.set_thumbnail(url=f"https://image.tmdb.org/t/p/w500{season_obj.get('poster_path')}")
+                    else:
+                        # Fallback to show poster
+                        if tv_info.get('poster_path'):
+                            embed.set_thumbnail(url=f"https://image.tmdb.org/t/p/w500{tv_info.get('poster_path')}")
+                except Exception as e:
+                    self.logger.debug(f"Failed to fetch season info for {tv_info.get('name')} season {season}: {e}")
+                    if tv_info.get('poster_path'):
+                        embed.set_thumbnail(url=f"https://image.tmdb.org/t/p/w500{tv_info.get('poster_path')}")
+            else:
+                if tv_info.get('poster_path'):
+                    embed.set_thumbnail(url=f"https://image.tmdb.org/t/p/w500{tv_info.get('poster_path')}")
+
+            return embed
+        except Exception as e:
+            self.logger.error(f"Error getting TV metadata: {e}")
+            return None

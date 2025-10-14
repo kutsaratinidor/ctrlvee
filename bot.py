@@ -3,6 +3,7 @@ import os
 import asyncio
 import logging
 import threading
+import re
 from src.config import Config
 from discord.ext import commands
 import discord
@@ -203,40 +204,124 @@ async def on_ready():
                         logger.warning("No announce channels resolved. Announcement skipped.")
                         return
                     max_items = max(1, Config.WATCH_ANNOUNCE_MAX_ITEMS)
+                    # Helper: detect a season number from filenames or parent folder
+                    def _detect_season(paths_list):
+                        season = None
+                        parent = None
+                        for p in paths_list:
+                            try:
+                                bn = os.path.basename(p)
+                                par = os.path.dirname(p)
+                                # Look for S01E02 or s01e02
+                                m = re.search(r'[sS]?(\d{1,2})[xXeE](\d{1,2})', bn)
+                                if m:
+                                    season = int(m.group(1))
+                                    parent = par
+                                    break
+                                # 1x02 pattern
+                                m2 = re.search(r'(?<!\d)(\d{1,2})[xX](\d{1,2})(?!\d)', bn)
+                                if m2:
+                                    season = int(m2.group(1))
+                                    parent = par
+                                    break
+                                # Parent folder named 'Season 1' or similar
+                                m3 = re.search(r'[sS]eason[\s_\-]?(\d{1,2})', par)
+                                if m3:
+                                    season = int(m3.group(1))
+                                    parent = par
+                                    break
+                            except Exception:
+                                continue
+                        return season, parent
+
                     shown = paths[:max_items]
                     remaining = len(paths) - len(shown)
-                    title = f"📥 {len(paths)} new file(s) added to VLC playlist"
-                    desc_lines = []
-                    for p in shown:
-                        try:
-                            import os
-                            name = os.path.basename(p)
-                            pretty = MediaUtils.clean_filename_for_display(name)
-                            icon = MediaUtils.get_media_icon(name)
-                            desc_lines.append(f"• {icon} {pretty}")
-                        except Exception as e:
-                            logger.error(f"Error formatting announcement line for {p}: {e}")
-                            try:
-                                import os
-                                desc_lines.append(f"• {os.path.basename(p)}")
-                            except Exception:
-                                desc_lines.append("• <new media>")
-                    if remaining > 0:
-                        desc_lines.append(f"… and {remaining} more")
-                    embed = discord.Embed(title=title, description="\n".join(desc_lines), color=discord.Color.green())
 
-                    # If exactly one item was added, try to fetch TMDB metadata and send an additional embed
                     tmdb_embed = None
-                    try:
-                        if len(paths) == 1 and tmdb_service:
-                            import os
-                            fname = os.path.basename(paths[0])
-                            clean_title, year = MediaUtils.parse_movie_filename(fname)
-                            if clean_title:
-                                logger.info(f"Fetching TMDB metadata for single added item: '{clean_title}' year={year}")
-                                tmdb_embed = tmdb_service.get_movie_metadata(clean_title, year)
-                    except Exception as e:
-                        logger.error(f"Failed to prepare TMDB embed for single-item announcement: {e}")
+                    # Multi-episode batch: try to create a compact season summary
+                    if len(paths) > 1:
+                        season_num, season_parent = _detect_season(paths)
+                        if season_num is not None:
+                            title = f"📥 Added Season {season_num} — {len(paths)} episode(s)"
+                        else:
+                            title = f"📥 {len(paths)} new file(s) added to VLC playlist"
+
+                        desc_lines = []
+                        for p in shown:
+                            try:
+                                name = os.path.basename(p)
+                                pretty = MediaUtils.clean_filename_for_display(name)
+                                icon = MediaUtils.get_media_icon(name)
+                                desc_lines.append(f"• {icon} {pretty}")
+                            except Exception as e:
+                                logger.error(f"Error formatting announcement line for {p}: {e}")
+                                try:
+                                    desc_lines.append(f"• {os.path.basename(p)}")
+                                except Exception:
+                                    desc_lines.append("• <new media>")
+
+                        if remaining > 0:
+                            desc_lines.append(f"… and {remaining} more")
+
+                        embed = discord.Embed(title=title, description="\n".join(desc_lines), color=discord.Color.green())
+                        # Add Support/Kofi field when configured
+                        try:
+                            if Config.KOFI_URL:
+                                embed.add_field(name="Support CtrlVee", value=f"☕ {f'<{Config.KOFI_URL}>'}", inline=False)
+                        except Exception:
+                            pass
+                        # If we detected a season number and TMDB is available, fetch TV/season embed
+                        tv_embed = None
+                        try:
+                            if season_num is not None and tmdb_service:
+                                # Try to derive a series title from the first path's folder or filename
+                                import os
+                                # Prefer parent folder name (likely the series title)
+                                series_name = None
+                                try:
+                                    series_name = os.path.basename(season_parent) if season_parent else None
+                                except Exception:
+                                    series_name = None
+                                # Fallback to cleaning filename
+                                if not series_name and paths:
+                                    try:
+                                        series_name = MediaUtils.clean_movie_title(os.path.basename(paths[0]))
+                                    except Exception:
+                                        series_name = None
+
+                                if series_name:
+                                    tv_embed = tmdb_service.get_tv_metadata(series_name, season_num)
+                        except Exception as e:
+                            logger.debug(f"TV metadata lookup failed: {e}")
+
+                    else:
+                        # Single item: keep previous behavior and attempt TMDB metadata
+                        title = f"📥 {len(paths)} new file(s) added to VLC playlist"
+                        desc_lines = []
+                        for p in shown:
+                            try:
+                                name = os.path.basename(p)
+                                pretty = MediaUtils.clean_filename_for_display(name)
+                                icon = MediaUtils.get_media_icon(name)
+                                desc_lines.append(f"• {icon} {pretty}")
+                            except Exception as e:
+                                logger.error(f"Error formatting announcement line for {p}: {e}")
+                                try:
+                                    desc_lines.append(f"• {os.path.basename(p)}")
+                                except Exception:
+                                    desc_lines.append("• <new media>")
+
+                        embed = discord.Embed(title=title, description="\n".join(desc_lines), color=discord.Color.green())
+
+                        try:
+                            if len(paths) == 1 and tmdb_service:
+                                fname = os.path.basename(paths[0])
+                                clean_title, year = MediaUtils.parse_movie_filename(fname)
+                                if clean_title:
+                                    logger.info(f"Fetching TMDB metadata for single added item: '{clean_title}' year={year}")
+                                    tmdb_embed = tmdb_service.get_movie_metadata(clean_title, year)
+                        except Exception as e:
+                            logger.error(f"Failed to prepare TMDB embed for single-item announcement: {e}")
 
                     for ch in channels:
                         try:

@@ -1,3 +1,14 @@
+## 1.5.4 - 2025-10-14
+
+### Added
+- TMDB: TV/Season metadata lookup for watch-folder season batches. When a season of episodes is added, the bot will attempt to fetch TV/show + season metadata and send a season embed (poster, overview, rating, episode count) after the compact season-summary announcement.
+
+### Changed
+- Watch Folders / Announcements: multi-episode season batches now produce a compact "Added Season N" summary embed and, when possible, a TV/season metadata embed to give context about the show.
+
+### Other
+- Bump version to 1.5.4.
+
 ## 1.5.3
 
 ### Changed
