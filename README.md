@@ -227,6 +227,8 @@ python --version
    - `!shuffle` - Toggle shuffle mode on/off
    - `!shuffle_on` - Enable shuffle mode
    - `!shuffle_off` - Disable shuffle mode
+      - `!speed <rate|preset>` - Set playback speed (examples: `1.5`, `1.25`, or presets like `normal`); aliases: `spd`, `speed15`, `speednorm`
+      - `!speedstatus` - Show current playback rate (alias: `spdstatus`)
 
    **Playlist Management:**
    - `!list` - Show playlist with interactive navigation (⏮️, ◀️, ▶️, ⏭️ buttons)

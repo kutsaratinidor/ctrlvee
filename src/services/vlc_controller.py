@@ -363,6 +363,28 @@ class VLCController:
             self.logger.debug(f"Play command sent for item {item_id}")
             return True
         return False
+
+    def set_rate(self, rate: float) -> bool:
+        """Set VLC playback rate/speed.
+
+        Args:
+            rate: Playback rate (e.g., 1.0, 1.5, 0.5)
+
+        Returns:
+            True if the command was successfully sent (response not None), False otherwise.
+        """
+        try:
+            # VLC HTTP interface accepts a 'rate' command with 'val' parameter
+            res = self.send_command('rate', {'val': str(float(rate))})
+            if res is not None:
+                self.logger.info(f"Set VLC playback rate to {rate}")
+                return True
+            else:
+                self.logger.debug(f"VLC did not return a response when setting rate to {rate}")
+                return False
+        except Exception as e:
+            self.logger.error(f"Error setting VLC rate to {rate}: {e}")
+            return False
     
     def get_current_position(self):
         """Get the current item's position in the playlist"""

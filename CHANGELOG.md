@@ -1,3 +1,18 @@
+## 1.5.6 - 2025-10-29
+
+### Added
+- `src/utils/command_utils.py`: small helper functions `format_cmd` and `format_cmd_inline` to format command usage strings using the configured `DISCORD_COMMAND_PREFIX`.
+ - Playback: added `speed` and `speedstatus` commands to control VLC playback rate. `speed` accepts numeric rates (e.g., `1.5`) and presets/aliases (e.g., `normal`, `spd`, `speed15`) and the bot will attempt to reset the rate back to `1.0` when a file finishes.
+
+### Changed
+- Refactored cogs to use the new command formatting helpers (`playback`, `playlist`, `scheduler`) so help and inline usage messages always match the configured command prefix.
+
+### Fixed
+- Fixed several help-string occurrences and indentation issues discovered while refactoring.
+
+### Other
+- Bump version to 1.5.6.
+
 ## 1.5.5 - 2025-10-14
 
 ### Fixed

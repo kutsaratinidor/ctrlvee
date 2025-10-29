@@ -475,7 +475,9 @@ async def controls(ctx):
 `{prefix}shuffle` - Toggle shuffle mode on/off
 `{prefix}shuffle_on` - Enable shuffle mode
 `{prefix}shuffle_off` - Disable shuffle mode
-        """
+`{prefix}speed <rate|preset>` - Set playback speed (examples: `1.5`, `1.25`, or presets like `1.5x`); aliases: `spd`, `speed15`, `speednorm`
+`{prefix}speedstatus` - Show current playback rate (alias: `spdstatus`)
+    """
         embed.add_field(name="🎮 Playback Controls", value=playback_commands, inline=False)
 
         # Playlist Management

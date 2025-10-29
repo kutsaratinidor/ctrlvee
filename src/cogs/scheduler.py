@@ -31,6 +31,8 @@ SCHEDULE_BACKUP_FILE = "schedule_backup.json"
 
 
 from src.services.tmdb_service import TMDBService
+from ..config import Config
+from ..utils.command_utils import format_cmd, format_cmd_inline
 
 class Scheduler(commands.Cog):
     def __init__(self, bot, vlc_controller):
@@ -74,7 +76,10 @@ class Scheduler(commands.Cog):
 
     @commands.command(name="schedule")
     async def schedule_movie(self, ctx, number: int, date: str, time: str):
-        """Schedule a movie by playlist number and PH time. Usage: !schedule <number> <YYYY-MM-DD> <HH:MM>"""
+        """Schedule a movie by playlist number and PH time.
+
+        Usage: shown with the configured command prefix.
+        """
         try:
             dt = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M")
             dt = dt.replace(tzinfo=PH_TZ)
@@ -123,7 +128,7 @@ class Scheduler(commands.Cog):
             embed.add_field(name="Duration", value=dur_str, inline=True)
             await ctx.send(embed=embed)
         except Exception as e:
-            await ctx.send(f"❌ Invalid date/time format. Use: !schedule <number> <YYYY-MM-DD> <HH:MM>")
+            await ctx.send(f"❌ Invalid date/time format. Use: {format_cmd_inline('schedule <number> <YYYY-MM-DD> <HH:MM>')}")
 
     @commands.command(name="schedules")
     async def list_schedules(self, ctx):

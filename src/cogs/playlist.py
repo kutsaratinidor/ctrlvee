@@ -5,6 +5,7 @@ import os
 import logging
 from ..utils.media_utils import MediaUtils
 from ..config import Config
+from ..utils.command_utils import format_cmd, format_cmd_inline
 
 logger = logging.getLogger(__name__)
 
@@ -173,7 +174,7 @@ class PlaylistCommands(commands.Cog):
                     value=results_text if len(results_text) <= 1024 else results_text[:1021] + "...",
                     inline=False
                 )
-                embed.set_footer(text="💡 Use !play_num <number> to play an item")
+                embed.set_footer(text=f"💡 Use {format_cmd_inline('play_num <number>')} to play an item")
             else:
                 embed.add_field(
                     name="No Results",

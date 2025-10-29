@@ -5,6 +5,7 @@ import logging
 import xml.etree.ElementTree as ET
 from ..utils.media_utils import MediaUtils
 from ..config import Config
+from ..utils.command_utils import format_cmd, format_cmd_inline
 
 # Set up logger for this module
 logger = logging.getLogger(__name__)
@@ -130,7 +131,7 @@ class PlaybackCommands(commands.Cog):
             )
             embed.add_field(
                 name="How to Enable",
-                value="Use `!set_notification_channel` in the channel where you want to receive notifications",
+                value=f"Use {format_cmd_inline('set_notification_channel')} in the channel where you want to receive notifications",
                 inline=False
             )
         
@@ -154,6 +155,90 @@ class PlaybackCommands(commands.Cog):
             pass
 
         await ctx.send(embed=embed)
+
+    @commands.command(name='speed', aliases=['spd', 'speed15', 'speednorm'])
+    @commands.has_any_role(*Config.ALLOWED_ROLES)
+    async def speed(self, ctx, target: str = None):
+        """Set playback speed. Usage examples: set a numeric rate (e.g. 1.5) or use a preset like 'normal'.
+
+        Short aliases are available (e.g. `speed15`, `speednorm`).
+        The playback rate will also be reset automatically when a file finishes playing.
+        """
+        try:
+            # No target provided -> show usage embed
+            if target is None:
+                embed = discord.Embed(
+                    title="Playback Speed — Usage",
+                    description=(
+                        f"Set the playback rate using a numeric value, or use a preset like 'normal' to reset.\n\n"
+                        f"Examples: {format_cmd_inline('speed 1.5')} or {format_cmd_inline('speed normal')}"
+                    ),
+                    color=discord.Color.blue()
+                )
+                embed.add_field(name="Aliases", value="spd, speed15, speednorm", inline=True)
+                await ctx.send(embed=embed)
+                return
+
+            t = target.strip().lower()
+            if t in ('1.5', '1.5x', '15', 'fast', 'up'):
+                rate = 1.5
+            elif t in ('1', '1.0', 'normal', 'default', 'reset', 'norm'):
+                rate = 1.0
+            else:
+                # Try to parse a float
+                try:
+                    rate = float(t.rstrip('x'))
+                except Exception:
+                    embed = discord.Embed(
+                        title="Invalid speed",
+                        description="Please provide a numeric rate like `1.5` or use `normal` to reset.",
+                        color=discord.Color.red()
+                    )
+                    embed.set_footer(text=f"Usage: {format_cmd_inline('speed 1.5')}")
+                    await ctx.send(embed=embed)
+                    return
+
+            ok = False
+            try:
+                ok = self.vlc.set_rate(rate)
+            except Exception as e:
+                logger.error(f"Error setting playback rate: {e}")
+
+            if ok:
+                if rate == 1.0:
+                    embed = discord.Embed(
+                        title="Playback Speed Reset",
+                        description="✅ Playback speed reset to normal (1.0x)",
+                        color=discord.Color.green()
+                    )
+                else:
+                    embed = discord.Embed(
+                        title="Playback Speed Updated",
+                        description=f"✅ Playback speed set to {rate}x",
+                        color=discord.Color.green()
+                    )
+                # Add Ko-fi support field when configured
+                try:
+                    if Config.KOFI_URL:
+                        embed.add_field(name="Support CtrlVee", value=f"☕ {f'<{Config.KOFI_URL}>'}", inline=False)
+                except Exception:
+                    pass
+                await ctx.send(embed=embed)
+            else:
+                embed = discord.Embed(
+                    title="Playback Speed Failed",
+                    description=f"⚠️ Failed to set playback speed to {rate}x",
+                    color=discord.Color.orange()
+                )
+                await ctx.send(embed=embed)
+        except Exception as e:
+            logger.error(f"Speed command error: {e}")
+            embed = discord.Embed(
+                title="Error",
+                description=f"An error occurred while setting playback speed: {e}",
+                color=discord.Color.dark_red()
+            )
+            await ctx.send(embed=embed)
         
     async def _monitor_vlc_state(self):
         """Background task to monitor VLC state changes"""
@@ -297,6 +382,12 @@ class PlaybackCommands(commands.Cog):
                                     # The last playing item is no longer playing - it finished
                                     try:
                                         self.vlc._handle_queued_item_finished(last_item_id)
+                                        # Ensure playback rate is reset to normal after an item finishes
+                                        try:
+                                            self.vlc.set_rate(1.0)
+                                            logger.debug("Playback rate reset to 1.0 after item finished")
+                                        except Exception as e:
+                                            logger.debug(f"Failed to reset playback rate after finish: {e}")
                                     except Exception as e:
                                         logger.error(f"Error handling finished item {last_item_id}: {e}")
                         
@@ -385,6 +476,11 @@ class PlaybackCommands(commands.Cog):
                     if next_queued:
                         # Case 1: VLC is stopped and we have queued items
                         if current_state == 'stopped':
+                            # Reset playback rate when VLC has stopped (file finished)
+                            try:
+                                self.vlc.set_rate(1.0)
+                            except Exception:
+                                pass
                             if self._check_queue_auto_play_cooldown():
                                 try:
                                     play_result = self.vlc.play_next_queued_item()
@@ -415,6 +511,49 @@ class PlaybackCommands(commands.Cog):
             
             # Wait before next check
             await asyncio.sleep(0.5)  # Check every half second for more responsive queue handling
+
+    @commands.command(name='speedstatus', aliases=['spdstatus', 'sr'])
+    @commands.has_any_role(*Config.ALLOWED_ROLES)
+    async def speed_status(self, ctx):
+        """Report current VLC playback rate/speed.
+
+        Usage examples are shown with the configured prefix in `!!controls`.
+        """
+        try:
+            status = self.vlc.get_status()
+            if not status:
+                await ctx.send('Error: Could not access VLC status')
+                return
+
+            rate_elem = status.find('rate')
+            rate_val = None
+            if rate_elem is not None and rate_elem.text:
+                try:
+                    rate_val = float(rate_elem.text)
+                except Exception:
+                    # Try to clean whitespace/formatting
+                    try:
+                        rate_val = float(rate_elem.text.strip())
+                    except Exception:
+                        rate_val = None
+
+            if rate_val is not None:
+                embed = discord.Embed(
+                    title="Playback Speed",
+                    description=f"Current playback rate: {rate_val:.2f}x",
+                    color=discord.Color.blue()
+                )
+            else:
+                embed = discord.Embed(
+                    title="Playback Speed",
+                    description="Current playback rate: unknown (VLC did not expose rate in status)",
+                    color=discord.Color.orange()
+                )
+
+            await ctx.send(embed=embed)
+        except Exception as e:
+            logger.error(f"Failed to get playback speed: {e}")
+            await ctx.send(f"Error reading playback speed: {e}")
 
     @commands.command(name='play')
     @commands.has_any_role(*Config.ALLOWED_ROLES)
@@ -614,7 +753,7 @@ class PlaybackCommands(commands.Cog):
                 # Verify it's actually playing
                 status = self.vlc.get_status()
                 if status and status.find('state').text != 'playing':
-                    await ctx.send("Warning: VLC might not be playing. Try using !play if playback doesn't start.")
+                    await ctx.send(f"Warning: VLC might not be playing. Try using {format_cmd_inline('play')} if playback doesn't start.")
             else:
                 await ctx.send('Error: Could not start playback')
         except ValueError:
@@ -746,7 +885,7 @@ class PlaybackCommands(commands.Cog):
         if movie_embed:
             # For movie metadata, add Quick Replay at the bottom
             if item_number:
-                movie_embed.add_field(name="Quick Replay", value=f"💡 Use **!play_num {item_number}** to play this item again", inline=False)
+                movie_embed.add_field(name="Quick Replay", value=f"💡 Use {format_cmd_inline(f'play_num {item_number}')} to play this item again", inline=False)
             await ctx.send(embed=movie_embed)
         else:
             embed = discord.Embed(
@@ -763,7 +902,7 @@ class PlaybackCommands(commands.Cog):
             
             # Add Quick Replay at the bottom
             if item_number:
-                embed.add_field(name="Quick Replay", value=f"💡 Use **!play_num {item_number}** to play this item again", inline=False)
+                embed.add_field(name="Quick Replay", value=f"💡 Use {format_cmd_inline(f'play_num {item_number}')} to play this item again", inline=False)
                 
             await ctx.send(embed=embed)
             
@@ -791,6 +930,7 @@ class PlaybackCommands(commands.Cog):
         """Show current VLC status with enhanced metadata"""
         if not await self._check_vlc_connection(ctx):
             return
+        # Use formatting helper for commands
             
         status = self.vlc.get_status()
             
@@ -896,7 +1036,7 @@ class PlaybackCommands(commands.Cog):
                     
                 # Add position note as a field with bold formatting after progress
                 if current_position is not None:
-                    embed.add_field(name="Quick Replay", value=f"💡 Use **!play_num {current_position}** to play this item again", inline=False)
+                    embed.add_field(name="Quick Replay", value=f"💡 Use {format_cmd_inline(f'play_num {current_position}')} to play this item again", inline=False)
                 
                 # Ensure Support field (Ko-fi) is present and a thumbnail is set for visibility
                 try:
@@ -930,7 +1070,7 @@ class PlaybackCommands(commands.Cog):
                 if playlist_count > 0:
                     embed.add_field(
                         name="Playlist Info", 
-                        value=f"{playlist_count} items in playlist\nUse `!play` to resume or `!play_num <number>` to play a specific item", 
+                        value=f"{playlist_count} items in playlist\nUse {format_cmd_inline('play')} to resume or {format_cmd_inline('play_num <number>')} to play a specific item",
                         inline=False
                     )
                 else:
@@ -1057,7 +1197,7 @@ class PlaybackCommands(commands.Cog):
             # Usage hint
             embed.add_field(
                 name="Usage",
-                value="Use `!queue_next <number>` to queue a playlist item to play next",
+                value=f"Use {format_cmd_inline('queue_next <number>')} to queue a playlist item to play next",
                 inline=False
             )
             
@@ -1096,8 +1236,10 @@ class PlaybackCommands(commands.Cog):
         """Remove a queued entry by queue order (e.g., 1) or playlist number (#10).
 
         Usage:
-        - {prefix}remove_queue 1           # remove by queue order
-        - {prefix}remove_queue #10         # remove by playlist number
+        - remove_queue 1           # remove by queue order
+        - remove_queue #10         # remove by playlist number
+
+        (Commands are shown with the configured prefix in the help output.)
         """
         try:
             if ref.startswith('#'):
