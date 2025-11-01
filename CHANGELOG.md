@@ -1,3 +1,15 @@
+## 1.5.7 - 2025-11-01
+
+### Added
+- Optional Discord presence updates: the bot can show the currently playing media as its activity (e.g., "Watching <title>"). Controlled by the `.env` flag `ENABLE_PRESENCE` and throttled by `PRESENCE_UPDATE_THROTTLE`.
+- `template.env` updated with `ENABLE_PRESENCE` and `PRESENCE_UPDATE_THROTTLE` entries.
+
+### Changed
+- `Playback` cog: presence updates implemented and now respect the `ENABLE_PRESENCE` config. Presence is also cleared at startup when presence updates are disabled.
+
+### Other
+- Bump version to 1.5.7.
+
 ## 1.5.6 - 2025-10-29
 
 ### Added

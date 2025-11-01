@@ -24,6 +24,13 @@ class PlaybackCommands(commands.Cog):
         self.monitoring_task = None
         self.notification_channel = None
         self.last_queue_auto_play = 0  # Timestamp of last queue auto-play to prevent rapid triggers
+        # Presence/update throttling for bot activity updates
+        self._presence_last_set = 0.0
+        # Allow a configurable throttle via Config.PRESENCE_UPDATE_THROTTLE (seconds); default to 5s
+        try:
+            self._presence_throttle_seconds = int(getattr(Config, 'PRESENCE_UPDATE_THROTTLE', 5))
+        except Exception:
+            self._presence_throttle_seconds = 5
         
     async def cog_load(self):
         """Called when the cog is loaded"""
@@ -248,6 +255,13 @@ class PlaybackCommands(commands.Cog):
                 status = self.vlc.get_status()
                 if status:
                     current_state = status.find('state').text
+                    # If VLC is stopped, clear the bot's presence (throttled)
+                    try:
+                        if current_state == 'stopped':
+                            await self._set_presence(None)
+                    except Exception:
+                        # Non-fatal: presence update failures should not stop monitoring
+                        pass
                     
                     # Get current position and item from playlist
                     playlist = self.vlc.get_playlist()
@@ -887,6 +901,11 @@ class PlaybackCommands(commands.Cog):
             if item_number:
                 movie_embed.add_field(name="Quick Replay", value=f"💡 Use {format_cmd_inline(f'play_num {item_number}')} to play this item again", inline=False)
             await ctx.send(embed=movie_embed)
+            # Update Discord presence to show what's playing (throttled)
+            try:
+                await self._set_presence(name)
+            except Exception:
+                pass
         else:
             embed = discord.Embed(
                 title="Now Playing",
@@ -905,6 +924,11 @@ class PlaybackCommands(commands.Cog):
                 embed.add_field(name="Quick Replay", value=f"💡 Use {format_cmd_inline(f'play_num {item_number}')} to play this item again", inline=False)
                 
             await ctx.send(embed=embed)
+            # Update Discord presence to show what's playing (throttled)
+            try:
+                await self._set_presence(name)
+            except Exception:
+                pass
             
     async def _check_vlc_connection(self, ctx):
         """Check if VLC is accessible and send error message if not
@@ -924,6 +948,36 @@ class PlaybackCommands(commands.Cog):
             logger.error(f"Error connecting to VLC: {str(e)}")
             await ctx.send(f'Error connecting to VLC: {str(e)}')
             return False
+        
+    async def _set_presence(self, name: str | None):
+        """Set the bot's Discord presence (throttled).
+
+        Args:
+            name: The activity name to show (e.g., movie title). If None, clears the activity.
+        """
+        # Respect global config toggle
+        try:
+            if not getattr(Config, 'ENABLE_PRESENCE', True):
+                return
+            now = asyncio.get_event_loop().time()
+            # Always allow clearing presence, but throttle repeated identical updates
+            if name is not None and (now - self._presence_last_set) < self._presence_throttle_seconds:
+                return
+
+            # Build an activity: use "watching" for media
+            if name:
+                activity = discord.Activity(type=discord.ActivityType.watching, name=name)
+            else:
+                activity = None
+
+            # Attempt to change presence; non-fatal
+            try:
+                await self.bot.change_presence(activity=activity)
+                self._presence_last_set = now
+            except Exception as e:
+                logger.debug(f"Failed to set presence: {e}")
+        except Exception as e:
+            logger.debug(f"Presence update error: {e}")
             
     @commands.command(name='status')
     async def status(self, ctx):

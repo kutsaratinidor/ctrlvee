@@ -45,6 +45,12 @@ class Config:
     # Optional Ko-fi / support URL to show in embeds
     KOFI_URL: str = os.getenv('KOFI_URL', '').strip()
 
+    # Presence / Rich presence toggles
+    # Enable or disable the bot updating its Discord presence/activity (default: true)
+    ENABLE_PRESENCE: bool = os.getenv('ENABLE_PRESENCE', 'true').strip().lower() in {'1','true','yes','y'}
+    # Throttle (seconds) between presence updates to avoid rate limits
+    PRESENCE_UPDATE_THROTTLE: int = int(os.getenv('PRESENCE_UPDATE_THROTTLE', '5'))
+
     # Watch Folders
     # Comma-separated absolute paths. If empty, watch service is disabled.
     WATCH_FOLDERS = [p.strip() for p in os.getenv('WATCH_FOLDERS', '').split(',') if p.strip()]
@@ -147,6 +153,8 @@ class Config:
             f"TMDB API Key: {'Configured' if cls.TMDB_API_KEY else 'Not Configured'}",
             f"Discord Token: {'Configured' if cls.DISCORD_TOKEN else 'Not Configured'}",
             f"Ko-fi URL: {cls.KOFI_URL if cls.KOFI_URL else 'Not Configured'}",
+            f"Presence Updates Enabled: {cls.ENABLE_PRESENCE}",
+            f"Presence Update Throttle: {cls.PRESENCE_UPDATE_THROTTLE}s",
             "-" * 50
         ]
         # Log each line separately for better formatting

@@ -172,6 +172,18 @@ async def on_ready():
         logger.info("8. Restart VLC")
         logger.warning("Starting bot anyway - will retry connection when needed...")
 
+    # If presence updates are globally disabled, clear any existing presence immediately
+    try:
+        if not getattr(Config, 'ENABLE_PRESENCE', True):
+            try:
+                await bot.change_presence(activity=None)
+                logger.info("Presence cleared at startup because ENABLE_PRESENCE=false")
+            except Exception as e:
+                logger.debug(f"Failed to clear presence at startup: {e}")
+    except Exception:
+        # Guard: any failure here is non-fatal
+        pass
+
     # Start watch service if configured
     try:
         # Set announcement notifier for multiple channels if configured
