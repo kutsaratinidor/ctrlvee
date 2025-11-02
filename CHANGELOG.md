@@ -1,3 +1,15 @@
+## 1.5.8 - 2025-11-01
+
+### Changed
+- Discord presence now uses the Streaming activity with a clapperboard emoji, e.g., "🎬 Title". No streaming URL is required.
+- Presence text and behavior clarified; continues to respect `ENABLE_PRESENCE` and `PRESENCE_UPDATE_THROTTLE`.
+
+### Removed
+- `STREAMING_URL` configuration option (no longer needed).
+
+### Other
+- Bump version to 1.5.8.
+
 ## 1.5.7 - 2025-11-01
 
 ### Added

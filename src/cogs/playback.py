@@ -36,6 +36,69 @@ class PlaybackCommands(commands.Cog):
         """Called when the cog is loaded"""
         self.monitoring_task = self.bot.loop.create_task(self._monitor_vlc_state())
         self.logger.info("VLC state monitoring started")
+        # Schedule a one-time startup presence sync (runs after the bot is ready)
+        try:
+            self.bot.loop.create_task(self._startup_presence_sync())
+        except Exception as e:
+            self.logger.debug(f"Could not schedule startup presence sync: {e}")
+
+    async def _startup_presence_sync(self):
+        """Sync bot presence on startup if VLC is already playing/paused.
+
+        Runs after the bot is ready to ensure presence updates are applied.
+        Respects Config.ENABLE_PRESENCE and uses a brief delay to let VLC status stabilize.
+        """
+        try:
+            if not getattr(Config, 'ENABLE_PRESENCE', True):
+                return
+            # Ensure the bot is fully ready before attempting presence updates
+            await self.bot.wait_until_ready()
+            # Small delay to allow VLC HTTP status to stabilize after connect
+            await asyncio.sleep(0.4)
+
+            status = self.vlc.get_status()
+            if status is None:
+                return
+
+            state_elem = status.find('state')
+            current_state = state_elem.text if state_elem is not None else None
+            if current_state not in ['playing', 'paused']:
+                return
+
+            # Try to resolve the current item's display name from playlist first
+            name = None
+            try:
+                playlist = self.vlc.get_playlist()
+                if playlist is not None:
+                    _, current_item = self._find_current_position(playlist)
+                    if current_item is not None:
+                        name = current_item.get('name')
+            except Exception:
+                name = None
+
+            # Fallback: pull filename from status information
+            if not name:
+                try:
+                    info_root = status.find('information')
+                    if info_root is not None:
+                        for category in info_root.findall('category'):
+                            for info in category.findall('info'):
+                                if info.get('name') == 'filename':
+                                    name = info.text
+                                    break
+                            if name:
+                                break
+                except Exception:
+                    name = None
+
+            if name:
+                try:
+                    await self._set_presence(name)
+                    self.logger.info(f"Startup presence set: {name}")
+                except Exception as e:
+                    self.logger.debug(f"Failed to set startup presence: {e}")
+        except Exception as e:
+            self.logger.debug(f"Startup presence sync skipped: {e}")
         
     async def cog_unload(self):
         """Called when the cog is unloaded"""
@@ -306,6 +369,11 @@ class PlaybackCommands(commands.Cog):
                                                             await self.notification_channel.send(embed=embed)
                                                         except Exception as e:
                                                             logger.error(f"Failed to send auto-queue notification: {e}")
+                                                    # Update presence to show the newly playing queued item (throttled & respect config)
+                                                    try:
+                                                        await self._set_presence(play_result.get('item_name'))
+                                                    except Exception:
+                                                        pass
                                                 else:
                                                     logger.warning(f"Auto-play failed: {play_result.get('error', 'Unknown error')}")
                                             except Exception as e:
@@ -356,6 +424,11 @@ class PlaybackCommands(commands.Cog):
                                                         await self.notification_channel.send(embed=embed)
                                                     except Exception as e:
                                                         logger.error(f"Failed to send auto-queue notification: {e}")
+                                                # Update presence to show the newly playing queued item
+                                                try:
+                                                    await self._set_presence(play_result.get('item_name'))
+                                                except Exception:
+                                                    pass
                                             else:
                                                 logger.warning(f"Auto-play failed: {play_result.get('error', 'Unknown error')}")
                                             
@@ -480,6 +553,11 @@ class PlaybackCommands(commands.Cog):
                                                             await self.notification_channel.send(embed=embed)
                                                         except Exception as e:
                                                             logger.error(f"Failed to send end detection notification: {e}")
+                                                    # Update presence to show the newly playing queued item
+                                                    try:
+                                                        await self._set_presence(play_result.get('item_name'))
+                                                    except Exception:
+                                                        pass
                             except Exception as e:
                                 logger.debug(f"Error in end-of-track detection: {e}")
                         else:
@@ -501,6 +579,10 @@ class PlaybackCommands(commands.Cog):
                                     
                                     if play_result.get("success"):
                                         logger.info(f"Periodic auto-play successful: {play_result.get('item_name', 'Unknown')}")
+                                        try:
+                                            await self._set_presence(play_result.get('item_name'))
+                                        except Exception:
+                                            pass
                                     else:
                                         logger.warning(f"Periodic auto-play failed: {play_result.get('error', 'Unknown error')}")
                                 except Exception as e:
@@ -517,6 +599,10 @@ class PlaybackCommands(commands.Cog):
                                         
                                         if play_result.get("success"):
                                             logger.info(f"Periodic correction successful: {play_result.get('item_name', 'Unknown')}")
+                                            try:
+                                                await self._set_presence(play_result.get('item_name'))
+                                            except Exception:
+                                                pass
                                     except Exception as e:
                                         logger.error(f"Error in periodic queue correction: {e}")
                     
@@ -798,6 +884,11 @@ class PlaybackCommands(commands.Cog):
                     inline=True
                 )
                 await ctx.send(embed=embed)
+                # Update bot presence to the queued item's name (if enabled)
+                try:
+                    await self._set_presence(result.get('item_name'))
+                except Exception:
+                    pass
                 return
             else:
                 await ctx.send(f"Error playing queued item: {result.get('error', 'Unknown error')}")
@@ -964,9 +1055,14 @@ class PlaybackCommands(commands.Cog):
             if name is not None and (now - self._presence_last_set) < self._presence_throttle_seconds:
                 return
 
-            # Build an activity: use "watching" for media
+            # Build an activity: Streaming with emoji prefix (no URL required)
             if name:
-                activity = discord.Activity(type=discord.ActivityType.watching, name=name)
+                display_name = f"🎬 {name}"
+                try:
+                    activity = discord.Activity(type=discord.ActivityType.streaming, name=display_name)
+                except Exception:
+                    # Fallback: still attempt to set as watching if streaming creation fails
+                    activity = discord.Activity(type=discord.ActivityType.watching, name=display_name)
             else:
                 activity = None
 
