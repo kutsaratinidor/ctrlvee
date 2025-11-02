@@ -1,3 +1,14 @@
+## 1.5.9 - 2025-11-02
+
+### Added
+- Optional voice channel join: the bot can join a specified voice channel on startup (muted and deafened) to make presence visible in the member list. Controlled by:
+  - `ENABLE_VOICE_JOIN`: Enable/disable voice channel join (default: true)
+  - `VOICE_JOIN_CHANNEL_ID`: Discord voice channel ID to join
+  - `VOICE_AUTO_JOIN_ON_START`: Whether to join immediately on startup (default: true)
+
+### Other
+- Bump version to 1.5.9
+
 ## 1.5.8 - 2025-11-01
 
 ### Changed

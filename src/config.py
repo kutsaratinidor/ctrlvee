@@ -51,6 +51,14 @@ class Config:
     # Throttle (seconds) between presence updates to avoid rate limits
     PRESENCE_UPDATE_THROTTLE: int = int(os.getenv('PRESENCE_UPDATE_THROTTLE', '5'))
 
+    # Voice Channel Settings
+    # Enable or disable the bot automatically joining a voice channel (default: true)
+    ENABLE_VOICE_JOIN: bool = os.getenv('ENABLE_VOICE_JOIN', 'true').strip().lower() in {'1','true','yes','y'}
+    # Discord voice channel ID for the bot to join
+    VOICE_JOIN_CHANNEL_ID: int = int(os.getenv('VOICE_JOIN_CHANNEL_ID', '0'))
+    # Whether to join voice immediately on startup (default: true)
+    VOICE_AUTO_JOIN_ON_START: bool = os.getenv('VOICE_AUTO_JOIN_ON_START', 'true').strip().lower() in {'1','true','yes','y'}
+
     # Watch Folders
     # Comma-separated absolute paths. If empty, watch service is disabled.
     WATCH_FOLDERS = [p.strip() for p in os.getenv('WATCH_FOLDERS', '').split(',') if p.strip()]
@@ -124,6 +132,14 @@ class Config:
         except ValueError:
             errors.append("WATCH_STABLE_AGE must be a valid number (seconds)")
             
+        # Voice join validation
+        if cls.ENABLE_VOICE_JOIN and cls.VOICE_AUTO_JOIN_ON_START:
+            try:
+                if cls.VOICE_JOIN_CHANNEL_ID <= 0:
+                    errors.append("VOICE_JOIN_CHANNEL_ID must be set to a valid Discord channel ID if voice join is enabled")
+            except ValueError:
+                errors.append("VOICE_JOIN_CHANNEL_ID must be a valid integer")
+            
         return errors
     
     @classmethod
@@ -150,6 +166,9 @@ class Config:
                 f"Playlist Autosave: file='{cls.PLAYLIST_AUTOSAVE_FILE}', interval={cls.PLAYLIST_AUTOSAVE_INTERVAL}s"
                 if cls.PLAYLIST_AUTOSAVE_FILE else "Playlist Autosave: Disabled"
             ),
+            f"Voice Join Enabled: {cls.ENABLE_VOICE_JOIN}",
+            f"Voice Channel ID: {cls.VOICE_JOIN_CHANNEL_ID if cls.VOICE_JOIN_CHANNEL_ID else 'Not Configured'}",
+            f"Auto Join On Start: {cls.VOICE_AUTO_JOIN_ON_START}",
             f"TMDB API Key: {'Configured' if cls.TMDB_API_KEY else 'Not Configured'}",
             f"Discord Token: {'Configured' if cls.DISCORD_TOKEN else 'Not Configured'}",
             f"Ko-fi URL: {cls.KOFI_URL if cls.KOFI_URL else 'Not Configured'}",
