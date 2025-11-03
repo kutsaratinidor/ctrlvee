@@ -22,6 +22,7 @@ class PlaybackCommands(commands.Cog):
         self.last_known_position = None
         self.last_known_playing_item = None  # Track the last item that was playing
         self.monitoring_task = None
+        self._presence_progress_task = None
         self.notification_channel = None
         self.last_queue_auto_play = 0  # Timestamp of last queue auto-play to prevent rapid triggers
         # Presence/update throttling for bot activity updates
@@ -42,6 +43,12 @@ class PlaybackCommands(commands.Cog):
             self.bot.loop.create_task(self._startup_presence_sync())
         except Exception as e:
             self.logger.debug(f"Could not schedule startup presence sync: {e}")
+        # Start periodic presence progress updater if enabled
+        try:
+            self._presence_progress_task = self.bot.loop.create_task(self._presence_progress_loop())
+            self.logger.info("Presence progress updater started")
+        except Exception as e:
+            self.logger.debug(f"Could not start presence progress updater: {e}")
 
     async def _startup_presence_sync(self):
         """Sync bot presence on startup if VLC is already playing/paused.
@@ -106,6 +113,116 @@ class PlaybackCommands(commands.Cog):
         if self.monitoring_task:
             self.monitoring_task.cancel()
             self.logger.info("VLC state monitoring stopped")
+        if self._presence_progress_task:
+            self._presence_progress_task.cancel()
+            self.logger.info("Presence progress updater stopped")
+
+    async def _presence_progress_loop(self):
+        """Periodically update presence with playback progress (mm:ss/MM:SS)."""
+        try:
+            await self.bot.wait_until_ready()
+        except Exception:
+            return
+        interval = 0
+        try:
+            interval = max(5, int(getattr(Config, 'PRESENCE_PROGRESS_UPDATE_INTERVAL', 30)))
+        except Exception:
+            interval = 30
+        while not self.bot.is_closed():
+            try:
+                # Respect config toggles
+                if not getattr(Config, 'ENABLE_PRESENCE', True) or not getattr(Config, 'ENABLE_PRESENCE_PROGRESS', True):
+                    await asyncio.sleep(interval)
+                    continue
+
+                status = None
+                try:
+                    status = self.vlc.get_status()
+                except Exception:
+                    status = None
+
+                if status is None:
+                    await asyncio.sleep(interval)
+                    continue
+
+                state_elem = status.find('state')
+                current_state = state_elem.text if state_elem is not None else None
+                # Only update progress while playing or paused
+                if current_state not in ['playing', 'paused']:
+                    await asyncio.sleep(interval)
+                    continue
+
+                # Resolve current title
+                title = None
+                try:
+                    playlist = self.vlc.get_playlist()
+                    if playlist is not None:
+                        _, current_item = self._find_current_position(playlist)
+                        if current_item is not None:
+                            title = current_item.get('name')
+                except Exception:
+                    title = None
+                if not title:
+                    try:
+                        info_root = status.find('information')
+                        if info_root is not None:
+                            for category in info_root.findall('category'):
+                                for info in category.findall('info'):
+                                    if info.get('name') == 'filename':
+                                        title = info.text
+                                        break
+                                if title:
+                                    break
+                    except Exception:
+                        title = None
+
+                if not title:
+                    await asyncio.sleep(interval)
+                    continue
+
+                # Compute progress string
+                progress_suffix = None
+                try:
+                    time_elem = status.find('time')
+                    length_elem = status.find('length')
+                    if time_elem is not None and length_elem is not None and time_elem.text and length_elem.text:
+                        cur = int(time_elem.text)
+                        total = int(length_elem.text)
+                        if total > 0 and cur >= 0:
+                            def fmt(n: int) -> str:
+                                return f"{n//60}:{n%60:02d}"
+                            progress_suffix = f"{fmt(cur)}/{fmt(total)}"
+                except Exception:
+                    progress_suffix = None
+
+                name_for_presence = title
+                if progress_suffix:
+                    # Trim to keep final presence text within safe limits (~120 chars)
+                    base = title
+                    try:
+                        suffix = f" — {progress_suffix}"
+                        max_total = 120
+                        max_base = max_total - len(suffix)
+                        if len(base) > max_base:
+                            base = base[: max(0, max_base - 3)] + "..."
+                        name_for_presence = base + suffix
+                    except Exception:
+                        name_for_presence = f"{title} — {progress_suffix}"
+
+                # Mark paused state in reason for clarity (no change to visible text)
+                reason = "progress tick (paused)" if current_state == 'paused' else "progress tick"
+                try:
+                    await self._set_presence(name_for_presence, reason=reason)
+                except Exception:
+                    pass
+
+            except Exception as e:
+                logger.debug(f"Presence progress loop error: {e}")
+            finally:
+                try:
+                    await asyncio.sleep(interval)
+                except Exception:
+                    pass
         
     def _find_current_position(self, playlist):
         """Find the position of the current item in the playlist

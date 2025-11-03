@@ -50,6 +50,10 @@ class Config:
     ENABLE_PRESENCE: bool = os.getenv('ENABLE_PRESENCE', 'true').strip().lower() in {'1','true','yes','y'}
     # Throttle (seconds) between presence updates to avoid rate limits
     PRESENCE_UPDATE_THROTTLE: int = int(os.getenv('PRESENCE_UPDATE_THROTTLE', '5'))
+    # Include progress (time/length) in presence and update periodically
+    ENABLE_PRESENCE_PROGRESS: bool = os.getenv('ENABLE_PRESENCE_PROGRESS', 'true').strip().lower() in {'1','true','yes','y'}
+    # Interval (seconds) between presence progress updates
+    PRESENCE_PROGRESS_UPDATE_INTERVAL: int = int(os.getenv('PRESENCE_PROGRESS_UPDATE_INTERVAL', '30'))
 
     # Voice Channel Settings
     # Enable or disable the bot automatically joining a voice channel (default: true)
@@ -174,6 +178,8 @@ class Config:
             f"Ko-fi URL: {cls.KOFI_URL if cls.KOFI_URL else 'Not Configured'}",
             f"Presence Updates Enabled: {cls.ENABLE_PRESENCE}",
             f"Presence Update Throttle: {cls.PRESENCE_UPDATE_THROTTLE}s",
+            f"Presence Progress Enabled: {cls.ENABLE_PRESENCE_PROGRESS}",
+            f"Presence Progress Interval: {cls.PRESENCE_PROGRESS_UPDATE_INTERVAL}s",
             "-" * 50
         ]
         # Log each line separately for better formatting

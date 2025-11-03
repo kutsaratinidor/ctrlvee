@@ -1,3 +1,18 @@
+## 1.5.11 - 2025-11-02
+
+### Added
+- Presence progress in activity: the bot can now append playback progress (mm:ss/MM:SS) to the title while VLC is playing or paused.
+- Config flags:
+	- `ENABLE_PRESENCE_PROGRESS` (default: true) — toggles progress-in-presence updates.
+	- `PRESENCE_PROGRESS_UPDATE_INTERVAL` (default: 30) — seconds between progress refreshes.
+
+### Notes
+- Progress updates respect presence toggles and run in a lightweight periodic task.
+- Title length is trimmed to keep the full presence string within a safe display size.
+
+### Other
+- Bump version to 1.5.11
+
 ## 1.5.10 - 2025-11-02
 
 ### Added
