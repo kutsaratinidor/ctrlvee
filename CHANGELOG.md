@@ -1,3 +1,14 @@
+## 1.5.13 - 2025-11-03
+
+### Added
+- Voice reconnect and connection tuning are now configurable via `.env`:
+	- `VOICE_MAX_RECONNECTS`, `VOICE_RECONNECT_WINDOW`, `VOICE_RECONNECT_COOLDOWN`
+	- `VOICE_CONNECT_TIMEOUT`, `VOICE_CONNECT_RETRY_DELAY`, `VOICE_ERROR_RETRY_DELAY`
+	- `VOICE_INITIAL_RETRIES` (controls initial join retry count)
+
+### Other
+- Updated template.env to include the new voice configuration options.
+
 ## 1.5.12 - 2025-11-02
 
 ### Added

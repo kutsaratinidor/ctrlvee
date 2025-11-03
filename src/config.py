@@ -62,6 +62,14 @@ class Config:
     VOICE_JOIN_CHANNEL_ID: int = int(os.getenv('VOICE_JOIN_CHANNEL_ID', '0'))
     # Whether to join voice immediately on startup (default: true)
     VOICE_AUTO_JOIN_ON_START: bool = os.getenv('VOICE_AUTO_JOIN_ON_START', 'true').strip().lower() in {'1','true','yes','y'}
+    # Voice reconnect and connection tuning
+    VOICE_MAX_RECONNECTS: int = int(os.getenv('VOICE_MAX_RECONNECTS', '3'))
+    VOICE_RECONNECT_WINDOW: int = int(os.getenv('VOICE_RECONNECT_WINDOW', '60'))  # seconds
+    VOICE_RECONNECT_COOLDOWN: int = int(os.getenv('VOICE_RECONNECT_COOLDOWN', '30'))  # seconds
+    VOICE_CONNECT_TIMEOUT: float = float(os.getenv('VOICE_CONNECT_TIMEOUT', '20.0'))
+    VOICE_CONNECT_RETRY_DELAY: float = float(os.getenv('VOICE_CONNECT_RETRY_DELAY', '2.0'))
+    VOICE_ERROR_RETRY_DELAY: float = float(os.getenv('VOICE_ERROR_RETRY_DELAY', '5.0'))
+    VOICE_INITIAL_RETRIES: int = int(os.getenv('VOICE_INITIAL_RETRIES', '2'))  # extra retries after first attempt
 
     # Watch Folders
     # Comma-separated absolute paths. If empty, watch service is disabled.
@@ -173,6 +181,13 @@ class Config:
             f"Voice Join Enabled: {cls.ENABLE_VOICE_JOIN}",
             f"Voice Channel ID: {cls.VOICE_JOIN_CHANNEL_ID if cls.VOICE_JOIN_CHANNEL_ID else 'Not Configured'}",
             f"Auto Join On Start: {cls.VOICE_AUTO_JOIN_ON_START}",
+            f"Voice Max Reconnects: {cls.VOICE_MAX_RECONNECTS}",
+            f"Voice Reconnect Window: {cls.VOICE_RECONNECT_WINDOW}s",
+            f"Voice Reconnect Cooldown: {cls.VOICE_RECONNECT_COOLDOWN}s",
+            f"Voice Connect Timeout: {cls.VOICE_CONNECT_TIMEOUT}s",
+            f"Voice Connect Retry Delay: {cls.VOICE_CONNECT_RETRY_DELAY}s",
+            f"Voice Error Retry Delay: {cls.VOICE_ERROR_RETRY_DELAY}s",
+            f"Voice Initial Retries: {cls.VOICE_INITIAL_RETRIES}",
             f"TMDB API Key: {'Configured' if cls.TMDB_API_KEY else 'Not Configured'}",
             f"Discord Token: {'Configured' if cls.DISCORD_TOKEN else 'Not Configured'}",
             f"Ko-fi URL: {cls.KOFI_URL if cls.KOFI_URL else 'Not Configured'}",

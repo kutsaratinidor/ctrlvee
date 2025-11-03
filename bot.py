@@ -52,17 +52,17 @@ from src.cogs.scheduler import Scheduler
 from src.version import __version__
 
 # -------- Voice connection management --------
-# Reconnect guard variables
+# Reconnect guard variables (configurable)
 _last_voice_disconnect_ts = 0.0
 _reconnect_attempts = 0
-_MAX_RECONNECTS = 3
-_RECONNECT_WINDOW = 60  # seconds
-_RECONNECT_COOLDOWN = 30  # seconds
+_MAX_RECONNECTS = int(getattr(Config, 'VOICE_MAX_RECONNECTS', 3))
+_RECONNECT_WINDOW = int(getattr(Config, 'VOICE_RECONNECT_WINDOW', 60))  # seconds
+_RECONNECT_COOLDOWN = int(getattr(Config, 'VOICE_RECONNECT_COOLDOWN', 30))  # seconds
 
-# Voice connect constants
-_VOICE_CONNECT_TIMEOUT = 20.0
-_VOICE_CONNECT_RETRY_DELAY = 2.0
-_VOICE_ERROR_RETRY_DELAY = 5.0
+# Voice connect constants (configurable)
+_VOICE_CONNECT_TIMEOUT = float(getattr(Config, 'VOICE_CONNECT_TIMEOUT', 20.0))
+_VOICE_CONNECT_RETRY_DELAY = float(getattr(Config, 'VOICE_CONNECT_RETRY_DELAY', 2.0))
+_VOICE_ERROR_RETRY_DELAY = float(getattr(Config, 'VOICE_ERROR_RETRY_DELAY', 5.0))
 
 # Known Discord voice error codes
 _VOICE_ERROR_CODES = {
@@ -148,7 +148,7 @@ async def join_voice_channel():
             except Exception:
                 pass
 
-        retries = 2
+        retries = max(0, int(getattr(Config, 'VOICE_INITIAL_RETRIES', 2)))
         for attempt in range(retries + 1):
             # Abort further attempts if we detect a good connection
             existing = discord.utils.get(bot.voice_clients, guild=guild)
@@ -284,6 +284,29 @@ async def setup_hook():
 
 @bot.event
 async def on_ready():
+    # Log voice join/reconnect configuration to confirm loaded values
+    try:
+        logger.info(
+            "Voice join config: enabled=%s, auto_on_start=%s, channel_id=%s",
+            getattr(Config, 'ENABLE_VOICE_JOIN', False),
+            getattr(Config, 'VOICE_AUTO_JOIN_ON_START', True),
+            getattr(Config, 'VOICE_JOIN_CHANNEL_ID', 0),
+        )
+        logger.info(
+            "Voice reconnect config: max=%s, window=%ss, cooldown=%ss",
+            _MAX_RECONNECTS,
+            _RECONNECT_WINDOW,
+            _RECONNECT_COOLDOWN,
+        )
+        logger.info(
+            "Voice connect config: timeout=%ss, retry_delay=%ss, error_retry_delay=%ss, initial_retries=%s",
+            _VOICE_CONNECT_TIMEOUT,
+            _VOICE_CONNECT_RETRY_DELAY,
+            _VOICE_ERROR_RETRY_DELAY,
+            getattr(Config, 'VOICE_INITIAL_RETRIES', 2),
+        )
+    except Exception:
+        pass
     async def send_startup_announcement():
         announce_ids = Config.get_announce_channel_ids()
         if not announce_ids:
