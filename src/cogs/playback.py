@@ -798,6 +798,208 @@ class PlaybackCommands(commands.Cog):
             logger.error(f"Failed to get playback speed: {e}")
             await ctx.send(f"Error reading playback speed: {e}")
 
+    @commands.command(name='sub_next', aliases=['subn','sub+','subnext'])
+    @commands.has_any_role(*Config.ALLOWED_ROLES)
+    async def subtitle_next(self, ctx):
+        """Cycle to the next subtitle track in VLC (if supported)."""
+        try:
+            ok = self.vlc.subtitle_next()
+            if ok:
+                embed = discord.Embed(
+                    title="💬 Subtitles",
+                    description="Switched to the next subtitle track.",
+                    color=discord.Color.green()
+                )
+                await ctx.send(embed=embed)
+            else:
+                embed = discord.Embed(
+                    title="💬 Subtitles",
+                    description=(
+                        "Could not cycle subtitle track. Ensure VLC's HTTP interface supports "
+                        "relative subtitle changes (subtitle_track +1)."
+                    ),
+                    color=discord.Color.orange()
+                )
+                await ctx.send(embed=embed)
+        except Exception as e:
+            logger.error(f"subtitle_next error: {e}")
+            await ctx.send(f"Error cycling subtitles: {e}")
+
+    @commands.command(name='sub_prev', aliases=['subp','sub-','subprev'])
+    @commands.has_any_role(*Config.ALLOWED_ROLES)
+    async def subtitle_prev(self, ctx):
+        """Cycle to the previous subtitle track in VLC (if supported)."""
+        try:
+            ok = self.vlc.subtitle_prev()
+            if ok:
+                embed = discord.Embed(
+                    title="💬 Subtitles",
+                    description="Switched to the previous subtitle track.",
+                    color=discord.Color.green()
+                )
+                await ctx.send(embed=embed)
+            else:
+                embed = discord.Embed(
+                    title="💬 Subtitles",
+                    description=(
+                        "Could not cycle subtitle track. Ensure VLC's HTTP interface supports "
+                        "relative subtitle changes (subtitle_track -1)."
+                    ),
+                    color=discord.Color.orange()
+                )
+                await ctx.send(embed=embed)
+        except Exception as e:
+            logger.error(f"subtitle_prev error: {e}")
+            await ctx.send(f"Error cycling subtitles: {e}")
+
+    @commands.command(name='sub_list', aliases=['subs','slist'])
+    @commands.has_any_role(*Config.ALLOWED_ROLES)
+    async def subtitle_list(self, ctx):
+        """List available subtitle tracks and indicate which is selected."""
+        try:
+            tracks = self.vlc.get_subtitle_tracks()
+            if tracks is None:
+                await ctx.send("Couldn't retrieve subtitle tracks from VLC.")
+                return
+            if len(tracks) == 0:
+                embed = discord.Embed(
+                    title="💬 Subtitles",
+                    description="No subtitle tracks reported by VLC for the current media.",
+                    color=discord.Color.orange()
+                )
+                await ctx.send(embed=embed)
+                return
+            lines = []
+            for tr in tracks:
+                mark = "✅" if tr.get('selected') else "  "
+                tid = tr.get('id')
+                name = tr.get('name') or f"Track {tid}"
+                lines.append(f"{mark} ID {tid}: {name}")
+            embed = discord.Embed(
+                title="💬 Subtitle Tracks",
+                description="\n".join(lines[:20]) + ("\n..." if len(lines) > 20 else ""),
+                color=discord.Color.blue()
+            )
+            embed.add_field(
+                name="Usage",
+                value=f"Use {format_cmd_inline('sub_set <id>')} to select, or {format_cmd_inline('sub_set off')} to disable.",
+                inline=False
+            )
+            await ctx.send(embed=embed)
+        except Exception as e:
+            logger.error(f"subtitle_list error: {e}")
+            await ctx.send(f"Error listing subtitles: {e}")
+
+    @commands.command(name='sub_set', aliases=['subset','subid'])
+    @commands.has_any_role(*Config.ALLOWED_ROLES)
+    async def subtitle_set(self, ctx, track_id: str):
+        """Select a specific subtitle track by ID or 1-based index, or 'off' to disable.
+
+        Examples:
+        - sub_set 2          # by ID
+        - sub_set #2         # by list index (from sub_list)
+        - sub_set off
+        """
+        try:
+            if not track_id:
+                await ctx.send(f"Usage: {format_cmd_inline('sub_set <id|off>')}")
+                return
+            # Fetch tracks to support index-based addressing
+            tracks = self.vlc.get_subtitle_tracks() or []
+
+            # Handle disable synonyms
+            tokens_off = {"off", "none", "disable", "disabled"}
+            if track_id.lower() in tokens_off:
+                # Try -1 first, fallback to 0 for older VLC versions
+                ok = self.vlc.set_subtitle_track(-1)
+                if not ok:
+                    ok = self.vlc.set_subtitle_track(0)
+                if not ok:
+                    await ctx.send("Failed to disable subtitles (tried -1 and 0).")
+                    return
+                embed = discord.Embed(
+                    title="💬 Subtitles",
+                    description="Subtitles disabled.",
+                    color=discord.Color.green()
+                )
+                await ctx.send(embed=embed)
+                return
+
+            # Determine target by ID or index
+            tid: int | None = None
+            idx_mode = False
+            if track_id.startswith('#'):
+                # Index mode (#1 is first in list)
+                idx_mode = True
+                try:
+                    pos = int(track_id[1:])
+                except Exception:
+                    await ctx.send("Invalid index. Use e.g., #2. See sub_list.")
+                    return
+                if pos < 1 or pos > len(tracks):
+                    await ctx.send(f"Index out of range. There are {len(tracks)} tracks.")
+                    return
+                tid = tracks[pos - 1].get('id')
+            else:
+                # Try as ID
+                try:
+                    tid = int(track_id)
+                except Exception:
+                    await ctx.send("Please provide a numeric track ID, a #index, or 'off'. Use sub_list to see tracks.")
+                    return
+                # If ID not present in list but appears to be a 1-based index, allow fallback
+                if tracks and all(tr.get('id') != tid for tr in tracks):
+                    if 1 <= tid <= len(tracks):
+                        idx_mode = True
+                        tid = tracks[tid - 1].get('id')
+
+            if tid is None:
+                await ctx.send("Couldn't resolve target subtitle track. Try sub_list first.")
+                return
+
+            ok = self.vlc.set_subtitle_track(tid)
+            if not ok:
+                embed = discord.Embed(
+                    title="💬 Subtitles",
+                    description="Failed to set subtitle track. Use sub_list to view valid IDs.",
+                    color=discord.Color.orange()
+                )
+                await ctx.send(embed=embed)
+                return
+
+            # Confirm new selection by re-reading tracks
+            tracks2 = self.vlc.get_subtitle_tracks() or []
+            selected_id = None
+            selected_name = None
+            for tr in tracks2:
+                if tr.get('selected'):
+                    selected_id = tr.get('id')
+                    selected_name = tr.get('name')
+                    break
+
+            if selected_id is None:
+                desc = "Subtitle selection changed, but current track could not be confirmed."
+            elif selected_id < 0:
+                desc = "Subtitles disabled."
+            else:
+                desc = f"Selected subtitle track ID {selected_id}: {selected_name or 'Unknown'}"
+
+            embed = discord.Embed(
+                title="💬 Subtitles",
+                description=desc,
+                color=discord.Color.green()
+            )
+            if tracks2:
+                embed.add_field(
+                    name="Tip",
+                    value=f"You can also use indexes like {format_cmd_inline('sub_set #2')} or disable with {format_cmd_inline('sub_set off')}.",
+                    inline=False
+                )
+            await ctx.send(embed=embed)
+        except Exception as e:
+            logger.error(f"subtitle_set error: {e}")
+            await ctx.send(f"Error setting subtitles: {e}")
+
     @commands.command(name='play')
     @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def play(self, ctx):

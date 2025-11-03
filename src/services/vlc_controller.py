@@ -385,6 +385,85 @@ class VLCController:
         except Exception as e:
             self.logger.error(f"Error setting VLC rate to {rate}: {e}")
             return False
+
+    # ==========================
+    # Subtitle track management
+    # ==========================
+    def set_subtitle_track(self, value: int | str) -> bool:
+        """Set VLC subtitle track by absolute id or relative step.
+
+        Accepts either an integer track id (e.g., 0, 1, 2, ...), or a relative
+        step string like "+1" or "-1" to cycle to next/previous when supported by VLC.
+
+        Returns True if the command was acknowledged by VLC.
+        """
+        try:
+            res = self.send_command('subtitle_track', {'val': str(value)})
+            ok = res is not None
+            if ok:
+                self.logger.info(f"Set VLC subtitle track val={value}")
+            else:
+                self.logger.warning(f"VLC did not acknowledge subtitle_track val={value}")
+            return ok
+        except Exception as e:
+            self.logger.error(f"Error setting VLC subtitle track to {value}: {e}")
+            return False
+
+    def subtitle_next(self) -> bool:
+        """Cycle to next subtitle track, if supported by VLC."""
+        return self.set_subtitle_track("+1")
+
+    def subtitle_prev(self) -> bool:
+        """Cycle to previous subtitle track, if supported by VLC."""
+        return self.set_subtitle_track("-1")
+
+    def get_subtitle_tracks(self) -> Optional[list[dict]]:
+        """Return available subtitle tracks with selection info.
+
+        Parses VLC status.xml for a <subtitle> element containing <track> entries.
+        Each track dict has: { 'id': int, 'name': str, 'selected': bool }
+        Returns None if status cannot be fetched.
+        """
+        try:
+            status = self.get_status()
+            if status is None:
+                return None
+            # VLC uses <subtitle><track id=".." selected="true">Name</track></subtitle>
+            node = status.find('subtitle')
+            if node is None:
+                # Some versions might use 'subtitles'
+                node = status.find('subtitles')
+            tracks: list[dict] = []
+            if node is not None:
+                for t in node.findall('track'):
+                    # Robust id parse
+                    raw_id = t.get('id')
+                    tid = None
+                    if raw_id is not None:
+                        try:
+                            tid = int(str(raw_id).strip())
+                        except Exception:
+                            tid = None
+                    # Prefer name attribute, then text
+                    name_attr = t.get('name')
+                    text_val = (t.text or '').strip()
+                    name = name_attr if name_attr else (text_val if text_val else f"Track {raw_id if raw_id is not None else ''}")
+                    selected = (t.get('selected') == 'true')
+                    tracks.append({'id': tid, 'name': name, 'selected': selected})
+            return tracks
+        except Exception as e:
+            self.logger.error(f"get_subtitle_tracks error: {e}")
+            return None
+
+    def get_selected_subtitle_track_id(self) -> Optional[int]:
+        """Return the currently selected subtitle track id, or None."""
+        tracks = self.get_subtitle_tracks()
+        if not tracks:
+            return None
+        for tr in tracks:
+            if tr.get('selected'):
+                return tr.get('id')
+        return None
     
     def get_current_position(self):
         """Get the current item's position in the playlist"""

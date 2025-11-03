@@ -1,3 +1,12 @@
+## 1.5.12 - 2025-11-02
+
+### Added
+- Subtitles: `sub_set <id|off>` to explicitly select a subtitle track by ID or disable subtitles.
+- Subtitles: `sub_list` to list available subtitle tracks and show the currently selected one.
+
+### Other
+- Bump version to 1.5.12
+
 ## 1.5.11 - 2025-11-02
 
 ### Added
@@ -5,6 +14,7 @@
 - Config flags:
 	- `ENABLE_PRESENCE_PROGRESS` (default: true) — toggles progress-in-presence updates.
 	- `PRESENCE_PROGRESS_UPDATE_INTERVAL` (default: 30) — seconds between progress refreshes.
+ - Subtitles control: new commands `sub_next` and `sub_prev` to cycle subtitle tracks via VLC's HTTP interface (when supported).
 
 ### Notes
 - Progress updates respect presence toggles and run in a lightweight periodic task.

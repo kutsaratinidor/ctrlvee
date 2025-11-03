@@ -742,6 +742,16 @@ async def controls(ctx):
         """
         embed.add_field(name="ℹ️ Status & Scheduling", value=status_commands, inline=False)
 
+        # Subtitles
+        subtitles_commands = f"""
+`{prefix}sub_list` - List available subtitle tracks and show which one is selected
+`{prefix}sub_set <id|#index|off>` - Select subtitles by VLC track ID, list index (e.g., `#2`), or disable with `off`
+`{prefix}sub_next` / `{prefix}sub_prev` - Cycle to next/previous subtitle track (when supported by VLC)
+
+Tip: Use `{prefix}sub_list` first, then `{prefix}sub_set #2` to pick by list index, or `{prefix}sub_set off` to disable.
+        """
+        embed.add_field(name="💬 Subtitles", value=subtitles_commands, inline=False)
+
         # Add footer note about permissions
         roles_str = ", ".join(f"'{role}'" for role in Config.ALLOWED_ROLES)
         footer_text = f"⚠️ Most commands require one of these roles: {roles_str}"
