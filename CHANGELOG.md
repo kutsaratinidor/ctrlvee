@@ -1,3 +1,24 @@
+## 1.5.10 - 2025-11-02
+
+### Added
+- Presence logging reasons: all presence updates now include a concise "reason" in logs, e.g., `startup sync`, `track change`, `auto-queue`, `paused at end`, `stopped`, and more.
+
+### Changed
+- Presence activity switched to Watching (🎬) to ensure visibility without requiring a streaming URL.
+- Presence throttling refined: new titles update immediately; throttling only suppresses identical titles within the configured window.
+
+### Fixed
+- Presence now updates on normal playlist transitions (organic track changes, not just queue/commands).
+- Presence is cleared when VLC pauses at the end of a track and no queued item exists, preventing stale titles.
+- Voice connection reliability: reduced duplicate join attempts and improved reconnect handling for WebSocket codes 4006/4009.
+
+### Dependencies
+- Upgraded `discord.py[voice]` to `>=2.4.0,<3.0.0` for improved Python 3.13 stability.
+- Relaxed `PyNaCl` to `>=1.5.0` and `requests` to `>=2.31.0`.
+
+### Other
+- Bump version to 1.5.10
+
 ## 1.5.9 - 2025-11-02
 
 ### Added

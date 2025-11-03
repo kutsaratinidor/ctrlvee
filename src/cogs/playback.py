@@ -26,6 +26,7 @@ class PlaybackCommands(commands.Cog):
         self.last_queue_auto_play = 0  # Timestamp of last queue auto-play to prevent rapid triggers
         # Presence/update throttling for bot activity updates
         self._presence_last_set = 0.0
+        self._presence_last_name = None  # Track last presence activity name to avoid throttling new titles
         # Allow a configurable throttle via Config.PRESENCE_UPDATE_THROTTLE (seconds); default to 5s
         try:
             self._presence_throttle_seconds = int(getattr(Config, 'PRESENCE_UPDATE_THROTTLE', 5))
@@ -93,7 +94,7 @@ class PlaybackCommands(commands.Cog):
 
             if name:
                 try:
-                    await self._set_presence(name)
+                    await self._set_presence(name, reason="startup sync")
                     self.logger.info(f"Startup presence set: {name}")
                 except Exception as e:
                     self.logger.debug(f"Failed to set startup presence: {e}")
@@ -321,7 +322,7 @@ class PlaybackCommands(commands.Cog):
                     # If VLC is stopped, clear the bot's presence (throttled)
                     try:
                         if current_state == 'stopped':
-                            await self._set_presence(None)
+                            await self._set_presence(None, reason="stopped")
                     except Exception:
                         # Non-fatal: presence update failures should not stop monitoring
                         pass
@@ -426,7 +427,7 @@ class PlaybackCommands(commands.Cog):
                                                         logger.error(f"Failed to send auto-queue notification: {e}")
                                                 # Update presence to show the newly playing queued item
                                                 try:
-                                                    await self._set_presence(play_result.get('item_name'))
+                                                    await self._set_presence(play_result.get('item_name'), reason="auto-queue (end detection)")
                                                 except Exception:
                                                     pass
                                             else:
@@ -489,6 +490,13 @@ class PlaybackCommands(commands.Cog):
                                 logger.info(f"VLC state changed to: {current_state} (notifications {'enabled' if self.notification_channel else 'disabled'})")
                             elif position_changed:
                                 logger.info(f"Track changed to: {item_name or 'Unknown'} #{current_position if current_position else 'N/A'} (notifications {'enabled' if self.notification_channel else 'disabled'})")
+
+                            # Update presence on normal track transitions (no queue intervention)
+                            try:
+                                if position_changed and item_name:
+                                    await self._set_presence(item_name, reason="track change")
+                            except Exception:
+                                pass
                             
                             # Only send Discord message if notification channel is set
                             if self.notification_channel:
@@ -555,13 +563,31 @@ class PlaybackCommands(commands.Cog):
                                                             logger.error(f"Failed to send end detection notification: {e}")
                                                     # Update presence to show the newly playing queued item
                                                     try:
-                                                        await self._set_presence(play_result.get('item_name'))
+                                                        await self._set_presence(play_result.get('item_name'), reason="auto-queue (state change)")
                                                     except Exception:
                                                         pass
                             except Exception as e:
                                 logger.debug(f"Error in end-of-track detection: {e}")
                         else:
                             logger.debug("End-of-track queue auto-play skipped due to cooldown")
+
+                    # If VLC pauses at the very end of a track (common behavior) and there's no queued item,
+                    # clear presence to avoid showing a stale title
+                    try:
+                        if current_state == 'paused' and not self.vlc.get_next_queued_item():
+                            status = self.vlc.get_status()
+                            if status is not None:
+                                time_elem = status.find('time')
+                                length_elem = status.find('length')
+                                if time_elem is not None and length_elem is not None:
+                                    current_time = int(time_elem.text)
+                                    total_length = int(length_elem.text)
+                                    if total_length > 0 and (total_length - current_time) <= 3:
+                                        # Near end while paused and nothing queued -> clear presence
+                                        await self._set_presence(None, reason="paused at end")
+                                        logger.info("Cleared presence: VLC paused at track end and no queued items")
+                    except Exception as e:
+                        logger.debug(f"Paused-end presence clear check failed: {e}")
                     
                     # Enhanced periodic check: If we have queued items, ensure they get played
                     next_queued = self.vlc.get_next_queued_item()
@@ -580,7 +606,7 @@ class PlaybackCommands(commands.Cog):
                                     if play_result.get("success"):
                                         logger.info(f"Periodic auto-play successful: {play_result.get('item_name', 'Unknown')}")
                                         try:
-                                            await self._set_presence(play_result.get('item_name'))
+                                            await self._set_presence(play_result.get('item_name'), reason="periodic auto-play (stopped)")
                                         except Exception:
                                             pass
                                     else:
@@ -600,7 +626,7 @@ class PlaybackCommands(commands.Cog):
                                         if play_result.get("success"):
                                             logger.info(f"Periodic correction successful: {play_result.get('item_name', 'Unknown')}")
                                             try:
-                                                await self._set_presence(play_result.get('item_name'))
+                                                await self._set_presence(play_result.get('item_name'), reason="periodic correction (wrong item)")
                                             except Exception:
                                                 pass
                                     except Exception as e:
@@ -886,7 +912,7 @@ class PlaybackCommands(commands.Cog):
                 await ctx.send(embed=embed)
                 # Update bot presence to the queued item's name (if enabled)
                 try:
-                    await self._set_presence(result.get('item_name'))
+                    await self._set_presence(result.get('item_name'), reason="next (queued)")
                 except Exception:
                     pass
                 return
@@ -994,7 +1020,7 @@ class PlaybackCommands(commands.Cog):
             await ctx.send(embed=movie_embed)
             # Update Discord presence to show what's playing (throttled)
             try:
-                await self._set_presence(name)
+                await self._set_presence(name, reason="now playing (metadata)")
             except Exception:
                 pass
         else:
@@ -1017,7 +1043,7 @@ class PlaybackCommands(commands.Cog):
             await ctx.send(embed=embed)
             # Update Discord presence to show what's playing (throttled)
             try:
-                await self._set_presence(name)
+                await self._set_presence(name, reason="now playing")
             except Exception:
                 pass
             
@@ -1040,7 +1066,7 @@ class PlaybackCommands(commands.Cog):
             await ctx.send(f'Error connecting to VLC: {str(e)}')
             return False
         
-    async def _set_presence(self, name: str | None):
+    async def _set_presence(self, name: str | None, reason: str | None = None):
         """Set the bot's Discord presence (throttled).
 
         Args:
@@ -1049,17 +1075,23 @@ class PlaybackCommands(commands.Cog):
         # Respect global config toggle
         try:
             if not getattr(Config, 'ENABLE_PRESENCE', True):
+                logger.debug("Presence updates disabled by config; skipping change")
                 return
             now = asyncio.get_event_loop().time()
-            # Always allow clearing presence, but throttle repeated identical updates
+            # Always allow clearing presence. For setting a title, only throttle if
+            # it's the same as the last title within the throttle window.
             if name is not None and (now - self._presence_last_set) < self._presence_throttle_seconds:
-                return
+                if self._presence_last_name == name:
+                    logger.debug(
+                        f"Presence skipped due to throttle (same title within {self._presence_throttle_seconds}s): {name}"
+                    )
+                    return
 
-            # Build an activity: Streaming with emoji prefix (no URL required)
+            # Build an activity. Use 'Watching' to avoid Streaming URL requirements.
             if name:
                 display_name = f"🎬 {name}"
                 try:
-                    activity = discord.Activity(type=discord.ActivityType.streaming, name=display_name)
+                    activity = discord.Activity(type=discord.ActivityType.watching, name=display_name)
                 except Exception:
                     # Fallback: still attempt to set as watching if streaming creation fails
                     activity = discord.Activity(type=discord.ActivityType.watching, name=display_name)
@@ -1070,6 +1102,14 @@ class PlaybackCommands(commands.Cog):
             try:
                 await self.bot.change_presence(activity=activity)
                 self._presence_last_set = now
+                prev = self._presence_last_name
+                self._presence_last_name = name
+                if name:
+                    logger.info(
+                        f"Presence updated to: {display_name}" + (f" (reason: {reason})" if reason else "")
+                    )
+                else:
+                    logger.info("Presence cleared" + (f" (reason: {reason})" if reason else ""))
             except Exception as e:
                 logger.debug(f"Failed to set presence: {e}")
         except Exception as e:
