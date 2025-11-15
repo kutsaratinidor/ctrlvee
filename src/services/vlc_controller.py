@@ -19,7 +19,8 @@ class VLCController:
     """Controller for VLC HTTP interface"""
     
     def __init__(self, host: Optional[str] = None, port: Optional[int] = None, 
-                 password: Optional[str] = None, queue_backup_file: str = "queue_backup.json"):
+                 password: Optional[str] = None, queue_backup_file: str = "queue_backup.json",
+                 bot = None):
         """Initialize VLC controller
         
         Args:
@@ -34,6 +35,7 @@ class VLCController:
         self.password = password or Config.VLC_PASSWORD
         self.queue_backup_file = queue_backup_file
         self.logger = logging.getLogger(__name__)
+        self.bot = bot
         
         # Queue management state
         self._queued_items = {}  # item_id -> queue_info

@@ -37,7 +37,7 @@ from src.services.tmdb_service import TMDBService
 from src.services.watch_folder_service import WatchFolderService
 from src.utils.media_utils import MediaUtils
 
-vlc = VLCController()
+vlc = VLCController(bot=bot)
 tmdb_service = TMDBService()
 watch_service = WatchFolderService(vlc)
 

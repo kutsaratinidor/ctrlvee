@@ -1,3 +1,8 @@
+## 1.5.14 - 2025-11-14
+
+### Fixed
+- Fixed a startup race condition where the bot's presence would be cleared before the initial media scan could enqueue files. This occurred when the playlist was empty and `WATCH_ENQUEUE_ON_START` was enabled. A guard has been added to prevent presence clearing until the initial scan is complete.
+
 ## 1.5.13 - 2025-11-03
 
 ### Added

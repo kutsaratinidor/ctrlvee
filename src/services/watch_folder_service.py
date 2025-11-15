@@ -97,6 +97,15 @@ class WatchFolderService:
         self._scan_all(add_to_playlist=Config.WATCH_ENQUEUE_ON_START)
         # Signal that initial scan has completed
         self._initial_scan_done.set()
+        
+        # After the first scan, signal to the playback cog that it's complete
+        try:
+            playback_cog = self.vlc.bot.get_cog('PlaybackCommands')
+            if playback_cog:
+                playback_cog.signal_initial_scan_complete()
+        except Exception as e:
+            self.logger.warning(f"Could not signal initial scan completion to Playback cog: {e}")
+
         while not self._stop_event.is_set():
             try:
                 self._scan_all(add_to_playlist=True)

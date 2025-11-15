@@ -33,7 +33,13 @@ class PlaybackCommands(commands.Cog):
             self._presence_throttle_seconds = int(getattr(Config, 'PRESENCE_UPDATE_THROTTLE', 5))
         except Exception:
             self._presence_throttle_seconds = 5
+        self._initial_scan_pending = True # Guard for startup presence
         
+    def signal_initial_scan_complete(self):
+        """Signal that the initial watch folder scan is complete."""
+        self.logger.info("Initial scan complete; presence clearing is now enabled.")
+        self._initial_scan_pending = False
+
     async def cog_load(self):
         """Called when the cog is loaded"""
         self.monitoring_task = self.bot.loop.create_task(self._monitor_vlc_state())
@@ -437,8 +443,9 @@ class PlaybackCommands(commands.Cog):
                 if status:
                     current_state = status.find('state').text
                     # If VLC is stopped, clear the bot's presence (throttled)
+                    # BUT: do not clear it if we are still waiting for the initial scan to complete
                     try:
-                        if current_state == 'stopped':
+                        if current_state == 'stopped' and not self._initial_scan_pending:
                             await self._set_presence(None, reason="stopped")
                     except Exception:
                         # Non-fatal: presence update failures should not stop monitoring
