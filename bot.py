@@ -577,12 +577,41 @@ async def on_ready():
                         except Exception as e:
                             logger.error(f"Failed to prepare TMDB embed for single-item announcement: {e}")
 
+                    # Try to get TMDB metadata and create a single rich embed
+                    final_embed = None
+                    try:
+                        clean_title, year = MediaUtils.parse_movie_filename(name)
+                        tmdb_embed = tmdb_service.get_movie_metadata(clean_title, year)
+                        if not tmdb_embed:
+                            # If movie fails, try TV
+                            tmdb_embed = tmdb_service.get_tv_metadata(clean_title)
+                        
+                        if tmdb_embed:
+                            # Use the rich embed, but adjust title and description for the announcement
+                            tmdb_embed.title = f"✨ New Media Added: {tmdb_embed.title}"
+                            tmdb_embed.description = (
+                                f"**{name}** has been added to the library.\n\n"
+                                f"{tmdb_embed.description or ''}"
+                            ).strip()
+                            tmdb_embed.color = discord.Color.purple()
+                            final_embed = tmdb_embed
+                        
+                    except Exception as e:
+                        logger.error(f"Error getting TMDB data for new file: {e}")
+
+                    # If no rich embed, create a simple one
+                    if not final_embed:
+                        final_embed = discord.Embed(
+                            title="✨ New Media Added",
+                            description=f"**{name}** has been added to the library.",
+                            color=discord.Color.purple()
+                        )
+
+                    # Send the announcement to all configured channels
                     for ch in channels:
                         try:
                             logger.info(f"Sending announcement to channel {ch.id}")
-                            await ch.send(embed=embed)
-                            if tmdb_embed:
-                                await ch.send(embed=tmdb_embed)
+                            await ch.send(embed=final_embed)
                         except discord.Forbidden:
                             logger.warning(f"Missing permission to send announcements in channel {ch.id}.")
                         except Exception as e:

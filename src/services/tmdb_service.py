@@ -86,6 +86,10 @@ class TMDBService:
             if movie_info['vote_average']:
                 embed.add_field(name="Rating", value=f"⭐ {movie_info['vote_average']:.1f}/10", inline=True)
             
+            # Add genres if available
+            if movie_info['genres']:
+                embed.add_field(name="Genre", value=', '.join([g['name'] for g in movie_info['genres']]), inline=True)
+            
             # Add poster if available
             if movie_info['poster_path']:
                 embed.set_thumbnail(url=f"https://image.tmdb.org/t/p/w500{movie_info['poster_path']}")
@@ -155,6 +159,10 @@ class TMDBService:
                 embed.add_field(name="First Air Date", value=tv_info.get('first_air_date'), inline=True)
             if tv_info.get('vote_average'):
                 embed.add_field(name="Rating", value=f"⭐ {tv_info.get('vote_average'):.1f}/10", inline=True)
+
+            # Add genres if available
+            if tv_info.get('genres'):
+                embed.add_field(name="Genre", value=', '.join([g['name'] for g in tv_info['genres']]), inline=True)
 
             # Season-specific info
             if season is not None:

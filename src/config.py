@@ -55,6 +55,10 @@ class Config:
     # Interval (seconds) between presence progress updates
     PRESENCE_PROGRESS_UPDATE_INTERVAL: int = int(os.getenv('PRESENCE_PROGRESS_UPDATE_INTERVAL', '30'))
 
+    # Periodic "Now Playing" Announcements
+    PERIODIC_ANNOUNCE_ENABLED: bool = os.getenv('PERIODIC_ANNOUNCE_ENABLED', 'false').strip().lower() in {'1','true','yes','y'}
+    PERIODIC_ANNOUNCE_INTERVAL: int = int(os.getenv('PERIODIC_ANNOUNCE_INTERVAL', '300'))
+
     # Voice Channel Settings
     # Enable or disable the bot automatically joining a voice channel (default: true)
     ENABLE_VOICE_JOIN: bool = os.getenv('ENABLE_VOICE_JOIN', 'true').strip().lower() in {'1','true','yes','y'}
@@ -151,6 +155,14 @@ class Config:
                     errors.append("VOICE_JOIN_CHANNEL_ID must be set to a valid Discord channel ID if voice join is enabled")
             except ValueError:
                 errors.append("VOICE_JOIN_CHANNEL_ID must be a valid integer")
+
+        # Periodic announcement validation
+        if cls.PERIODIC_ANNOUNCE_ENABLED:
+            try:
+                if cls.PERIODIC_ANNOUNCE_INTERVAL < 30:
+                    errors.append("PERIODIC_ANNOUNCE_INTERVAL must be at least 30 seconds")
+            except ValueError:
+                errors.append("PERIODIC_ANNOUNCE_INTERVAL must be a valid integer")
             
         return errors
     
@@ -195,6 +207,8 @@ class Config:
             f"Presence Update Throttle: {cls.PRESENCE_UPDATE_THROTTLE}s",
             f"Presence Progress Enabled: {cls.ENABLE_PRESENCE_PROGRESS}",
             f"Presence Progress Interval: {cls.PRESENCE_PROGRESS_UPDATE_INTERVAL}s",
+            f"Periodic Announcements Enabled: {cls.PERIODIC_ANNOUNCE_ENABLED}",
+            f"Periodic Announcement Interval: {cls.PERIODIC_ANNOUNCE_INTERVAL}s",
             "-" * 50
         ]
         # Log each line separately for better formatting

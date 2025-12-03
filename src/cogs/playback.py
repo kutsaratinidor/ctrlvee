@@ -23,7 +23,8 @@ class PlaybackCommands(commands.Cog):
         self.last_known_playing_item = None  # Track the last item that was playing
         self.monitoring_task = None
         self._presence_progress_task = None
-        self.notification_channel = None
+        self._last_command_announce_ts = 0.0
+        self.periodic_announce_task = None
         self.last_queue_auto_play = 0  # Timestamp of last queue auto-play to prevent rapid triggers
         # Presence/update throttling for bot activity updates
         self._presence_last_set = 0.0
@@ -55,6 +56,12 @@ class PlaybackCommands(commands.Cog):
             self.logger.info("Presence progress updater started")
         except Exception as e:
             self.logger.debug(f"Could not start presence progress updater: {e}")
+        # Start periodic announcement task
+        try:
+            self.periodic_announce_task = self.bot.loop.create_task(self._periodic_announce_loop())
+            self.logger.info("Periodic announcement task started")
+        except Exception as e:
+            self.logger.debug(f"Could not start periodic announcement task: {e}")
 
     async def _startup_presence_sync(self):
         """Sync bot presence on startup if VLC is already playing/paused.
@@ -122,6 +129,60 @@ class PlaybackCommands(commands.Cog):
         if self._presence_progress_task:
             self._presence_progress_task.cancel()
             self.logger.info("Presence progress updater stopped")
+        if self.periodic_announce_task:
+            self.periodic_announce_task.cancel()
+            self.logger.info("Periodic announcement task stopped")
+
+    async def _periodic_announce_loop(self):
+        """Periodically announce the currently playing media."""
+        try:
+            await self.bot.wait_until_ready()
+        except Exception:
+            return
+
+        while not self.bot.is_closed():
+            interval = 300
+            try:
+                # Use a local variable for the loop sleep to avoid waiting for config changes
+                interval = int(getattr(Config, 'PERIODIC_ANNOUNCE_INTERVAL', 300))
+
+                # Wait for the interval before the first announcement
+                try:
+                    await asyncio.sleep(interval)
+                except asyncio.CancelledError:
+                    break # Exit loop cleanly on cancellation
+                except Exception:
+                    pass # Ignore other sleep errors
+
+                # Core logic
+                if getattr(Config, 'PERIODIC_ANNOUNCE_ENABLED', False):
+                    channel_ids = Config.get_announce_channel_ids()
+                    if channel_ids:
+                        status = self.vlc.get_status()
+                        if status and status.find('state').text == 'playing':
+                            self.logger.info("VLC is playing, preparing periodic announcement...")
+                            # We are playing something, so let's announce it.
+                            # We can reuse the status command's logic to generate an embed.
+                            embed = await self.get_status_embed()
+                            if embed:
+                                for channel_id in channel_ids:
+                                    try:
+                                        channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
+                                        if channel:
+                                            await channel.send(embed=embed)
+                                            self.logger.info(f"Sent periodic 'Now Playing' announcement to channel {channel_id}")
+                                    except Exception as e:
+                                        self.logger.error(f"Failed to send periodic announcement to channel {channel_id}: {e}")
+                            else:
+                                self.logger.debug("Periodic announcement skipped: could not generate status embed.")
+                        else:
+                            self.logger.debug("Periodic announcement skipped: VLC not in 'playing' state.")
+                    else:
+                        self.logger.debug("Periodic announcement skipped: No announcement channels configured.")
+                else:
+                    self.logger.debug("Periodic announcement skipped: Feature disabled in config.")
+            except Exception as e:
+                self.logger.error(f"Error in periodic announcement loop: {e}")
 
     async def _presence_progress_loop(self):
         """Periodically update presence with playback progress (mm:ss/MM:SS)."""
@@ -278,78 +339,6 @@ class PlaybackCommands(commands.Cog):
         self.last_queue_auto_play = current_time
         return True
         
-    @commands.command(name='set_notification_channel')
-    @commands.has_any_role(*Config.ALLOWED_ROLES)
-    async def set_notification_channel(self, ctx):
-        """Set the current channel for VLC state change notifications"""
-        self.notification_channel = ctx.channel
-        logger.info(f"Notification channel set to {ctx.channel.name}")
-        await ctx.send("✅ This channel will now receive VLC state change notifications")
-        
-    @commands.command(name='unset_notification_channel')
-    @commands.has_any_role(*Config.ALLOWED_ROLES)
-    async def unset_notification_channel(self, ctx):
-        """Disable VLC state change notifications"""
-        if self.notification_channel:
-            logger.info("Notification channel unset")
-            self.notification_channel = None
-            await ctx.send("✅ VLC state change notifications have been disabled")
-        else:
-            await ctx.send("ℹ️ Notifications were already disabled")
-            
-    @commands.command(name='show_notification_channel', aliases=['notification_status'])
-    @commands.has_any_role(*Config.ALLOWED_ROLES)
-    async def show_notification_channel(self, ctx):
-        """Show the current notification channel status"""
-        if self.notification_channel:
-            embed = discord.Embed(
-                title="VLC Notification Status",
-                description="Notifications are currently enabled",
-                color=discord.Color.green()
-            )
-            embed.add_field(
-                name="Channel",
-                value=f"#{self.notification_channel.name}",
-                inline=True
-            )
-            embed.add_field(
-                name="Server",
-                value=self.notification_channel.guild.name,
-                inline=True
-            )
-        else:
-            embed = discord.Embed(
-                title="VLC Notification Status",
-                description="Notifications are currently disabled",
-                color=discord.Color.red()
-            )
-            embed.add_field(
-                name="How to Enable",
-                value=f"Use {format_cmd_inline('set_notification_channel')} in the channel where you want to receive notifications",
-                inline=False
-            )
-        
-        # Add a visible, clickable Ko-fi support field to the embed
-        try:
-            if Config.KOFI_URL:
-                try:
-                    embed.add_field(name="Support CtrlVee", value=f"☕ {f'<{Config.KOFI_URL}>'}", inline=False)
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-        # If embed has no thumbnail, attempt to set bot avatar as thumbnail to increase visibility
-        try:
-            if not embed.thumbnail or not getattr(embed.thumbnail, 'url', None):
-                bot_user = getattr(self.bot, 'user', None)
-                if bot_user and getattr(bot_user, 'display_avatar', None):
-                    embed.set_thumbnail(url=bot_user.display_avatar.url)
-        except Exception:
-            pass
-
-        await ctx.send(embed=embed)
-
     @commands.command(name='speed', aliases=['spd', 'speed15', 'speednorm'])
     @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def speed(self, ctx, target: str = None):
@@ -484,21 +473,15 @@ class PlaybackCommands(commands.Cog):
                                                     logger.info(f"Auto-played next queued item: {play_result.get('item_name', 'Unknown')}")
                                                     
                                                     # Optionally notify in Discord if notification channel is set
-                                                    if self.notification_channel:
+                                                    channel_id = getattr(Config, 'WATCH_ANNOUNCE_CHANNEL_ID', 0)
+                                                    if channel_id:
                                                         try:
-                                                            embed = discord.Embed(
-                                                                title="🎵 Auto-Queue",
-                                                                description=f"Automatically playing queued item: **{play_result.get('item_name', 'Unknown')}**",
-                                                                color=discord.Color.green()
-                                                            )
-                                                            await self.notification_channel.send(embed=embed)
+                                                            channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
+                                                            if channel:
+                                                                await channel.send(f"Auto-playing next queued item: **{play_result.get('item_name', 'Unknown')}**")
                                                         except Exception as e:
-                                                            logger.error(f"Failed to send auto-queue notification: {e}")
-                                                    # Update presence to show the newly playing queued item (throttled & respect config)
-                                                    try:
-                                                        await self._set_presence(play_result.get('item_name'))
-                                                    except Exception:
-                                                        pass
+                                                            logger.error(f"Failed to send auto-play notification: {e}")
+                                                        
                                                 else:
                                                     logger.warning(f"Auto-play failed: {play_result.get('error', 'Unknown error')}")
                                             except Exception as e:
@@ -539,16 +522,14 @@ class PlaybackCommands(commands.Cog):
                                                 logger.info(f"Auto-played next queued item: {play_result.get('item_name', 'Unknown')}")
                                                 
                                                 # Optionally notify in Discord if notification channel is set
-                                                if self.notification_channel:
+                                                channel_id = getattr(Config, 'WATCH_ANNOUNCE_CHANNEL_ID', 0)
+                                                if channel_id:
                                                     try:
-                                                        embed = discord.Embed(
-                                                            title="🎵 Auto-Queue",
-                                                            description=f"Automatically playing queued item: **{play_result.get('item_name', 'Unknown')}**",
-                                                            color=discord.Color.green()
-                                                        )
-                                                        await self.notification_channel.send(embed=embed)
+                                                        channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
+                                                        if channel:
+                                                            await channel.send(f"Auto-playing next queued item: **{play_result.get('item_name', 'Unknown')}**")
                                                     except Exception as e:
-                                                        logger.error(f"Failed to send auto-queue notification: {e}")
+                                                        logger.error(f"Failed to send auto-play notification: {e}")
                                                 # Update presence to show the newly playing queued item
                                                 try:
                                                     await self._set_presence(play_result.get('item_name'), reason="auto-queue (end detection)")
@@ -573,16 +554,14 @@ class PlaybackCommands(commands.Cog):
                                                 logger.info(f"Queue system restored shuffle after item {transition['item_id']} finished")
                                                 
                                                 # Optionally notify in Discord if notification channel is set
-                                                if self.notification_channel:
+                                                channel_id = getattr(Config, 'WATCH_ANNOUNCE_CHANNEL_ID', 0)
+                                                if channel_id:
                                                     try:
-                                                        embed = discord.Embed(
-                                                            title="🔀 Queue Management",
-                                                            description="Shuffle mode automatically restored after queued item finished",
-                                                            color=discord.Color.blue()
-                                                        )
-                                                        await self.notification_channel.send(embed=embed)
+                                                        channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
+                                                        if channel:
+                                                            await channel.send("Queue finished, shuffle mode restored.")
                                                     except Exception as e:
-                                                        logger.error(f"Failed to send queue notification: {e}")
+                                                        logger.error(f"Failed to send shuffle restored notification: {e}")
                                     
                                 except Exception as e:
                                     logger.error(f"Error handling queue transition: {e}")
@@ -611,9 +590,9 @@ class PlaybackCommands(commands.Cog):
                                 
                             # Log the change regardless of notification channel
                             if state_changed:
-                                logger.info(f"VLC state changed to: {current_state} (notifications {'enabled' if self.notification_channel else 'disabled'})")
+                                logger.info(f"VLC state changed to: {current_state}")
                             elif position_changed:
-                                logger.info(f"Track changed to: {item_name or 'Unknown'} #{current_position if current_position else 'N/A'} (notifications {'enabled' if self.notification_channel else 'disabled'})")
+                                logger.info(f"Track changed to: {item_name or 'Unknown'} #{current_position if current_position else 'N/A'}")
 
                             # Update presence on normal track transitions (no queue intervention)
                             try:
@@ -622,28 +601,56 @@ class PlaybackCommands(commands.Cog):
                             except Exception:
                                 pass
                             
-                            # Only send Discord message if notification channel is set
-                            if self.notification_channel:
-                                # Create notification message
-                                if state_changed:
-                                    message = f"VLC state changed to: **{current_state}**"
-                                elif position_changed:
-                                    message = f"Track changed to: **{item_name or 'Unknown'}**"
-                                    if current_position:
-                                        message += f" (#{current_position})"
-                                
-                                # Send notification
-                                embed = discord.Embed(
-                                    title="VLC Manual Update",
-                                    description=message,
-                                    color=discord.Color.yellow()
-                                )
-                                
+                            # Only send Discord message if a notification channel is configured
+                            channel_ids = Config.get_announce_channel_ids()
+                            if channel_ids and (asyncio.get_event_loop().time() - self._last_command_announce_ts) > 4:
+                                self.logger.info(f"Track change detected, preparing announcement for channels: {channel_ids}")
+                                final_embed = None
                                 try:
-                                    await self.notification_channel.send(embed=embed)
-                                    logger.info(f"Manual VLC update detected: {message}")
+                                    if item_name:
+                                        # Try to get TMDB metadata for a rich embed
+                                        clean_title, year = MediaUtils.parse_movie_filename(item_name)
+                                        tmdb_embed = self.tmdb.get_movie_metadata(clean_title, year)
+                                        if not tmdb_embed:
+                                            tmdb_embed = self.tmdb.get_tv_metadata(clean_title)
+
+                                        if tmdb_embed:
+                                            # Use the rich embed, but adjust title for the announcement
+                                            tmdb_embed.title = f"Now Playing: {tmdb_embed.title}"
+                                            final_embed = tmdb_embed
+                                            
                                 except Exception as e:
-                                    logger.error(f"Failed to send notification: {e}")
+                                    self.logger.error(f"Error getting TMDB data for notification: {e}")
+
+                                # If no rich embed, create a simple one
+                                if not final_embed:
+                                    message = ""
+                                    if state_changed:
+                                        message = f"VLC state changed to: **{current_state}**"
+                                    elif position_changed:
+                                        message = f"Track changed to: **{item_name or 'Unknown'}**"
+                                        if current_position:
+                                            message += f" (Playlist #{current_position})"
+                                            
+                                    final_embed = discord.Embed(
+                                        title="VLC Update",
+                                        description=message,
+                                        color=discord.Color.yellow()
+                                    )
+                                
+                                # Fetch channel and send
+                                for channel_id in channel_ids:
+                                    try:
+                                        channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
+                                        if channel:
+                                            await channel.send(embed=final_embed)
+                                            self.logger.info(f"Sent automatic notification for track change to channel {channel_id}")
+                                    except Exception as e:
+                                        self.logger.error(f"Failed to send automatic notification to channel {channel_id}: {e}")
+                            elif not channel_ids:
+                                self.logger.debug("Track change announcement skipped: No announcement channels configured.")
+                            else:
+                                self.logger.debug("Track change announcement skipped: Debounced.")
                     
                     # Update last known state
                     self.last_known_state = current_state
@@ -652,48 +659,25 @@ class PlaybackCommands(commands.Cog):
                     
                     # Priority 3: End-of-track detection - check if current track is about to end
                     if current_state in ['playing', 'paused'] and self.vlc.get_next_queued_item():
-                        if self._check_queue_auto_play_cooldown():
-                            try:
-                                status = self.vlc.get_status()
-                                if status is not None:
-                                    time_elem = status.find('time')
-                                    length_elem = status.find('length')
-                                    if time_elem is not None and length_elem is not None:
-                                        current_time = int(time_elem.text)
-                                        total_length = int(length_elem.text)
-                                        
-                                        # If we're within 2 seconds of the end and have a queued item, auto-play it
-                                        if total_length > 0 and (total_length - current_time) <= 2 and current_time > 0:
-                                            logger.info(f"Detected track near end ({current_time}/{total_length}s) - checking queue")
-                                            
-                                            next_queued = self.vlc.get_next_queued_item()
-                                            if next_queued:
-                                                logger.info(f"Track ending, auto-playing queued item: {next_queued}")
-                                                
-                                                play_result = self.vlc.play_next_queued_item()
-                                                if play_result.get("success"):
-                                                    logger.info(f"Successfully auto-played queued item at track end: {play_result.get('item_name', 'Unknown')}")
-                                                    
-                                                    # Optionally notify in Discord if notification channel is set
-                                                    if self.notification_channel:
-                                                        try:
-                                                            embed = discord.Embed(
-                                                                title="🎵 Auto-Queue (End Detection)",
-                                                                description=f"Track ended, playing queued item: **{play_result.get('item_name', 'Unknown')}**",
-                                                                color=discord.Color.green()
-                                                            )
-                                                            await self.notification_channel.send(embed=embed)
-                                                        except Exception as e:
-                                                            logger.error(f"Failed to send end detection notification: {e}")
-                                                    # Update presence to show the newly playing queued item
-                                                    try:
-                                                        await self._set_presence(play_result.get('item_name'), reason="auto-queue (state change)")
-                                                    except Exception:
-                                                        pass
-                            except Exception as e:
-                                logger.debug(f"Error in end-of-track detection: {e}")
-                        else:
-                            logger.debug("End-of-track queue auto-play skipped due to cooldown")
+                        # This check is to see if we are near the end of the media.
+                        # If we are, we can be more aggressive about checking for the next item.
+                        # This helps in cases where the state change to 'stopped' is delayed.
+                        try:
+                            status = self.vlc.get_status()
+                            if status is not None:
+                                time_elem = status.find('time')
+                                length_elem = status.find('length')
+                                if time_elem is not None and length_elem is not None:
+                                    current_time = int(time_elem.text)
+                                    total_time = int(length_elem.text)
+                                    # If within 3 seconds of the end, we might want to act.
+                                    if total_time > 0 and (total_time - current_time) < 3:
+                                        if self._check_queue_auto_play_cooldown():
+                                            logger.info("Track is near the end, preparing to auto-play next queued item.")
+                                            # This path is tricky because we might preemptively switch.
+                                            # For now, we just log. The main 'stopped'/'paused' handler will do the work.
+                        except Exception as e:
+                            logger.debug(f"Error in end-of-track detection: {e}")
 
                     # If VLC pauses at the very end of a track (common behavior) and there's no queued item,
                     # clear presence to avoid showing a stale title
@@ -726,17 +710,27 @@ class PlaybackCommands(commands.Cog):
                             if self._check_queue_auto_play_cooldown():
                                 try:
                                     play_result = self.vlc.play_next_queued_item()
-                                    
+                                    logger.info(f"Auto-play result from stopped state: {play_result}")
                                     if play_result.get("success"):
-                                        logger.info(f"Periodic auto-play successful: {play_result.get('item_name', 'Unknown')}")
+                                        logger.info(f"Auto-played next queued item: {play_result.get('item_name', 'Unknown')}")
+                                        # Optionally notify
+                                        channel_id = getattr(Config, 'WATCH_ANNOUNCE_CHANNEL_ID', 0)
+                                        if channel_id:
+                                            try:
+                                                channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
+                                                if channel:
+                                                    await channel.send(f"Auto-playing next queued item: **{play_result.get('item_name', 'Unknown')}**")
+                                            except Exception as e:
+                                                logger.error(f"Failed to send auto-play notification: {e}")
+                                        # Update presence
                                         try:
-                                            await self._set_presence(play_result.get('item_name'), reason="periodic auto-play (stopped)")
+                                            await self._set_presence(play_result.get('item_name'), reason="auto-queue (stopped)")
                                         except Exception:
                                             pass
                                     else:
-                                        logger.warning(f"Periodic auto-play failed: {play_result.get('error', 'Unknown error')}")
+                                        logger.warning(f"Auto-play from stopped state failed: {play_result.get('error', 'Unknown error')}")
                                 except Exception as e:
-                                    logger.error(f"Error in periodic queue check: {e}")
+                                    logger.error(f"Error auto-playing from stopped state: {e}")
                         
                         # Case 2: VLC is playing but wrong item (queue was bypassed)
                         elif current_state == 'playing' and current_item:
@@ -1007,6 +1001,94 @@ class PlaybackCommands(commands.Cog):
             logger.error(f"subtitle_set error: {e}")
             await ctx.send(f"Error setting subtitles: {e}")
 
+    @commands.command(name='status', aliases=['np', 'nowplaying'])
+    @commands.has_any_role(*Config.ALLOWED_ROLES)
+    async def status(self, ctx):
+        """Show current VLC status and what's playing"""
+        embed = await self.get_status_embed()
+        if embed:
+            await ctx.send(embed=embed)
+        else:
+            await ctx.send("Could not retrieve VLC status.")
+
+    async def get_status_embed(self):
+        """Generate a rich embed for the current VLC status."""
+        try:
+            status = self.vlc.get_status()
+            if not status:
+                return None
+
+            state = status.find('state').text
+            
+            playlist = self.vlc.get_playlist()
+            position, current_item = self._find_current_position(playlist)
+            
+            item_name = None
+            if current_item is not None:
+                item_name = current_item.get('name')
+
+            # Try to get TMDB metadata
+            tmdb_embed = None
+            if item_name:
+                clean_title, year = MediaUtils.parse_movie_filename(item_name)
+                tmdb_embed = self.tmdb.get_movie_metadata(clean_title, year)
+                if not tmdb_embed:
+                    tmdb_embed = self.tmdb.get_tv_metadata(clean_title)
+
+            if tmdb_embed:
+                # Use the rich embed from TMDB
+                final_embed = tmdb_embed
+                final_embed.title = f"Now Playing: {final_embed.title}"
+            else:
+                # Create a basic embed
+                title = "VLC Status"
+                if item_name:
+                    title = f"Now Playing: {item_name}"
+                
+                final_embed = discord.Embed(title=title, color=discord.Color.blue())
+
+            # Add playback state and position
+            state_emoji_map = {
+                'playing': '▶️',
+                'paused': '⏸️',
+                'stopped': '⏹️'
+            }
+            state_text = f"{state_emoji_map.get(state, '')} {state.capitalize()}".strip()
+            
+            if position and item_name:
+                final_embed.add_field(name="Playlist", value=f"#{position}", inline=True)
+
+            final_embed.add_field(name="State", value=state_text, inline=True)
+
+            # Add time/duration
+            time_elem = status.find('time')
+            length_elem = status.find('length')
+            if time_elem is not None and length_elem is not None:
+                try:
+                    current_time = int(time_elem.text)
+                    total_time = int(length_elem.text)
+                    if total_time > 0:
+                        progress = f"{MediaUtils.format_time(current_time)} / {MediaUtils.format_time(total_time)}"
+                        final_embed.add_field(name="Progress", value=progress, inline=False)
+                except (ValueError, TypeError):
+                    pass # Ignore if time/length are not valid numbers
+
+            # Add footer
+            try:
+                if Config.KOFI_URL:
+                    final_embed.add_field(name="Support CtrlVee", value=f"☕ <{Config.KOFI_URL}>", inline=False)
+            except Exception:
+                pass
+
+            if not final_embed.thumbnail and hasattr(self.bot.user, 'display_avatar'):
+                final_embed.set_thumbnail(url=self.bot.user.display_avatar.url)
+
+            return final_embed
+
+        except Exception as e:
+            self.logger.error(f"Error getting status embed: {e}")
+            return None
+            
     @commands.command(name='play')
     @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def play(self, ctx):

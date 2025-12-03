@@ -1,3 +1,21 @@
+## 1.6.0 - 2025-12-03
+
+### Added
+- **Periodic "Now Playing" Announcements**: The bot can now periodically announce the currently playing media at a configurable interval. This is useful for users who join mid-playback.
+    - Controlled by `PERIODIC_ANNOUNCE_ENABLED` (default: `false`) and `PERIODIC_ANNOUNCE_INTERVAL` (default: `300` seconds) in the `.env` file.
+- **Genre in Metadata Embeds**: The "Genre" field is now included in TMDB metadata embeds for `!status` and new file announcements.
+
+### Changed
+- **Rich Track Change Announcements**: Automatic announcements for track changes are now rich embeds with TMDB metadata, consistent with `!status`.
+- **Configuration-driven Announcements**: The notification system now exclusively uses `WATCH_ANNOUNCE_CHANNEL_ID` from the `.env` file, making it more robust.
+- **Announcement De-duplication**: A timestamp-based mechanism prevents duplicate announcements when a track change is triggered by both a user command (e.g., `!next`) and the background monitor.
+
+### Removed
+- The `set_notification_channel`, `unset_notification_channel`, and `show_notification_channel` commands have been removed as they are now obsolete.
+
+### Fixed
+- The periodic announcement will now wait for the configured interval before sending its first message, preventing a misleading announcement immediately on bot startup.
+
 ## 1.5.14 - 2025-11-14
 
 ### Fixed
