@@ -1,3 +1,8 @@
+## 1.6.1 - 2025-12-04
+
+### Changed
+- **Smarter Periodic Announcements**: The periodic announcement system has been refactored to be event-driven. It now only activates when playback starts and deactivates when playback stops. This prevents redundant checks and ensures announcements are only made during active sessions.
+
 ## 1.6.0 - 2025-12-03
 
 ### Added

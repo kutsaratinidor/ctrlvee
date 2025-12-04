@@ -25,6 +25,7 @@ class PlaybackCommands(commands.Cog):
         self._presence_progress_task = None
         self._last_command_announce_ts = 0.0
         self.periodic_announce_task = None
+        self.playback_started_event = asyncio.Event()
         self.last_queue_auto_play = 0  # Timestamp of last queue auto-play to prevent rapid triggers
         # Presence/update throttling for bot activity updates
         self._presence_last_set = 0.0
@@ -134,55 +135,65 @@ class PlaybackCommands(commands.Cog):
             self.logger.info("Periodic announcement task stopped")
 
     async def _periodic_announce_loop(self):
-        """Periodically announce the currently playing media."""
+        """Periodically announce the currently playing media, triggered by playback start."""
         try:
             await self.bot.wait_until_ready()
         except Exception:
             return
 
         while not self.bot.is_closed():
-            interval = 300
             try:
-                # Use a local variable for the loop sleep to avoid waiting for config changes
+                # Wait until playback starts
+                self.logger.info("Periodic announcer is waiting for playback to start...")
+                await self.playback_started_event.wait()
+                self.logger.info("Playback started, periodic announcer is active.")
+
                 interval = int(getattr(Config, 'PERIODIC_ANNOUNCE_INTERVAL', 300))
 
-                # Wait for the interval before the first announcement
-                try:
-                    await asyncio.sleep(interval)
-                except asyncio.CancelledError:
-                    break # Exit loop cleanly on cancellation
-                except Exception:
-                    pass # Ignore other sleep errors
+                # Wait for the initial interval before the first announcement
+                await asyncio.sleep(interval)
 
-                # Core logic
-                if getattr(Config, 'PERIODIC_ANNOUNCE_ENABLED', False):
+                # Keep announcing as long as playback is active
+                while self.playback_started_event.is_set():
+                    if not getattr(Config, 'PERIODIC_ANNOUNCE_ENABLED', False):
+                        self.logger.debug("Periodic announcement disabled in config, pausing until re-enabled.")
+                        # If disabled, wait until it might be re-enabled without spamming checks
+                        await asyncio.sleep(interval)
+                        continue
+
                     channel_ids = Config.get_announce_channel_ids()
-                    if channel_ids:
-                        status = self.vlc.get_status()
-                        if status and status.find('state').text == 'playing':
-                            self.logger.info("VLC is playing, preparing periodic announcement...")
-                            # We are playing something, so let's announce it.
-                            # We can reuse the status command's logic to generate an embed.
-                            embed = await self.get_status_embed()
-                            if embed:
-                                for channel_id in channel_ids:
-                                    try:
-                                        channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
-                                        if channel:
-                                            await channel.send(embed=embed)
-                                            self.logger.info(f"Sent periodic 'Now Playing' announcement to channel {channel_id}")
-                                    except Exception as e:
-                                        self.logger.error(f"Failed to send periodic announcement to channel {channel_id}: {e}")
-                            else:
-                                self.logger.debug("Periodic announcement skipped: could not generate status embed.")
-                        else:
-                            self.logger.debug("Periodic announcement skipped: VLC not in 'playing' state.")
-                    else:
+                    if not channel_ids:
                         self.logger.debug("Periodic announcement skipped: No announcement channels configured.")
-                else:
-                    self.logger.debug("Periodic announcement skipped: Feature disabled in config.")
+                        await asyncio.sleep(interval)
+                        continue
+                    
+                    status = self.vlc.get_status()
+                    if status and status.find('state').text == 'playing':
+                        self.logger.info("VLC is playing, preparing periodic announcement...")
+                        embed = await self.get_status_embed()
+                        if embed:
+                            for channel_id in channel_ids:
+                                try:
+                                    channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
+                                    if channel:
+                                        await channel.send(embed=embed)
+                                        self.logger.info(f"Sent periodic 'Now Playing' announcement to channel {channel_id}")
+                                except Exception as e:
+                                    self.logger.error(f"Failed to send periodic announcement to channel {channel_id}: {e}")
+                        else:
+                            self.logger.debug("Periodic announcement skipped: could not generate status embed.")
+                    else:
+                        self.logger.debug("Periodic announcement skipped: VLC not in 'playing' state.")
+
+                    # Wait for the next interval
+                    await asyncio.sleep(interval)
+
+            except asyncio.CancelledError:
+                break # Exit loop cleanly on cancellation
             except Exception as e:
                 self.logger.error(f"Error in periodic announcement loop: {e}")
+                # If a major error occurs, wait a bit before restarting the wait
+                await asyncio.sleep(30)
 
     async def _presence_progress_loop(self):
         """Periodically update presence with playback progress (mm:ss/MM:SS)."""
@@ -434,10 +445,19 @@ class PlaybackCommands(commands.Cog):
                     # If VLC is stopped, clear the bot's presence (throttled)
                     # BUT: do not clear it if we are still waiting for the initial scan to complete
                     try:
-                        if current_state == 'stopped' and not self._initial_scan_pending:
-                            await self._set_presence(None, reason="stopped")
+                        if current_state == 'stopped':
+                            if not self._initial_scan_pending:
+                                await self._set_presence(None, reason="stopped")
+                            # Signal that playback has stopped
+                            if self.playback_started_event.is_set():
+                                self.logger.info("Playback stopped, deactivating periodic announcer.")
+                                self.playback_started_event.clear()
+                        elif current_state == 'playing':
+                            # Signal that playback has started
+                            if not self.playback_started_event.is_set():
+                                self.playback_started_event.set()
                     except Exception:
-                        # Non-fatal: presence update failures should not stop monitoring
+                        # Non-fatal: presence/event update failures should not stop monitoring
                         pass
                     
                     # Get current position and item from playlist
