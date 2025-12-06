@@ -557,10 +557,16 @@ async def on_ready():
                         # Try to get rich metadata
                         if tmdb_service:
                             try:
-                                clean_title, year = MediaUtils.parse_movie_filename(name)
-                                tmdb_embed = tmdb_service.get_movie_metadata(clean_title, year)
-                                if not tmdb_embed:
-                                    tmdb_embed = tmdb_service.get_tv_metadata(clean_title)
+                                # Try parsing as TV show first
+                                clean_title, season, episode = MediaUtils.parse_tv_filename(name)
+                                if season is not None and episode is not None:
+                                    tmdb_embed = tmdb_service.get_tv_metadata(clean_title, season)
+                                else:
+                                    # Fallback to movie parsing
+                                    clean_title, year = MediaUtils.parse_movie_filename(name)
+                                    tmdb_embed = tmdb_service.get_movie_metadata(clean_title, year)
+                                    if not tmdb_embed:
+                                        tmdb_embed = tmdb_service.get_tv_metadata(clean_title)
                                 
                                 if tmdb_embed:
                                     final_embed = tmdb_embed

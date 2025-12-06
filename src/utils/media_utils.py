@@ -288,3 +288,43 @@ class MediaUtils:
             cleaned = cleaned[:max_length-3] + "..."
 
         return cleaned
+
+    @staticmethod
+    def parse_tv_filename(filename: str) -> Tuple[str, Optional[int], Optional[int]]:
+        """Parse a TV show filename into a clean title, season, and episode.
+        
+        Args:
+            filename: A path or filename for a TV show file.
+        Returns:
+            (title, season, episode) where title is cleaned, and season/episode are ints or None
+        """
+        basename = os.path.basename(filename)
+        name, _ = os.path.splitext(basename)
+        
+        # Common patterns: S01E01, 1x01
+        # We want to capture the text BEFORE these patterns as the title.
+        
+        # Regex for S01E01 or s01e01
+        s_e_pattern = re.compile(r'^(.*?)[\.\s_]+[sS](\d{1,2})[eE](\d{1,2})', re.IGNORECASE)
+        match = s_e_pattern.search(name)
+        if match:
+            raw_title = match.group(1)
+            season = int(match.group(2))
+            episode = int(match.group(3))
+            # Clean the title part: replace separators with spaces
+            clean_title = raw_title.replace('.', ' ').replace('_', ' ').strip()
+            return clean_title, season, episode
+
+        # Regex for 1x01
+        x_pattern = re.compile(r'^(.*?)[\.\s_]+(\d{1,2})[xX](\d{1,2})', re.IGNORECASE)
+        match = x_pattern.search(name)
+        if match:
+            raw_title = match.group(1)
+            season = int(match.group(2))
+            episode = int(match.group(3))
+            clean_title = raw_title.replace('.', ' ').replace('_', ' ').strip()
+            return clean_title, season, episode
+            
+        # Fallback: try to use parse_movie_filename to just get a clean title
+        title, _ = MediaUtils.parse_movie_filename(filename)
+        return title, None, None

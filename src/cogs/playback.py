@@ -629,10 +629,14 @@ class PlaybackCommands(commands.Cog):
                                 try:
                                     if item_name:
                                         # Try to get TMDB metadata for a rich embed
-                                        clean_title, year = MediaUtils.parse_movie_filename(item_name)
-                                        tmdb_embed = self.tmdb.get_movie_metadata(clean_title, year)
-                                        if not tmdb_embed:
-                                            tmdb_embed = self.tmdb.get_tv_metadata(clean_title)
+                                        clean_title, season, episode = MediaUtils.parse_tv_filename(item_name)
+                                        if season is not None and episode is not None:
+                                            tmdb_embed = self.tmdb.get_tv_metadata(clean_title, season)
+                                        else:
+                                            clean_title, year = MediaUtils.parse_movie_filename(item_name)
+                                            tmdb_embed = self.tmdb.get_movie_metadata(clean_title, year)
+                                            if not tmdb_embed:
+                                                tmdb_embed = self.tmdb.get_tv_metadata(clean_title)
 
                                         if tmdb_embed:
                                             # Use the rich embed, but adjust title for the announcement
@@ -1050,10 +1054,14 @@ class PlaybackCommands(commands.Cog):
             # Try to get TMDB metadata
             tmdb_embed = None
             if item_name:
-                clean_title, year = MediaUtils.parse_movie_filename(item_name)
-                tmdb_embed = self.tmdb.get_movie_metadata(clean_title, year)
-                if not tmdb_embed:
-                    tmdb_embed = self.tmdb.get_tv_metadata(clean_title)
+                clean_title, season, episode = MediaUtils.parse_tv_filename(item_name)
+                if season is not None and episode is not None:
+                    tmdb_embed = self.tmdb.get_tv_metadata(clean_title, season)
+                else:
+                    clean_title, year = MediaUtils.parse_movie_filename(item_name)
+                    tmdb_embed = self.tmdb.get_movie_metadata(clean_title, year)
+                    if not tmdb_embed:
+                        tmdb_embed = self.tmdb.get_tv_metadata(clean_title)
 
             if tmdb_embed:
                 # Use the rich embed from TMDB
