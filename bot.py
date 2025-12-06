@@ -491,121 +491,102 @@ async def on_ready():
 
                     shown = paths[:max_items]
                     remaining = len(paths) - len(shown)
+                    
+                    # Prepare the list of files string
+                    desc_lines = []
+                    for p in shown:
+                        try:
+                            name = os.path.basename(p)
+                            pretty = MediaUtils.clean_filename_for_display(name)
+                            icon = MediaUtils.get_media_icon(name)
+                            desc_lines.append(f"• {icon} {pretty}")
+                        except Exception as e:
+                            logger.error(f"Error formatting announcement line for {p}: {e}")
+                            try:
+                                desc_lines.append(f"• {os.path.basename(p)}")
+                            except Exception:
+                                desc_lines.append("• <new media>")
 
-                    tmdb_embed = None
-                    # Multi-episode batch: try to create a compact season summary
+                    if remaining > 0:
+                        desc_lines.append(f"… and {remaining} more")
+                    
+                    file_list_str = "\n".join(desc_lines)
+
+                    final_embed = None
+
+                    # Case 1: Multi-file batch
                     if len(paths) > 1:
                         season_num, season_parent = _detect_season(paths)
-                        if season_num is not None:
-                            title = f"📥 Added Season {season_num} — {len(paths)} episode(s)"
-                        else:
-                            title = f"📥 {len(paths)} new file(s) added to VLC playlist"
-
-                        desc_lines = []
-                        for p in shown:
+                        
+                        # Try to get rich metadata for the season
+                        if season_num is not None and tmdb_service:
                             try:
-                                name = os.path.basename(p)
-                                pretty = MediaUtils.clean_filename_for_display(name)
-                                icon = MediaUtils.get_media_icon(name)
-                                desc_lines.append(f"• {icon} {pretty}")
-                            except Exception as e:
-                                logger.error(f"Error formatting announcement line for {p}: {e}")
-                                try:
-                                    desc_lines.append(f"• {os.path.basename(p)}")
-                                except Exception:
-                                    desc_lines.append("• <new media>")
-
-                        if remaining > 0:
-                            desc_lines.append(f"… and {remaining} more")
-
-                        embed = discord.Embed(title=title, description="\n".join(desc_lines), color=discord.Color.green())
-                        # Add Support/Kofi field when configured
-                        try:
-                            if Config.KOFI_URL:
-                                embed.add_field(name="Support CtrlVee", value=f"☕ {f'<{Config.KOFI_URL}>'}", inline=False)
-                        except Exception:
-                            pass
-                        # If we detected a season number and TMDB is available, fetch TV/season embed
-                        tv_embed = None
-                        try:
-                            if season_num is not None and tmdb_service:
-                                # Try to derive a series title from the first path's folder or filename
-                                # Prefer parent folder name (likely the series title)
                                 series_name = None
-                                try:
-                                    series_name = os.path.basename(season_parent) if season_parent else None
-                                except Exception:
-                                    series_name = None
-                                # Fallback to cleaning filename
+                                if season_parent:
+                                    series_name = os.path.basename(season_parent)
                                 if not series_name and paths:
-                                    try:
-                                        series_name = MediaUtils.clean_movie_title(os.path.basename(paths[0]))
-                                    except Exception:
-                                        series_name = None
-
+                                    series_name = MediaUtils.clean_movie_title(os.path.basename(paths[0]))
+                                
                                 if series_name:
                                     tv_embed = tmdb_service.get_tv_metadata(series_name, season_num)
-                        except Exception as e:
-                            logger.debug(f"TV metadata lookup failed: {e}")
-
-                    else:
-                        # Single item: keep previous behavior and attempt TMDB metadata
-                        title = f"📥 {len(paths)} new file(s) added to VLC playlist"
-                        desc_lines = []
-                        for p in shown:
-                            try:
-                                name = os.path.basename(p)
-                                pretty = MediaUtils.clean_filename_for_display(name)
-                                icon = MediaUtils.get_media_icon(name)
-                                desc_lines.append(f"• {icon} {pretty}")
+                                    if tv_embed:
+                                        final_embed = tv_embed
+                                        final_embed.title = f"📥 Added Season {season_num}: {final_embed.title}"
+                                        # Append file list to description
+                                        if final_embed.description:
+                                            final_embed.description += f"\n\n**Added Files:**\n{file_list_str}"
+                                        else:
+                                            final_embed.description = f"**Added Files:**\n{file_list_str}"
                             except Exception as e:
-                                logger.error(f"Error formatting announcement line for {p}: {e}")
-                                try:
-                                    desc_lines.append(f"• {os.path.basename(p)}")
-                                except Exception:
-                                    desc_lines.append("• <new media>")
+                                logger.debug(f"TV metadata lookup failed: {e}")
+                        
+                        # Fallback if no rich embed
+                        if not final_embed:
+                            if season_num is not None:
+                                title = f"📥 Added Season {season_num} — {len(paths)} episode(s)"
+                            else:
+                                title = f"📥 {len(paths)} new file(s) added to VLC playlist"
+                            
+                            final_embed = discord.Embed(title=title, description=file_list_str, color=discord.Color.green())
 
-                        embed = discord.Embed(title=title, description="\n".join(desc_lines), color=discord.Color.green())
+                    # Case 2: Single file
+                    else:
+                        path = paths[0]
+                        name = os.path.basename(path)
+                        
+                        # Try to get rich metadata
+                        if tmdb_service:
+                            try:
+                                clean_title, year = MediaUtils.parse_movie_filename(name)
+                                tmdb_embed = tmdb_service.get_movie_metadata(clean_title, year)
+                                if not tmdb_embed:
+                                    tmdb_embed = tmdb_service.get_tv_metadata(clean_title)
+                                
+                                if tmdb_embed:
+                                    final_embed = tmdb_embed
+                                    final_embed.title = f"✨ New Media Added: {final_embed.title}"
+                                    final_embed.description = (
+                                        f"**{name}** has been added to the library.\n\n"
+                                        f"{final_embed.description or ''}"
+                                    ).strip()
+                                    final_embed.color = discord.Color.purple()
+                            except Exception as e:
+                                logger.error(f"Error getting TMDB data for new file: {e}")
 
-                        try:
-                            if len(paths) == 1 and tmdb_service:
-                                fname = os.path.basename(paths[0])
-                                clean_title, year = MediaUtils.parse_movie_filename(fname)
-                                if clean_title:
-                                    logger.info(f"Fetching TMDB metadata for single added item: '{clean_title}' year={year}")
-                                    tmdb_embed = tmdb_service.get_movie_metadata(clean_title, year)
-                        except Exception as e:
-                            logger.error(f"Failed to prepare TMDB embed for single-item announcement: {e}")
+                        # Fallback
+                        if not final_embed:
+                            final_embed = discord.Embed(
+                                title="✨ New Media Added",
+                                description=f"**{name}** has been added to the library.",
+                                color=discord.Color.purple()
+                            )
 
-                    # Try to get TMDB metadata and create a single rich embed
-                    final_embed = None
+                    # Add Ko-fi support field if configured
                     try:
-                        clean_title, year = MediaUtils.parse_movie_filename(name)
-                        tmdb_embed = tmdb_service.get_movie_metadata(clean_title, year)
-                        if not tmdb_embed:
-                            # If movie fails, try TV
-                            tmdb_embed = tmdb_service.get_tv_metadata(clean_title)
-                        
-                        if tmdb_embed:
-                            # Use the rich embed, but adjust title and description for the announcement
-                            tmdb_embed.title = f"✨ New Media Added: {tmdb_embed.title}"
-                            tmdb_embed.description = (
-                                f"**{name}** has been added to the library.\n\n"
-                                f"{tmdb_embed.description or ''}"
-                            ).strip()
-                            tmdb_embed.color = discord.Color.purple()
-                            final_embed = tmdb_embed
-                        
-                    except Exception as e:
-                        logger.error(f"Error getting TMDB data for new file: {e}")
-
-                    # If no rich embed, create a simple one
-                    if not final_embed:
-                        final_embed = discord.Embed(
-                            title="✨ New Media Added",
-                            description=f"**{name}** has been added to the library.",
-                            color=discord.Color.purple()
-                        )
+                        if Config.KOFI_URL and final_embed:
+                            final_embed.add_field(name="Support CtrlVee", value=f"☕ {f'<{Config.KOFI_URL}>'}", inline=False)
+                    except Exception:
+                        pass
 
                     # Send the announcement to all configured channels
                     for ch in channels:

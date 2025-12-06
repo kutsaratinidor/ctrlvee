@@ -1,3 +1,8 @@
+## 1.6.2 - 2025-12-05
+
+### Improved
+- **New Media Announcements**: Enhanced handling of multi-file additions (e.g., season folders). The bot now correctly identifies season batches, fetches season metadata from TMDB, and lists all added files in the announcement description. Previously, adding a season folder might have resulted in an incomplete announcement.
+
 ## 1.6.1 - 2025-12-04
 
 ### Changed
