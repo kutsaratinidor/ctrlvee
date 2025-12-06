@@ -2,6 +2,8 @@ import discord
 from discord.ext import commands
 import asyncio
 import logging
+import os
+from urllib.parse import unquote, urlparse
 import xml.etree.ElementTree as ET
 from ..utils.media_utils import MediaUtils
 from ..config import Config
@@ -605,8 +607,17 @@ class PlaybackCommands(commands.Cog):
                         if state_changed or position_changed:
                             # Get item name if available
                             item_name = None
+                            item_path = None
                             if current_item is not None:
                                 item_name = current_item.get('name')
+                                uri = current_item.get('uri')
+                                if uri:
+                                    try:
+                                        parsed = urlparse(uri)
+                                        if parsed.scheme == 'file':
+                                            item_path = unquote(parsed.path)
+                                    except Exception:
+                                        pass
                                 
                             # Log the change regardless of notification channel
                             if state_changed:
@@ -629,7 +640,9 @@ class PlaybackCommands(commands.Cog):
                                 try:
                                     if item_name:
                                         # Try to get TMDB metadata for a rich embed
-                                        clean_title, season, episode = MediaUtils.parse_tv_filename(item_name)
+                                        dirname = os.path.dirname(item_path) if item_path else None
+                                        clean_title, season, episode = MediaUtils.parse_tv_filename(item_name, dirname=dirname)
+                                        self.logger.debug(f"Monitor: Parsed '{item_name}' -> Title: '{clean_title}', S: {season}, E: {episode}")
                                         if season is not None and episode is not None:
                                             tmdb_embed = self.tmdb.get_tv_metadata(clean_title, season)
                                         else:
@@ -1048,13 +1061,24 @@ class PlaybackCommands(commands.Cog):
             position, current_item = self._find_current_position(playlist)
             
             item_name = None
+            item_path = None
             if current_item is not None:
                 item_name = current_item.get('name')
+                uri = current_item.get('uri')
+                if uri:
+                    try:
+                        parsed = urlparse(uri)
+                        if parsed.scheme == 'file':
+                            item_path = unquote(parsed.path)
+                    except Exception:
+                        pass
 
             # Try to get TMDB metadata
             tmdb_embed = None
             if item_name:
-                clean_title, season, episode = MediaUtils.parse_tv_filename(item_name)
+                dirname = os.path.dirname(item_path) if item_path else None
+                clean_title, season, episode = MediaUtils.parse_tv_filename(item_name, dirname=dirname)
+                self.logger.debug(f"Status: Parsed '{item_name}' -> Title: '{clean_title}', S: {season}, E: {episode}")
                 if season is not None and episode is not None:
                     tmdb_embed = self.tmdb.get_tv_metadata(clean_title, season)
                 else:

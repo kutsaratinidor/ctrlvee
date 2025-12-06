@@ -523,7 +523,13 @@ async def on_ready():
                             try:
                                 series_name = None
                                 if season_parent:
-                                    series_name = os.path.basename(season_parent)
+                                    p_name = os.path.basename(season_parent)
+                                    # If parent folder is "Season X", use grandparent as series name
+                                    if re.match(r'^(season|series)\s*\d+$', p_name, re.IGNORECASE) or re.match(r'^s\d+$', p_name, re.IGNORECASE):
+                                        series_name = os.path.basename(os.path.dirname(season_parent))
+                                    else:
+                                        series_name = p_name
+                                
                                 if not series_name and paths:
                                     series_name = MediaUtils.clean_movie_title(os.path.basename(paths[0]))
                                 
@@ -553,12 +559,14 @@ async def on_ready():
                     else:
                         path = paths[0]
                         name = os.path.basename(path)
+                        dirname = os.path.dirname(path)
                         
                         # Try to get rich metadata
                         if tmdb_service:
                             try:
                                 # Try parsing as TV show first
-                                clean_title, season, episode = MediaUtils.parse_tv_filename(name)
+                                clean_title, season, episode = MediaUtils.parse_tv_filename(name, dirname=dirname)
+                                logger.debug(f"Notifier: Parsed '{name}' -> Title: '{clean_title}', S: {season}, E: {episode}")
                                 if season is not None and episode is not None:
                                     tmdb_embed = tmdb_service.get_tv_metadata(clean_title, season)
                                 else:

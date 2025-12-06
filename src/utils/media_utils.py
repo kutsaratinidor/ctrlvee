@@ -290,19 +290,24 @@ class MediaUtils:
         return cleaned
 
     @staticmethod
-    def parse_tv_filename(filename: str) -> Tuple[str, Optional[int], Optional[int]]:
+    def parse_tv_filename(filename: str, dirname: str = None) -> Tuple[str, Optional[int], Optional[int]]:
         """Parse a TV show filename into a clean title, season, and episode.
         
         Args:
             filename: A path or filename for a TV show file.
+            dirname: Optional parent directory path to help identify the show title.
         Returns:
             (title, season, episode) where title is cleaned, and season/episode are ints or None
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        
         basename = os.path.basename(filename)
         name, _ = os.path.splitext(basename)
         
-        # Common patterns: S01E01, 1x01
-        # We want to capture the text BEFORE these patterns as the title.
+        clean_title = ""
+        season = None
+        episode = None
         
         # Regex for S01E01 or s01e01
         s_e_pattern = re.compile(r'^(.*?)[\.\s_]+[sS](\d{1,2})[eE](\d{1,2})', re.IGNORECASE)
@@ -311,20 +316,38 @@ class MediaUtils:
             raw_title = match.group(1)
             season = int(match.group(2))
             episode = int(match.group(3))
-            # Clean the title part: replace separators with spaces
             clean_title = raw_title.replace('.', ' ').replace('_', ' ').strip()
-            return clean_title, season, episode
+            logger.debug(f"parse_tv_filename: matched SxxExx. Raw='{raw_title}', Clean='{clean_title}', S={season}, E={episode}")
+        else:
+            # Regex for 1x01
+            x_pattern = re.compile(r'^(.*?)[\.\s_]+(\d{1,2})[xX](\d{1,2})', re.IGNORECASE)
+            match = x_pattern.search(name)
+            if match:
+                raw_title = match.group(1)
+                season = int(match.group(2))
+                episode = int(match.group(3))
+                clean_title = raw_title.replace('.', ' ').replace('_', ' ').strip()
+                logger.debug(f"parse_tv_filename: matched NxNN. Raw='{raw_title}', Clean='{clean_title}', S={season}, E={episode}")
 
-        # Regex for 1x01
-        x_pattern = re.compile(r'^(.*?)[\.\s_]+(\d{1,2})[xX](\d{1,2})', re.IGNORECASE)
-        match = x_pattern.search(name)
-        if match:
-            raw_title = match.group(1)
-            season = int(match.group(2))
-            episode = int(match.group(3))
-            clean_title = raw_title.replace('.', ' ').replace('_', ' ').strip()
-            return clean_title, season, episode
+        # If we found season/episode but title is empty or generic, try dirname
+        if season is not None and episode is not None:
+            if (not clean_title or len(clean_title) < 2) and dirname:
+                # Try to extract title from dirname
+                parent = os.path.basename(dirname)
+                # Check if parent is "Season X" or "Specials"
+                if re.match(r'^(season|series)\s*\d+$', parent, re.IGNORECASE) or re.match(r'^s\d+$', parent, re.IGNORECASE) or parent.lower() == 'specials':
+                    # Go up one more level
+                    grandparent = os.path.basename(os.path.dirname(dirname))
+                    clean_title = grandparent
+                    logger.debug(f"parse_tv_filename: used grandparent folder for title: '{clean_title}'")
+                else:
+                    clean_title = parent
+                    logger.debug(f"parse_tv_filename: used parent folder for title: '{clean_title}'")
             
+            if clean_title:
+                return clean_title, season, episode
+
         # Fallback: try to use parse_movie_filename to just get a clean title
         title, _ = MediaUtils.parse_movie_filename(filename)
+        logger.debug(f"parse_tv_filename: no TV pattern match. Fallback title='{title}'")
         return title, None, None

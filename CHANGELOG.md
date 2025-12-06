@@ -1,3 +1,10 @@
+## 1.6.3 - 2025-12-05
+
+### Improved
+- **Smart TV Show Parsing**: Significantly improved the logic for identifying TV shows. The system now intelligently looks at parent and grandparent folder names to determine the show title when the filename is generic (e.g., `S01E01.mkv` inside a `Show Name` folder).
+- **Metadata Accuracy**: Applied the new parsing logic to both "New Media" announcements and "Now Playing" status updates, ensuring consistent and accurate metadata retrieval for TV episodes across the bot.
+- **Debug Logging**: Enabled debug logging by default to provide better visibility into filename parsing and metadata matching processes.
+
 ## 1.6.2 - 2025-12-05
 
 ### Improved
