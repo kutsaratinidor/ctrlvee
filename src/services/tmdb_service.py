@@ -28,16 +28,35 @@ class TMDBService:
             return None
         
         try:
-            self.logger.debug(f"Searching TMDB for title: {title}" + (f" ({year})" if year else ""))
+            self.logger.info(f"TMDB movie lookup: title='{title}' year={year}")
             search = tmdb.Search()
-            # TMDB supports 'year' and 'primary_release_year'. We'll pass 'year' for broader match.
+            # First attempt: include year if provided; if empty, fallback without year
             if year:
                 response = search.movie(query=title, year=year)
+                # Log raw result titles for diagnostics
+                try:
+                    res = response.get('results') or []
+                    self.logger.info(f"TMDB movie results (with year): count={len(res)} sample={[ (r.get('title') or r.get('original_title')) for r in res[:5] ]}")
+                except Exception:
+                    pass
+                if not response.get('results'):
+                    self.logger.info(f"TMDB movie lookup returned no results with year={year}; retrying without year")
+                    response = search.movie(query=title)
+                    try:
+                        res = response.get('results') or []
+                        self.logger.info(f"TMDB movie results (no year): count={len(res)} sample={[ (r.get('title') or r.get('original_title')) for r in res[:5] ]}")
+                    except Exception:
+                        pass
             else:
                 response = search.movie(query=title)
-            
-            if not response['results']:
-                self.logger.debug(f"No results found for: {title}")
+                try:
+                    res = response.get('results') or []
+                    self.logger.info(f"TMDB movie results: count={len(res)} sample={[ (r.get('title') or r.get('original_title')) for r in res[:5] ]}")
+                except Exception:
+                    pass
+
+            if not response.get('results'):
+                self.logger.info(f"TMDB movie lookup: no results for title='{title}' (year={year})")
                 return None
             
             # Choose best match: prefer exact title and year when provided
@@ -65,7 +84,7 @@ class TMDBService:
                     best = (rank, item)
 
             movie = (best[1] if best else response['results'][0])
-            self.logger.debug(f"Selected TMDB match: {movie.get('title')} ({(movie.get('release_date') or '')[:4]})")
+            self.logger.info(f"TMDB movie match: '{movie.get('title')}' year={(movie.get('release_date') or '')[:4]}")
             
             # Get more detailed movie info
             movie_info = tmdb.Movies(movie['id']).info()
@@ -96,7 +115,7 @@ class TMDBService:
                 
             return embed
         except Exception as e:
-            self.logger.error(f"Error getting movie metadata: {e}")
+            self.logger.error(f"Error getting movie metadata for title='{title}' year={year}: {e}")
             return None
 
     def get_tv_metadata(self, title: str, season: int | None = None):
@@ -113,11 +132,22 @@ class TMDBService:
             return None
 
         try:
-            self.logger.debug(f"Searching TMDB for TV title: {title}" + (f" (season {season})" if season else ""))
+            # Normalize title: strip trailing year in parentheses (e.g., "Show (2015)")
+            try:
+                import re as _re
+                norm_title = _re.sub(r"\s*\((19|20)\d{2}\)\s*$", "", title).strip()
+            except Exception:
+                norm_title = title
+            self.logger.info(f"TMDB TV lookup: title='{norm_title}' season={season}")
             search = tmdb.Search()
-            response = search.tv(query=title)
-            if not response['results']:
-                self.logger.debug(f"No TV results found for: {title}")
+            response = search.tv(query=norm_title)
+            try:
+                res = response.get('results') or []
+                self.logger.info(f"TMDB TV results: count={len(res)} sample={[ (r.get('name') or r.get('original_name')) for r in res[:5] ]}")
+            except Exception:
+                pass
+            if not response.get('results'):
+                self.logger.debug(f"No TV results found for: {norm_title}")
                 return None
 
             def norm(s: str) -> str:
@@ -143,7 +173,7 @@ class TMDBService:
                     best = (rank, item)
 
             tv = best[1] if best else response['results'][0]
-            self.logger.debug(f"Selected TV match: {tv.get('name')} ({(tv.get('first_air_date') or '')[:4]})")
+            self.logger.info(f"TMDB TV match: '{tv.get('name')}' year={(tv.get('first_air_date') or '')[:4]}")
 
             tv_info = tmdb.TV(tv['id']).info()
 
@@ -188,5 +218,5 @@ class TMDBService:
 
             return embed
         except Exception as e:
-            self.logger.error(f"Error getting TV metadata: {e}")
+            self.logger.error(f"Error getting TV metadata for title='{title}' season={season}: {e}")
             return None

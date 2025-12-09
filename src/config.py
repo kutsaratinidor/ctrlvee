@@ -74,6 +74,13 @@ class Config:
     VOICE_CONNECT_RETRY_DELAY: float = float(os.getenv('VOICE_CONNECT_RETRY_DELAY', '2.0'))
     VOICE_ERROR_RETRY_DELAY: float = float(os.getenv('VOICE_ERROR_RETRY_DELAY', '5.0'))
     VOICE_INITIAL_RETRIES: int = int(os.getenv('VOICE_INITIAL_RETRIES', '2'))  # extra retries after first attempt
+    # Voice logging and debounce/settle controls
+    DISCORD_VOICE_LOG_LEVEL: str = os.getenv('DISCORD_VOICE_LOG_LEVEL', 'CRITICAL').strip()
+    VOICE_INITIAL_SETTLE_SECONDS: float = float(os.getenv('VOICE_INITIAL_SETTLE_SECONDS', '20.0'))
+    VOICE_DEBOUNCE_SECONDS: float = float(os.getenv('VOICE_DEBOUNCE_SECONDS', '5.0'))
+    # Voice guard/event toggles
+    ENABLE_VOICE_GUARD: bool = os.getenv('ENABLE_VOICE_GUARD', 'false').strip().lower() in {'1','true','yes','y'}
+    ENABLE_VOICE_EVENTS_RECONNECT: bool = os.getenv('ENABLE_VOICE_EVENTS_RECONNECT', 'true').strip().lower() in {'1','true','yes','y'}
 
     # Watch Folders
     # Comma-separated absolute paths. If empty, watch service is disabled.
@@ -200,6 +207,11 @@ class Config:
             f"Voice Connect Retry Delay: {cls.VOICE_CONNECT_RETRY_DELAY}s",
             f"Voice Error Retry Delay: {cls.VOICE_ERROR_RETRY_DELAY}s",
             f"Voice Initial Retries: {cls.VOICE_INITIAL_RETRIES}",
+            f"Voice Initial Settle: {cls.VOICE_INITIAL_SETTLE_SECONDS}s",
+            f"Voice Debounce: {cls.VOICE_DEBOUNCE_SECONDS}s",
+            f"Discord Voice Log Level: {cls.DISCORD_VOICE_LOG_LEVEL}",
+            f"Voice Guard Enabled: {cls.ENABLE_VOICE_GUARD}",
+            f"Voice Events Reconnect Enabled: {cls.ENABLE_VOICE_EVENTS_RECONNECT}",
             f"TMDB API Key: {'Configured' if cls.TMDB_API_KEY else 'Not Configured'}",
             f"Discord Token: {'Configured' if cls.DISCORD_TOKEN else 'Not Configured'}",
             f"Ko-fi URL: {cls.KOFI_URL if cls.KOFI_URL else 'Not Configured'}",

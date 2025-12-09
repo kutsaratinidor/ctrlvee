@@ -1532,12 +1532,22 @@ class PlaybackCommands(commands.Cog):
                 self._presence_last_set = now
                 prev = self._presence_last_name
                 self._presence_last_name = name
+                # Log updates sparingly: only log a clear once per stopped state
                 if name:
                     logger.info(
                         f"Presence updated to: {display_name}" + (f" (reason: {reason})" if reason else "")
                     )
                 else:
-                    logger.info("Presence cleared" + (f" (reason: {reason})" if reason else ""))
+                    # Avoid spamming 'Presence cleared' when repeatedly stopped
+                    try:
+                        if getattr(self, '_presence_cleared_once', False):
+                            # Already logged this state; keep quiet
+                            pass
+                        else:
+                            logger.info("Presence cleared" + (f" (reason: {reason})" if reason else ""))
+                            self._presence_cleared_once = True
+                    except Exception:
+                        logger.info("Presence cleared" + (f" (reason: {reason})" if reason else ""))
             except Exception as e:
                 logger.debug(f"Failed to set presence: {e}")
         except Exception as e:

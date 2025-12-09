@@ -61,10 +61,11 @@ class WatchFolderService:
                 self.logger.info(f"Calculating media size: {idx}/{total_files} files processed...")
         self._cached_media_size = total
 
-    def set_notifier(self, notifier: Callable[[List[str]], None]):
+    def set_notifier(self, notifier: Callable[[List[str], bool], None]):
         """Set a callback that will be called with a list of successfully enqueued file paths.
 
         The callback MUST be thread-safe; it's invoked from the watch thread.
+        The second argument indicates whether this notification is from the initial scan.
         """
         self._notifier = notifier
 
@@ -273,10 +274,9 @@ class WatchFolderService:
         if enqueued and self._notifier:
             try:
                 # During the initial pass (bot startup) we keep the grouped behaviour
-                # to avoid flooding with thousands of messages. For subsequent scans
-                # we notify one-by-one so callers can present per-file metadata.
+                # and indicate initial scan to suppress metadata-heavy announcements.
                 if is_first_pass:
-                    self._notifier(enqueued)
+                    self._notifier(enqueued, True)
                 else:
                     # Group enqueued files by season tokens so a batch (season) does
                     # not spam one announcement per episode. We still allow single
@@ -322,10 +322,10 @@ class WatchFolderService:
                     for key, paths in groups.items():
                         try:
                             if len(paths) == 1:
-                                self._notifier(paths)
+                                self._notifier(paths, False)
                             else:
                                 # For multi-episode season batches, notify once with the whole list
-                                self._notifier(paths)
+                                self._notifier(paths, False)
                         except Exception as e:
                             self.logger.error(f"Notifier error for group {key}: {e}")
                         # Sleep between group notifications to avoid hammering TMDB/Discord

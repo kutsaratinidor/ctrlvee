@@ -1,3 +1,22 @@
+## 1.7.0 - 2025-12-09
+
+### Changed
+- **Voice Reconnect Hardening & Noise Suppression**: Unified voice connection checks, added debounce windows and an initial settle period to avoid thrashing after reconnects. Suppressed noisy internal `discord.voice_state` and `discord.gateway` logs by adjusting logger levels and handlers.
+- **Startup → New Media Ordering**: Ensured the startup announcement is sent before any new media announcements, even when `WATCH_ENQUEUE_ON_START=true`.
+- **Initial Scan Simplification**: On first watch-folder scan, announcements are compact lists without TMDB metadata to reduce churn.
+
+### Added
+- **Config Toggles for Voice Behavior**: New `.env` keys to tune or disable reconnect behavior and logging:
+	- `DISCORD_VOICE_LOG_LEVEL`, `DISCORD_GATEWAY_LOG_LEVEL`
+	- `VOICE_INITIAL_SETTLE_SECONDS`, `VOICE_DEBOUNCE_SECONDS`
+	- `ENABLE_VOICE_GUARD`, `ENABLE_VOICE_EVENTS_RECONNECT`
+- **File Sizes in Announcements**: Batch and single-file announcements now include file size or total batch size.
+- **TV Season Batch Embeds**: Multi-episode TV additions produce a season summary and, when possible, TMDB show/season context.
+
+### Fixed
+- **TV Title Normalization**: Removed trailing year markers from TV folder names before TMDB queries; improved parsing and fallback logging to avoid empty embeds.
+- **Presence Log Spam Reduction**: Deduplicated “presence cleared” logs when playback stops.
+
 ## 1.6.1 - 2025-12-04
 
 ### Changed

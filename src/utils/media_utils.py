@@ -145,6 +145,40 @@ class MediaUtils:
         return title
 
     @staticmethod
+    def parse_tv_filename(filename: str) -> Tuple[Optional[str], Optional[int], Optional[int]]:
+        """Parse a TV episode filename into (series_title, season, episode).
+
+        Handles common scene patterns like:
+        - Show.Name.S02E03.1080p...
+        - Show Name - S02E03 - ...
+        - Show Name 2x03 ...
+        - Season folders: parent directory 'Season 2'
+        """
+        base = os.path.basename(filename)
+        name, _ = os.path.splitext(base)
+        work = name.replace('.', ' ').replace('_', ' ')
+        # Season/Episode patterns
+        m = re.search(r'(?i)\bS(\d{1,2})E(\d{1,2})\b', work)
+        if not m:
+            m = re.search(r'(?i)\b(\d{1,2})x(\d{1,2})\b', work)
+        season = int(m.group(1)) if m else None
+        episode = int(m.group(2)) if m else None
+
+        # Remove season/episode token and common noise to extract series name
+        if m:
+            work = work[:m.start()].strip()
+        # Drop release noise similar to movie cleaning
+        work = re.sub(r'\s*\b(480|576|720|1080|2160|4320)p\b', ' ', work, flags=re.IGNORECASE)
+        work = re.sub(r'\b(?:web(?:-?dl|-?rip)?|bluray|brrip|bdrip|hdrip|hdtv|dvdrip|remux)\b', ' ', work, flags=re.IGNORECASE)
+        work = re.sub(r'\b(?:x?26[45]|h\.?26[45]|hevc|av1|xvid)\b', ' ', work, flags=re.IGNORECASE)
+        work = re.sub(r'\s+', ' ', work).strip()
+        # Cleanup trailing separators like '-' or '–'
+        work = re.sub(r'[\-–]+\s*$', '', work).strip()
+
+        series = work if work else None
+        return series, season, episode
+
+    @staticmethod
     def get_media_icon(filename):
         """Get appropriate icon for media file type"""
         name = filename.lower()

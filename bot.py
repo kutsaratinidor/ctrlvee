@@ -12,6 +12,33 @@ import discord
 # Get logger for this module
 logger = logging.getLogger(__name__)
 
+# Reduce noisy discord voice_state logs (optional)
+try:
+    vs_logger = logging.getLogger('discord.voice_state')
+    level_name = getattr(Config, 'DISCORD_VOICE_LOG_LEVEL', 'CRITICAL')
+    level = getattr(logging, level_name.upper(), logging.CRITICAL)
+    vs_logger.setLevel(level)
+    # Prevent double logging through root handlers
+    vs_logger.propagate = False
+    # Replace handlers with a NullHandler to silence library prints in some versions
+    try:
+        from logging import NullHandler
+        vs_logger.handlers = [NullHandler()]
+    except Exception:
+        vs_logger.handlers = []
+
+    # Also tune discord.gateway which can emit ratelimit/reconnect noise
+    gw_logger = logging.getLogger('discord.gateway')
+    gw_logger.setLevel(getattr(logging, getattr(Config, 'DISCORD_GATEWAY_LOG_LEVEL', 'WARNING').upper(), logging.WARNING))
+    gw_logger.propagate = False
+    try:
+        from logging import NullHandler
+        gw_logger.handlers = [NullHandler()]
+    except Exception:
+        gw_logger.handlers = []
+except Exception:
+    pass
+
 # Validate configuration
 config_errors = Config.validate()
 if config_errors:
@@ -40,6 +67,29 @@ from src.utils.media_utils import MediaUtils
 vlc = VLCController(bot=bot)
 tmdb_service = TMDBService()
 watch_service = WatchFolderService(vlc)
+_startup_announced = False
+
+# Shared voice reconnect debounce
+_voice_debounce_until = 0.0
+_initial_voice_settle_until = 0.0
+
+def _is_connected_to_channel(guild: discord.Guild, channel_id: int) -> bool:
+    try:
+        existing = discord.utils.get(bot.voice_clients, guild=guild)
+        return bool(existing and existing.is_connected() and getattr(existing, 'channel', None) and existing.channel.id == channel_id)
+    except Exception:
+        return False
+
+def _format_bytes(n: int) -> str:
+    try:
+        units = ["B", "KB", "MB", "GB", "TB"]
+        size = float(max(0, int(n)))
+        for u in units:
+            if size < 1024 or u == units[-1]:
+                return f"{size:.2f}{u}"
+            size /= 1024
+    except Exception:
+        return "-"
 
 # Optional: background playlist autosave
 _autosave_thread = None
@@ -74,6 +124,73 @@ _VOICE_ERROR_CODES = {
 
 # Serialize voice join attempts to avoid overlapping connects
 _voice_join_lock = asyncio.Lock()
+__last_connect_attempt_ts = 0.0
+
+async def _voice_connection_guard():
+    """Monitor voice connection and gracefully reconnect on common disconnects.
+
+    Uses backoff and windowed limits defined by VOICE_* config. Avoids log spam by
+    throttling reconnect attempts and respecting a cooldown after repeated failures.
+    """
+    try:
+        await bot.wait_until_ready()
+    except Exception:
+        return
+
+    global _last_voice_disconnect_ts, _reconnect_attempts
+    while not bot.is_closed():
+        try:
+            if not getattr(Config, 'ENABLE_VOICE_JOIN', False):
+                await asyncio.sleep(5)
+                continue
+
+            # Determine target channel
+            ch = await _resolve_voice_channel()
+            if not ch:
+                await asyncio.sleep(5)
+                continue
+
+            # Debounce guard if recent attempts occurred
+            now_t = time.time()
+            # Skip guard during initial settle window and active debounce
+            if now_t < _initial_voice_settle_until or now_t < _voice_debounce_until:
+                await asyncio.sleep(1)
+                continue
+
+            is_ok = _is_connected_to_channel(ch.guild, ch.id)
+
+            # If connected, reset counters and sleep
+            if is_ok:
+                _reconnect_attempts = 0
+                await asyncio.sleep(5)
+                continue
+
+            # If recently disconnected a lot, observe cooldown
+            now = time.time()
+            if _reconnect_attempts >= _MAX_RECONNECTS and (now - _last_voice_disconnect_ts) < _RECONNECT_COOLDOWN:
+                await asyncio.sleep(3)
+                continue
+
+            # Window reset
+            if (now - _last_voice_disconnect_ts) > _RECONNECT_WINDOW:
+                _reconnect_attempts = 0
+
+            # Attempt reconnect using existing join logic
+            try:
+                await join_voice_channel()
+                _reconnect_attempts += 1
+                _last_voice_disconnect_ts = now
+                # Post-verify after short delay; if healthy, set debounce window
+                await asyncio.sleep(1.0)
+                if _is_connected_to_channel(ch.guild, ch.id):
+                    _voice_debounce_until = time.time() + max(5.0, float(getattr(Config, 'VOICE_DEBOUNCE_SECONDS', 5.0)))
+            except Exception as e:
+                logger.debug(f"Voice guard reconnect attempt failed: {e}")
+            # Small delay before next guard check
+            await asyncio.sleep(_VOICE_ERROR_RETRY_DELAY)
+        except Exception as e:
+            logger.debug(f"Voice guard loop error: {e}")
+            await asyncio.sleep(5)
 
 async def _resolve_voice_channel() -> discord.VoiceChannel | None:
     """Resolve and validate the configured voice channel."""
@@ -116,6 +233,14 @@ async def join_voice_channel():
         return
 
     async with _voice_join_lock:
+        # Debounce overlapping attempts between guard and initial join
+        global __last_connect_attempt_ts
+        try:
+            if (time.time() - __last_connect_attempt_ts) < (_VOICE_CONNECT_RETRY_DELAY * 0.8):
+                await asyncio.sleep(_VOICE_CONNECT_RETRY_DELAY)
+        except Exception:
+            pass
+        __last_connect_attempt_ts = time.time()
         ch = await _resolve_voice_channel()
         if not ch:
             return
@@ -123,12 +248,12 @@ async def join_voice_channel():
         guild = ch.guild
 
         # If already connected correctly, do nothing
-        existing = discord.utils.get(bot.voice_clients, guild=guild)
-        if existing and existing.is_connected() and getattr(existing, 'channel', None) and existing.channel.id == ch.id:
+        if _is_connected_to_channel(guild, ch.id):
             logger.info(f"Already connected to voice channel: {ch.name}")
             return
 
         # If connected to a different channel in the same guild, try moving first
+        existing = discord.utils.get(bot.voice_clients, guild=guild)
         if existing and existing.is_connected() and getattr(existing, 'channel', None) and existing.channel.id != ch.id:
             try:
                 logger.info(f"Moving voice client from '{existing.channel.name}' to '{ch.name}'")
@@ -151,8 +276,7 @@ async def join_voice_channel():
         retries = max(0, int(getattr(Config, 'VOICE_INITIAL_RETRIES', 2)))
         for attempt in range(retries + 1):
             # Abort further attempts if we detect a good connection
-            existing = discord.utils.get(bot.voice_clients, guild=guild)
-            if existing and existing.is_connected() and getattr(existing, 'channel', None) and existing.channel.id == ch.id:
+            if _is_connected_to_channel(guild, ch.id):
                 logger.info("Detected active connection to target channel; stopping retries")
                 return
 
@@ -170,25 +294,27 @@ async def join_voice_channel():
                     continue
 
                 vc = await ch.connect(timeout=_VOICE_CONNECT_TIMEOUT, self_mute=True, self_deaf=True)
-                if vc and vc.is_connected():
-                    if vc.channel and vc.channel.id == ch.id:
-                        # small grace to stabilize
-                        await asyncio.sleep(1)
-                        if vc.is_connected():
-                            logger.info(f"Successfully joined voice channel: {ch.name}")
+                # Post-verify after short delay to avoid transient false negatives
+                await asyncio.sleep(0.8)
+                verify = discord.utils.get(bot.voice_clients, guild=guild)
+                if _is_connected_to_channel(guild, ch.id):
+                    logger.info(f"Successfully joined voice channel: {ch.name}")
+                    # Longer initial settle period to avoid library auto-reconnect noise
+                    _initial_voice_settle_until = time.time() + max(20.0, float(getattr(Config, 'VOICE_INITIAL_SETTLE_SECONDS', 20.0)))
+                    _voice_debounce_until = time.time() + max(5.0, float(getattr(Config, 'VOICE_DEBOUNCE_SECONDS', 5.0)))
+                    return
+                if verify and verify.is_connected() and getattr(verify, 'channel', None) and verify.channel.id != ch.id:
+                    try:
+                        logger.info(f"Connected to {verify.channel.name}; moving to '{ch.name}'")
+                        await verify.move_to(ch)
+                        await asyncio.sleep(0.8)
+                        if verify.channel and verify.channel.id == ch.id:
+                            logger.info("Voice client moved to configured channel successfully")
                             return
-                        else:
-                            logger.warning("Voice connection dropped immediately after connect; retrying")
-                            continue
-                    else:
-                        logger.warning(f"Connected to unexpected channel (got {getattr(vc.channel,'id',None)}, expected {ch.id}); disconnecting and retrying")
-                        try:
-                            await vc.disconnect(force=True)
-                        except Exception:
-                            pass
-                        continue
-
-                logger.warning("Voice connection unclear/failed; will retry")
+                    except Exception as e:
+                        logger.debug(f"Move after connect failed: {e}")
+                # If we reached here, treat as unclear and retry without spamming warnings
+                logger.debug("Voice connection unclear; will retry")
             except discord.ClientException as ce:
                 if "already connected to a voice channel" in str(ce).lower():
                     existing = discord.utils.get(bot.voice_clients, guild=guild)
@@ -227,14 +353,31 @@ async def on_voice_state_update(member, before, after):
     try:
         if not getattr(Config, 'ENABLE_VOICE_JOIN', False):
             return
+        if not getattr(Config, 'ENABLE_VOICE_EVENTS_RECONNECT', True):
+            return
         if not bot.user or member.id != bot.user.id:
             return
 
-        # We only care when we end up not in a channel anymore
+        # Ignore non-disconnect events; only act when bot ends up with no channel
         if after.channel is not None:
             return
 
+        # If already connected to the configured target, suppress reconnect noise
+        target_ch = await _resolve_voice_channel()
+        if target_ch and _is_connected_to_channel(target_ch.guild, target_ch.id):
+            logger.info("Voice disconnect event observed but client is already connected to target; suppressing reconnect")
+            return
+
         now = time.time()
+
+        # Debounce: if within recent successful verify window, skip
+        if now < _voice_debounce_until:
+            logger.info("Reconnect suppressed due to active debounce window")
+            return
+        # Suppress during initial settle window after a healthy join
+        if now < _initial_voice_settle_until:
+            logger.info("Reconnect suppressed due to initial settle window")
+            return
 
         # cooldown check
         if now - _last_voice_disconnect_ts < _RECONNECT_COOLDOWN:
@@ -367,6 +510,13 @@ async def on_ready():
             except Exception as e:
                 logger.warning(f"Failed to send startup message to channel {cid}: {e}")
 
+        # Mark startup announcement complete
+        try:
+            global _startup_announced
+            _startup_announced = True
+        except Exception:
+            pass
+
     # If initial enqueue on start is enabled, delay the announcement until after initial scan completes
     if Config.WATCH_ENQUEUE_ON_START and watch_service:
         logger.info("Delaying startup announcement until watch folder initial scan completes...")
@@ -450,9 +600,18 @@ async def on_ready():
                 logger.info(f"Resolved announce channels: {[ch.id for ch in channels]}")
                 return channels
 
-            def notifier(paths):
+            def notifier(paths, is_initial=False):
                 logger.info(f"Notifier called with {len(paths)} new files: {paths}")
                 async def _send_announcement():
+                    # Ensure startup announcement is sent first
+                    try:
+                        await bot.wait_until_ready()
+                        tries = 0
+                        while not _startup_announced and tries < 20:
+                            await asyncio.sleep(0.25)
+                            tries += 1
+                    except Exception:
+                        pass
                     channels = await get_channels()
                     logger.info(f"Announcing to channels: {[ch.id for ch in channels]}")
                     if not channels:
@@ -493,6 +652,16 @@ async def on_ready():
                     remaining = len(paths) - len(shown)
 
                     tmdb_embed = None
+                    # Compute sizes safely from filesystem, not playlist
+                    sizes = {}
+                    total_size = 0
+                    for p in paths:
+                        try:
+                            s = os.path.getsize(p)
+                            sizes[p] = s
+                            total_size += s
+                        except Exception:
+                            sizes[p] = None
                     # Multi-episode batch: try to create a compact season summary
                     if len(paths) > 1:
                         season_num, season_parent = _detect_season(paths)
@@ -519,34 +688,52 @@ async def on_ready():
                             desc_lines.append(f"… and {remaining} more")
 
                         embed = discord.Embed(title=title, description="\n".join(desc_lines), color=discord.Color.green())
+                        # Add total batch size
+                        try:
+                            embed.add_field(name="Total Size", value=_format_bytes(total_size), inline=True)
+                        except Exception:
+                            pass
                         # Add Support/Kofi field when configured
                         try:
                             if Config.KOFI_URL:
                                 embed.add_field(name="Support CtrlVee", value=f"☕ {f'<{Config.KOFI_URL}>'}", inline=False)
                         except Exception:
                             pass
-                        # If we detected a season number and TMDB is available, fetch TV/season embed
-                        tv_embed = None
-                        try:
-                            if season_num is not None and tmdb_service:
-                                # Try to derive a series title from the first path's folder or filename
-                                # Prefer parent folder name (likely the series title)
-                                series_name = None
-                                try:
-                                    series_name = os.path.basename(season_parent) if season_parent else None
-                                except Exception:
+                        # If initial scan, suppress TMDB lookups and show only compact list
+                        if is_initial:
+                            tv_embed = None
+                        else:
+                            # If we detected a season number and TMDB is available, fetch TV/season embed
+                            tv_embed = None
+                            try:
+                                if season_num is not None and tmdb_service:
+                                    # Try to derive a series title from the first path's folder or filename
+                                    # Prefer parent folder name (likely the series title)
                                     series_name = None
-                                # Fallback to cleaning filename
-                                if not series_name and paths:
                                     try:
-                                        series_name = MediaUtils.clean_movie_title(os.path.basename(paths[0]))
+                                        # If season_parent is '/.../Show/Season 2', take its parent basename
+                                        if season_parent:
+                                            show_dir = os.path.dirname(season_parent)
+                                            series_name = os.path.basename(show_dir) if show_dir else None
                                     except Exception:
                                         series_name = None
+                                    # Fallback to cleaning filename
+                                    if not series_name and paths:
+                                        try:
+                                            # Prefer TV parser to strip SxxExx and noise
+                                            s_title, s_season, _ = MediaUtils.parse_tv_filename(os.path.basename(paths[0]))
+                                            series_name = s_title or MediaUtils.clean_movie_title(os.path.basename(paths[0]))
+                                            # If season not detected earlier, use from filename
+                                            if season_num is None:
+                                                season_num = s_season
+                                        except Exception:
+                                            series_name = None
 
-                                if series_name:
-                                    tv_embed = tmdb_service.get_tv_metadata(series_name, season_num)
-                        except Exception as e:
-                            logger.debug(f"TV metadata lookup failed: {e}")
+                                    if series_name:
+                                        logger.info(f"Announcement TV parse: series='{series_name}' season={season_num}")
+                                        tv_embed = tmdb_service.get_tv_metadata(series_name, season_num)
+                            except Exception as e:
+                                logger.debug(f"TV metadata lookup failed: {e}")
 
                     else:
                         # Single item: keep previous behavior and attempt TMDB metadata
@@ -577,45 +764,148 @@ async def on_ready():
                         except Exception as e:
                             logger.error(f"Failed to prepare TMDB embed for single-item announcement: {e}")
 
-                    # Try to get TMDB metadata and create a single rich embed
+                    # Build the final embed: prefer TV season embed for multi-episode batches
                     final_embed = None
                     try:
-                        clean_title, year = MediaUtils.parse_movie_filename(name)
-                        tmdb_embed = tmdb_service.get_movie_metadata(clean_title, year)
-                        if not tmdb_embed:
-                            # If movie fails, try TV
-                            tmdb_embed = tmdb_service.get_tv_metadata(clean_title)
-                        
-                        if tmdb_embed:
-                            # Use the rich embed, but adjust title and description for the announcement
-                            tmdb_embed.title = f"✨ New Media Added: {tmdb_embed.title}"
-                            tmdb_embed.description = (
-                                f"**{name}** has been added to the library.\n\n"
-                                f"{tmdb_embed.description or ''}"
-                            ).strip()
-                            tmdb_embed.color = discord.Color.purple()
-                            final_embed = tmdb_embed
-                        
+                        if len(paths) > 1:
+                            # If we created a season embed (tv_embed), augment it with the episode list
+                            if 'tv_embed' in locals() and tv_embed:
+                                tv_embed.title = f"✨ New Media Added: {tv_embed.title}"
+                                # Always include the episode list in the description
+                                episode_list = (embed.description if (embed and embed.description) else '').strip()
+                                base_desc = (tv_embed.description or '').strip()
+                                if base_desc and episode_list:
+                                    tv_embed.description = f"{base_desc}\n\n{episode_list}"
+                                elif episode_list:
+                                    tv_embed.description = episode_list
+                                else:
+                                    # Ensure some content exists
+                                    tv_embed.description = f"{len(paths)} new episode(s) added."
+                                tv_embed.color = discord.Color.purple()
+                                # Add size field
+                                try:
+                                    tv_embed.add_field(name="Total Size", value=_format_bytes(total_size), inline=True)
+                                except Exception:
+                                    pass
+                                final_embed = tv_embed
+                            else:
+                                # Fallback to the compact list embed if TV lookup not available
+                                if embed:
+                                    embed.title = f"✨ New Media Added"
+                                    embed.color = discord.Color.purple()
+                                    # Ensure description not empty
+                                    if not embed.description:
+                                        embed.description = f"{len(paths)} new file(s) added to VLC playlist"
+                                    try:
+                                        embed.add_field(name="Total Size", value=_format_bytes(total_size), inline=True)
+                                    except Exception:
+                                        pass
+                                    final_embed = embed
+                                else:
+                                    final_embed = discord.Embed(
+                                        title="✨ New Media Added",
+                                        description=f"{len(paths)} new file(s) added to VLC playlist",
+                                        color=discord.Color.purple()
+                                    )
+                                    try:
+                                        final_embed.add_field(name="Total Size", value=_format_bytes(total_size), inline=True)
+                                    except Exception:
+                                        pass
+                        else:
+                            # Single file: attempt movie first, then TV metadata from filename
+                            suppress_single_tv = False
+                            if tmdb_service:
+                                fname = os.path.basename(paths[0])
+                                # Try TV parser first
+                                tv_title, tv_season, tv_episode = MediaUtils.parse_tv_filename(fname)
+                                if tv_title:
+                                    logger.info(f"Announcement single parse (TV): series='{tv_title}' season={tv_season} episode={tv_episode} from '{fname}'")
+                                # Suppress ALL single-episode TV announcements to avoid duplicates when a batch follows
+                                if tv_title:
+                                    suppress_single_tv = True
+                                clean_title, year = MediaUtils.parse_movie_filename(fname)
+                                logger.info(f"Announcement single parse (Movie): title='{clean_title}' year={year} from '{fname}'")
+                                tmdb_embed = None
+                                if not suppress_single_tv and not is_initial:
+                                    if tv_title:
+                                        tmdb_embed = tmdb_service.get_tv_metadata(tv_title, tv_season)
+                                    if not tmdb_embed and clean_title:
+                                        tmdb_embed = tmdb_service.get_movie_metadata(clean_title, year)
+                                    if not tmdb_embed and clean_title:
+                                        tmdb_embed = tmdb_service.get_tv_metadata(clean_title)
+                                    if tmdb_embed:
+                                        tmdb_embed.title = f"✨ New Media Added: {tmdb_embed.title}"
+                                        # Add the pretty filename line above TMDB overview
+                                        pretty = MediaUtils.clean_filename_for_display(os.path.basename(paths[0]))
+                                        overview = (tmdb_embed.description or '').strip()
+                                        if overview:
+                                            tmdb_embed.description = f"**{pretty}** has been added to the library.\n\n{overview}"
+                                        else:
+                                            tmdb_embed.description = f"**{pretty}** has been added to the library."
+                                        tmdb_embed.color = discord.Color.purple()
+                                        # Add file size
+                                        try:
+                                            sz = sizes.get(paths[0])
+                                            if sz is not None:
+                                                tmdb_embed.add_field(name="File Size", value=_format_bytes(sz), inline=True)
+                                        except Exception:
+                                            pass
+                                        final_embed = tmdb_embed
                     except Exception as e:
-                        logger.error(f"Error getting TMDB data for new file: {e}")
+                        logger.error(f"Error preparing TMDB embed for announcement: {e}")
 
                     # If no rich embed, create a simple one
-                    if not final_embed:
-                        final_embed = discord.Embed(
-                            title="✨ New Media Added",
-                            description=f"**{name}** has been added to the library.",
-                            color=discord.Color.purple()
-                        )
-
-                    # Send the announcement to all configured channels
-                    for ch in channels:
+                    if not final_embed and not (len(paths) == 1 and 'suppress_single_tv' in locals() and suppress_single_tv):
+                        # Generic fallback: use the constructed list embed (embed) if available
                         try:
-                            logger.info(f"Sending announcement to channel {ch.id}")
-                            await ch.send(embed=final_embed)
-                        except discord.Forbidden:
-                            logger.warning(f"Missing permission to send announcements in channel {ch.id}.")
-                        except Exception as e:
-                            logger.error(f"Failed to send announcement to channel {ch.id}: {e}")
+                            if embed:
+                                embed.title = "✨ New Media Added"
+                                embed.color = discord.Color.purple()
+                                # Add sizes to fallback
+                                try:
+                                    if len(paths) == 1:
+                                        sz = sizes.get(paths[0])
+                                        if sz is not None:
+                                            embed.add_field(name="File Size", value=_format_bytes(sz), inline=True)
+                                    else:
+                                        embed.add_field(name="Total Size", value=_format_bytes(total_size), inline=True)
+                                except Exception:
+                                    pass
+                                final_embed = embed
+                            else:
+                                # Last-resort minimal embed
+                                title_text = os.path.basename(paths[0]) if paths else "New Media"
+                                final_embed = discord.Embed(
+                                    title="✨ New Media Added",
+                                    description=f"**{title_text}** has been added to the library.",
+                                    color=discord.Color.purple()
+                                )
+                                try:
+                                    if len(paths) == 1:
+                                        sz = sizes.get(paths[0])
+                                        if sz is not None:
+                                            final_embed.add_field(name="File Size", value=_format_bytes(sz), inline=True)
+                                    else:
+                                        final_embed.add_field(name="Total Size", value=_format_bytes(total_size), inline=True)
+                                except Exception:
+                                    pass
+                        except Exception:
+                            title_text = os.path.basename(paths[0]) if paths else "New Media"
+                            final_embed = discord.Embed(
+                                title="✨ New Media Added",
+                                description=f"**{title_text}** has been added to the library.",
+                                color=discord.Color.purple()
+                            )
+                    # Send the announcement to all configured channels
+                    if not (len(paths) == 1 and 'suppress_single_tv' in locals() and suppress_single_tv):
+                        for ch in channels:
+                            try:
+                                logger.info(f"Sending announcement to channel {ch.id}")
+                                await ch.send(embed=final_embed)
+                            except discord.Forbidden:
+                                logger.warning(f"Missing permission to send announcements in channel {ch.id}.")
+                            except Exception as e:
+                                logger.error(f"Failed to send announcement to channel {ch.id}: {e}")
                 asyncio.run_coroutine_threadsafe(_send_announcement(), bot.loop)
 
             watch_service.set_notifier(notifier)
@@ -703,6 +993,14 @@ async def on_ready():
 
         # Join voice channel after all startup tasks are done
         await join_voice_channel()
+        # Start voice connection guard if enabled
+        try:
+            if getattr(Config, 'ENABLE_VOICE_GUARD', False):
+                bot.loop.create_task(_voice_connection_guard())
+            else:
+                logger.info("Voice guard is disabled (ENABLE_VOICE_GUARD=false)")
+        except Exception as e:
+            logger.debug(f"Could not start voice connection guard: {e}")
     except Exception as e:
         logger.error(f"Failed to start WatchFolderService: {e}")
 
