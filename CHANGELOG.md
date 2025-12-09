@@ -1,3 +1,13 @@
+## 1.7.2 - 2025-12-09
+
+### Changed
+- Watch-folder announcements: tightened TV detection for single-file additions. Only treat as TV when an explicit episode token is present (SxxExx or 1x02). Prefer movie metadata when both TV and movie parse but no episode token is found.
+- Announcement scheduling: added completion/error callbacks so failures in the async announcement task are logged explicitly.
+- Commands: replaced obsolete `_update_now_playing` with unified `_announce_now_playing` to avoid AttributeError.
+
+### Added
+- Config toggle `SUPPRESS_SINGLE_TV` (default: true) to control whether single-episode TV additions are suppressed. Set to `false` to announce single episodes immediately.
+
 ## 1.7.1 - 2025-12-09
 
 ### Changed
@@ -334,20 +344,3 @@
 All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
-
-## 1.7.1 - 2025-12-09
-
-### Changed
-- Unified "Now Playing" announcements via a single announcer function to de-duplicate command-initiated and auto monitor events.
-- Added cooldowns and a suppression window to prevent redundant messages; values are configurable.
-- Refined the admin cleanup command to produce a concise names-only embed with a footer indicating it's not broadcasted.
-- Minor robustness tweaks around voice reconnect handling and logging based on config.
-
-## 1.7.0 - 2025-12-09
-
-### Changed
-- **Voice Reconnect Hardening & Noise Suppression**: Unified voice connection checks, added debounce windows and an initial settle period to avoid thrashing after reconnects. Suppressed noisy internal `discord.voice_state` and `discord.gateway` logs by adjusting logger levels and handlers.
-- **Startup → New Media Ordering**: Ensured the startup announcement is sent before any new media announcements, even when `WATCH_ENQUEUE_ON_START=true`.
-- **Initial Scan Simplification**: On first watch-folder scan, announcements are compact lists without TMDB metadata to reduce churn.
-
-### Added

@@ -814,23 +814,27 @@ async def on_ready():
                         else:
                             # Single file: attempt movie first, then TV metadata from filename
                             suppress_single_tv = False
+                            suppress_cfg = bool(getattr(Config, 'SUPPRESS_SINGLE_TV', True))
                             if tmdb_service:
                                 fname = os.path.basename(paths[0])
                                 # Try TV parser first
                                 tv_title, tv_season, tv_episode = MediaUtils.parse_tv_filename(fname)
                                 if tv_title:
                                     logger.info(f"Announcement single parse (TV): series='{tv_title}' season={tv_season} episode={tv_episode} from '{fname}'")
-                                # Suppress ALL single-episode TV announcements to avoid duplicates when a batch follows
-                                if tv_title:
+                                # Tighten TV suppression: only suppress if an explicit episode is detected
+                                # e.g., S01E02 or 1x02 patterns (tv_episode parsed) or a clear season number with episode-like pattern
+                                has_explicit_episode = bool(tv_episode) or bool(re.search(r"(?i)(s\d{1,2}e\d{1,2}|\d{1,2}x\d{1,2})", fname))
+                                if tv_title and suppress_cfg and has_explicit_episode:
                                     suppress_single_tv = True
                                 clean_title, year = MediaUtils.parse_movie_filename(fname)
                                 logger.info(f"Announcement single parse (Movie): title='{clean_title}' year={year} from '{fname}'")
                                 tmdb_embed = None
-                                if not suppress_single_tv and not is_initial:
-                                    if tv_title:
-                                        tmdb_embed = tmdb_service.get_tv_metadata(tv_title, tv_season)
-                                    if not tmdb_embed and clean_title:
+                                # Prefer movie metadata when both parse and no explicit episode token
+                                if not is_initial:
+                                    if not suppress_single_tv and clean_title:
                                         tmdb_embed = tmdb_service.get_movie_metadata(clean_title, year)
+                                    if not tmdb_embed and tv_title:
+                                        tmdb_embed = tmdb_service.get_tv_metadata(tv_title, tv_season)
                                     if not tmdb_embed and clean_title:
                                         tmdb_embed = tmdb_service.get_tv_metadata(clean_title)
                                     if tmdb_embed:
@@ -906,7 +910,25 @@ async def on_ready():
                                 logger.warning(f"Missing permission to send announcements in channel {ch.id}.")
                             except Exception as e:
                                 logger.error(f"Failed to send announcement to channel {ch.id}: {e}")
-                asyncio.run_coroutine_threadsafe(_send_announcement(), bot.loop)
+                    else:
+                        try:
+                            logger.info("Single TV episode announcement suppressed by rule (set SUPPRESS_SINGLE_TV=false to send)")
+                        except Exception:
+                            pass
+                
+                # Schedule the announcement and log if it fails
+                try:
+                    future = asyncio.run_coroutine_threadsafe(_send_announcement(), bot.loop)
+                    # Add a callback to log if the task raised an exception
+                    def _log_result(fut):
+                        try:
+                            fut.result()  # Will raise if the coroutine failed
+                            logger.info("Announcement task completed successfully")
+                        except Exception as e:
+                            logger.error(f"Announcement task failed with exception: {e}", exc_info=True)
+                    future.add_done_callback(_log_result)
+                except Exception as e:
+                    logger.error(f"Failed to schedule announcement coroutine: {e}", exc_info=True)
 
             watch_service.set_notifier(notifier)
 
