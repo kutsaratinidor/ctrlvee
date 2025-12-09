@@ -1394,8 +1394,8 @@ class PlaybackCommands(commands.Cog):
                             self.vlc.play()
                             await asyncio.sleep(1)
                 
-                # Update now playing with the item we just started
-                await self._update_now_playing(ctx, item, number)
+                # Announce now playing via unified announcer
+                await self._announce_now_playing('command', item, number)
                 
                 # Verify it's actually playing
                 status = self.vlc.get_status()
