@@ -24,6 +24,20 @@ class PlaybackCommands(commands.Cog):
         self.monitoring_task = None
         self._presence_progress_task = None
         self._last_command_announce_ts = 0.0
+        self._suppress_auto_announce_until = 0.0
+        self._last_announced_item_id = None
+        self._last_announced_item_name = None
+        self._command_initiated_change = False  # Suppress auto announce immediately after bot-issued next/prev
+        # Unified announcer cooldown
+        self._last_now_playing_key = None
+        self._last_now_playing_ts = 0.0
+        try:
+            from ..config import Config
+            self._np_cooldown = float(getattr(Config, 'NOW_PLAYING_COOLDOWN_SECONDS', 10.0))
+            self._auto_suppress_seconds = float(getattr(Config, 'AUTO_ANNOUNCE_SUPPRESS_SECONDS', 6.0))
+        except Exception:
+            self._np_cooldown = 10.0
+            self._auto_suppress_seconds = 6.0
         self.periodic_announce_task = None
         self.playback_started_event = asyncio.Event()
         self.last_queue_auto_play = 0  # Timestamp of last queue auto-play to prevent rapid triggers
@@ -121,6 +135,75 @@ class PlaybackCommands(commands.Cog):
                     self.logger.debug(f"Failed to set startup presence: {e}")
         except Exception as e:
             self.logger.debug(f"Startup presence sync skipped: {e}")
+
+    async def _announce_now_playing(self, origin: str, item: ET.Element | None, position: int | None):
+        """Unified Now Playing announcer with cooldown and de-duplication.
+
+        origin: 'command' | 'monitor' | 'periodic'
+        item: current VLC playlist leaf element
+        position: 1-based playlist position if known
+        """
+        try:
+            if item is None:
+                return
+            name = item.get('name') or ''
+            if not name:
+                return
+            # Build a de-duplication key from cleaned name and position
+            key = f"{MediaUtils.clean_filename_for_display(name)}|{position or ''}"
+            now_ts = asyncio.get_event_loop().time()
+            # Cooldown: avoid re-announcing the same item too frequently
+            if self._last_now_playing_key == key and (now_ts - self._last_now_playing_ts) < self._np_cooldown:
+                return
+            # Prepare TMDB embed if possible
+            tmdb_embed = None
+            try:
+                title, year = MediaUtils.parse_movie_filename(name)
+                tmdb_embed = self.tmdb.get_movie_metadata(title, year)
+                if not tmdb_embed:
+                    tmdb_embed = self.tmdb.get_tv_metadata(title)
+            except Exception:
+                tmdb_embed = None
+            if tmdb_embed:
+                final = tmdb_embed
+                final.title = f"Now Playing: {final.title}"
+            else:
+                final = discord.Embed(title=f"Now Playing: {name}", color=discord.Color.blue())
+            # Add position if available
+            if position:
+                try:
+                    final.add_field(name="Playlist", value=f"#{position}", inline=True)
+                except Exception:
+                    pass
+            # Update presence
+            try:
+                await self._set_presence(name, reason=f"now playing ({origin})")
+            except Exception:
+                pass
+            # Send to announce channels
+            channel_ids = Config.get_announce_channel_ids()
+            for channel_id in channel_ids or []:
+                try:
+                    channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
+                    if channel:
+                        await channel.send(embed=final)
+                        self.logger.info(f"Sent unified Now Playing ({origin}) to channel {channel_id}")
+                except Exception as e:
+                    self.logger.error(f"Failed to send unified Now Playing to channel {channel_id}: {e}")
+            # Record last
+            self._last_now_playing_key = key
+            self._last_now_playing_ts = now_ts
+            # Mark command suppression states
+            try:
+                self._last_command_announce_ts = now_ts if origin == 'command' else self._last_command_announce_ts
+                if origin == 'command':
+                    self._suppress_auto_announce_until = now_ts + self._auto_suppress_seconds
+                    self._last_announced_item_id = item.get('id')
+                    self._last_announced_item_name = name
+            except Exception:
+                pass
+        except Exception as e:
+            self.logger.error(f"_announce_now_playing error: {e}")
         
     async def cog_unload(self):
         """Called when the cog is unloaded"""
@@ -133,6 +216,47 @@ class PlaybackCommands(commands.Cog):
         if self.periodic_announce_task:
             self.periodic_announce_task.cancel()
             self.logger.info("Periodic announcement task stopped")
+
+    @commands.command(name='cleanup', aliases=['plcleanup','cleanup_missing'])
+    async def cleanup_missing(self, ctx: commands.Context):
+        """Remove missing/unavailable files from the VLC playlist.
+
+        Scans the current VLC playlist for items whose underlying files no longer exist
+        (e.g., replaced/upgraded files) and removes them. Shows a summary of removed items.
+        """
+        try:
+            await ctx.trigger_typing()
+        except Exception:
+            pass
+        try:
+            result = self.vlc.remove_missing_playlist_items()
+            removed = int(result.get('removed', 0))
+            items = result.get('items', []) or []
+            if removed == 0:
+                await ctx.send("✅ Playlist cleanup: no missing files detected.")
+                return
+            max_list = 10
+            listed = items[:max_list]
+            more = removed - len(listed)
+            lines = []
+            for it in listed:
+                nm = it.get('name') or '<unknown>'
+                lines.append(f"• {MediaUtils.clean_filename_for_display(nm)}")
+            if more > 0:
+                lines.append(f"… and {more} more")
+            embed = discord.Embed(
+                title="🧹 Playlist Cleanup",
+                description=f"Removed {removed} missing file(s) from the playlist:\n\n" + "\n".join(lines),
+                color=discord.Color.orange()
+            )
+            try:
+                embed.set_footer(text="Admin cleanup tool — not broadcasted")
+            except Exception:
+                pass
+            await ctx.send(embed=embed)
+        except Exception as e:
+            self.logger.error(f"cleanup_missing error: {e}")
+            await ctx.send(f"❌ Cleanup failed: {e}")
 
     async def _periodic_announce_loop(self):
         """Periodically announce the currently playing media, triggered by playback start."""
@@ -623,50 +747,19 @@ class PlaybackCommands(commands.Cog):
                             
                             # Only send Discord message if a notification channel is configured
                             channel_ids = Config.get_announce_channel_ids()
-                            if channel_ids and (asyncio.get_event_loop().time() - self._last_command_announce_ts) > 4:
-                                self.logger.info(f"Track change detected, preparing announcement for channels: {channel_ids}")
-                                final_embed = None
-                                try:
-                                    if item_name:
-                                        # Try to get TMDB metadata for a rich embed
-                                        clean_title, year = MediaUtils.parse_movie_filename(item_name)
-                                        tmdb_embed = self.tmdb.get_movie_metadata(clean_title, year)
-                                        if not tmdb_embed:
-                                            tmdb_embed = self.tmdb.get_tv_metadata(clean_title)
-
-                                        if tmdb_embed:
-                                            # Use the rich embed, but adjust title for the announcement
-                                            tmdb_embed.title = f"Now Playing: {tmdb_embed.title}"
-                                            final_embed = tmdb_embed
-                                            
-                                except Exception as e:
-                                    self.logger.error(f"Error getting TMDB data for notification: {e}")
-
-                                # If no rich embed, create a simple one
-                                if not final_embed:
-                                    message = ""
-                                    if state_changed:
-                                        message = f"VLC state changed to: **{current_state}**"
-                                    elif position_changed:
-                                        message = f"Track changed to: **{item_name or 'Unknown'}**"
-                                        if current_position:
-                                            message += f" (Playlist #{current_position})"
-                                            
-                                    final_embed = discord.Embed(
-                                        title="VLC Update",
-                                        description=message,
-                                        color=discord.Color.yellow()
-                                    )
-                                
-                                # Fetch channel and send
-                                for channel_id in channel_ids:
-                                    try:
-                                        channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
-                                        if channel:
-                                            await channel.send(embed=final_embed)
-                                            self.logger.info(f"Sent automatic notification for track change to channel {channel_id}")
-                                    except Exception as e:
-                                        self.logger.error(f"Failed to send automatic notification to channel {channel_id}: {e}")
+                            now_ts = asyncio.get_event_loop().time()
+                            # If the bot itself initiated the change, suppress one-time auto announce and clear the flag
+                            if self._command_initiated_change:
+                                self.logger.debug("Auto announce suppressed: command-initiated change")
+                                self._command_initiated_change = False
+                                continue
+                            # Hard suppression: if we just sent a command-driven Now Playing, skip auto announce entirely (short window)
+                            if position_changed and (now_ts - self._last_command_announce_ts) < self._auto_suppress_seconds:
+                                self.logger.debug("Auto announce suppressed: recent command-driven Now Playing")
+                            # Note: do not suppress by ID/name to allow manual selection announcements
+                            elif channel_ids and (now_ts - self._last_command_announce_ts) > 1 and now_ts >= self._suppress_auto_announce_until:
+                                # Use unified announcer
+                                await self._announce_now_playing('monitor', current_item, current_position)
                             elif not channel_ids:
                                 self.logger.debug("Track change announcement skipped: No announcement channels configured.")
                             else:
@@ -1352,6 +1445,11 @@ class PlaybackCommands(commands.Cog):
         if self.vlc.next():
             logger.info("Loading next track")
             await ctx.send('Loading next track...')
+            try:
+                # Mark that this change was initiated by our command to suppress one auto announce
+                self._command_initiated_change = True
+            except Exception:
+                pass
             await asyncio.sleep(3)  # Give VLC time to load and start playing the file
             
             status = self.vlc.get_status()
@@ -1369,7 +1467,11 @@ class PlaybackCommands(commands.Cog):
             if status and playlist:
                 position, current_item = self._find_current_position(playlist)
                 if current_item is not None:
-                    await self._update_now_playing(ctx, current_item, position)
+                    await self._announce_now_playing('command', current_item, position)
+                    try:
+                        self._suppress_auto_announce_until = asyncio.get_event_loop().time() + 5.0
+                    except Exception:
+                        pass
                 else:
                     await ctx.send('Skipped to next track')
             else:
@@ -1387,6 +1489,10 @@ class PlaybackCommands(commands.Cog):
         if self.vlc.previous():
             logger.info("Loading previous track")
             await ctx.send('Loading previous track...')
+            try:
+                self._command_initiated_change = True
+            except Exception:
+                pass
             await asyncio.sleep(3)  # Give VLC time to load and start playing the file
             
             status = self.vlc.get_status()
@@ -1416,7 +1522,11 @@ class PlaybackCommands(commands.Cog):
                         if item.get('id') == current_item.get('id'):
                             position = i + 1  # Convert to 1-based index
                             break
-                    await self._update_now_playing(ctx, current_item, position)
+                    await self._announce_now_playing('command', current_item, position)
+                    try:
+                        self._suppress_auto_announce_until = asyncio.get_event_loop().time() + 5.0
+                    except Exception:
+                        pass
                 else:
                     await ctx.send('Jumped to previous track')
             else:
@@ -1424,56 +1534,6 @@ class PlaybackCommands(commands.Cog):
         else:
             await ctx.send('Error: Could not jump to previous track')
 
-    async def _update_now_playing(self, ctx, item, item_number=None):
-        """Update the now playing message with enhanced metadata"""
-        try:
-            name = item.get("name")
-            if not name:
-                logger.error("Invalid item - no name found")
-                await ctx.send('Error: Invalid item (no name found)')
-                return
-                
-            logger.info(f"Now playing: {name}" + (f" (#{item_number})" if item_number else ""))
-            search_title, search_year = MediaUtils.parse_movie_filename(name)
-            movie_embed = self.tmdb.get_movie_metadata(search_title, search_year)
-        except Exception as e:
-            logger.error(f"Error getting movie metadata: {str(e)}")
-            await ctx.send(f'Error getting movie metadata: {str(e)}')
-            return
-        
-        if movie_embed:
-            # For movie metadata, add Quick Replay at the bottom
-            if item_number:
-                movie_embed.add_field(name="Quick Replay", value=f"💡 Use {format_cmd_inline(f'play_num {item_number}')} to play this item again", inline=False)
-            await ctx.send(embed=movie_embed)
-            # Update Discord presence to show what's playing (throttled)
-            try:
-                await self._set_presence(name, reason="now playing (metadata)")
-            except Exception:
-                pass
-        else:
-            embed = discord.Embed(
-                title="Now Playing",
-                color=discord.Color.blue()
-            )
-            
-            # Add name
-            embed.add_field(
-                name="Now Playing",
-                value=name,
-                inline=False
-            )
-            
-            # Add Quick Replay at the bottom
-            if item_number:
-                embed.add_field(name="Quick Replay", value=f"💡 Use {format_cmd_inline(f'play_num {item_number}')} to play this item again", inline=False)
-                
-            await ctx.send(embed=embed)
-            # Update Discord presence to show what's playing (throttled)
-            try:
-                await self._set_presence(name, reason="now playing")
-            except Exception:
-                pass
             
     async def _check_vlc_connection(self, ctx):
         """Check if VLC is accessible and send error message if not

@@ -1,3 +1,11 @@
+## 1.7.1 - 2025-12-09
+
+### Changed
+- Unified "Now Playing" announcements via a single announcer function to de-duplicate command-initiated and auto monitor events.
+- Added cooldowns and a suppression window to prevent redundant messages; values are configurable.
+- Refined the admin cleanup command to produce a concise names-only embed with a footer indicating it's not broadcasted.
+- Minor robustness tweaks around voice reconnect handling and logging based on config.
+
 ## 1.7.0 - 2025-12-09
 
 ### Changed
@@ -327,14 +335,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
-## [0.1.0] - 2025-08-11
-### Added
-- !forward (!ff) command to fast forward by N seconds (default 10).
-- !version command to display bot version and key config.
-- Pagination now respects ITEMS_PER_PAGE from .env.
+## 1.7.1 - 2025-12-09
 
 ### Changed
-- Filename parsing and display cleaning remove HC/hardsub markers and more torrent noise; preserve numeric titles.
+- Unified "Now Playing" announcements via a single announcer function to de-duplicate command-initiated and auto monitor events.
+- Added cooldowns and a suppression window to prevent redundant messages; values are configurable.
+- Refined the admin cleanup command to produce a concise names-only embed with a footer indicating it's not broadcasted.
+- Minor robustness tweaks around voice reconnect handling and logging based on config.
 
-### Docs
-- README updated with new commands and versioning instructions.
+## 1.7.0 - 2025-12-09
+
+### Changed
+- **Voice Reconnect Hardening & Noise Suppression**: Unified voice connection checks, added debounce windows and an initial settle period to avoid thrashing after reconnects. Suppressed noisy internal `discord.voice_state` and `discord.gateway` logs by adjusting logger levels and handlers.
+- **Startup → New Media Ordering**: Ensured the startup announcement is sent before any new media announcements, even when `WATCH_ENQUEUE_ON_START=true`.
+- **Initial Scan Simplification**: On first watch-folder scan, announcements are compact lists without TMDB metadata to reduce churn.
+
+### Added

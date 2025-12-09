@@ -209,6 +209,100 @@ class VLCController:
             self.logger.error(f"Failed to export playlist: {e}")
             return None
 
+    def _uri_to_path(self, uri: str | None) -> Optional[str]:
+        """Convert a VLC item URI to a local filesystem path when possible.
+
+        Supports file:// URIs and plain absolute paths. Returns None if conversion
+        is not possible.
+        """
+        try:
+            if not uri:
+                return None
+            u = str(uri)
+            # Handle file:// URIs
+            if u.lower().startswith('file://'):
+                import urllib.parse
+                # Strip the scheme and decode percent-encoding
+                path_part = u[7:]
+                # For local files, path_part typically starts with /
+                p = urllib.parse.unquote(path_part)
+                # For Windows-style file URIs, they may have an extra leading slash
+                if os.name == 'nt' and p.startswith('/') and len(p) > 3 and p[2] == ':':
+                    p = p.lstrip('/')
+                return p
+            # Fallback: if it looks like an absolute path, return as-is
+            try:
+                import pathlib
+                pp = pathlib.Path(u)
+                if pp.is_absolute():
+                    return str(pp)
+            except Exception:
+                pass
+            return None
+        except Exception:
+            return None
+
+    def delete_playlist_item(self, item_id: str | int) -> bool:
+        """Delete a playlist item by VLC item id using pl_delete.
+
+        Returns True if VLC acknowledges the command.
+        """
+        try:
+            res = self.send_command('pl_delete', {'id': str(item_id)})
+            ok = res is not None
+            if ok:
+                self.logger.info(f"Deleted playlist item id={item_id}")
+            else:
+                self.logger.warning(f"VLC did not acknowledge delete for id={item_id}")
+            return ok
+        except Exception as e:
+            self.logger.error(f"Error deleting playlist item {item_id}: {e}")
+            return False
+
+    def remove_missing_playlist_items(self) -> dict:
+        """Scan the playlist and remove items whose underlying files are missing.
+
+        Returns a dict: { 'removed': int, 'items': [ { 'id': str, 'name': str } ... ] }
+        """
+        result = {'removed': 0, 'items': []}
+        try:
+            playlist = self.get_playlist()
+            if not playlist:
+                return result
+            removed_any = False
+            for leaf in playlist.findall('.//leaf'):
+                try:
+                    item_id = leaf.get('id')
+                    name = leaf.get('name', '')
+                    uri = leaf.get('uri')
+                    path = self._uri_to_path(uri) or name
+                    exists = False
+                    try:
+                        exists = bool(path) and os.path.exists(path)
+                    except Exception:
+                        exists = False
+                    if not exists:
+                        if item_id:
+                            ok = self.delete_playlist_item(item_id)
+                            if ok:
+                                result['removed'] += 1
+                                result['items'].append({'id': item_id, 'name': name})
+                                removed_any = True
+                        else:
+                            self.logger.debug(f"Skipping deletion (no id) for missing item '{name}'")
+                except Exception as e:
+                    self.logger.debug(f"Error checking/removing playlist item: {e}")
+            if removed_any:
+                # Optionally refresh playlist to reflect changes
+                try:
+                    self.get_playlist()
+                except Exception:
+                    pass
+            return result
+        except Exception as e:
+            self.logger.error(f"remove_missing_playlist_items error: {e}")
+            return result
+
     def export_playlist_xspf(self) -> Optional[str]:
         """Export current playlist in XSPF format (as a UTF-8 XML string).
 
