@@ -235,6 +235,11 @@ python --version
    - `!search <query>` - Search playlist
    - `!play_search <query>` - Search and play first match
 
+   **Subtitles:**
+   - `!sub_list` - List available subtitle tracks and show which one is selected
+   - `!sub_set <number|off>` - Select subtitles by position (e.g., `2` for 2nd subtitle), or disable with `off`
+   - `!sub_next` / `!sub_prev` - Cycle to next/previous subtitle track (when supported by VLC)
+
    **Queue Management:**
    - `!queue_next <number>` - Queue a playlist item to play next (temporarily disables shuffle if needed)
    - `!queue_status` - Show current queue with item titles and playlist positions

@@ -494,10 +494,11 @@ class VLCController:
         Returns True if the command was acknowledged by VLC.
         """
         try:
+            self.logger.info(f"Attempting to set subtitle track to value={value}")
             res = self.send_command('subtitle_track', {'val': str(value)})
             ok = res is not None
             if ok:
-                self.logger.info(f"Set VLC subtitle track val={value}")
+                self.logger.info(f"Set VLC subtitle track val={value} - SUCCESS")
             else:
                 self.logger.warning(f"VLC did not acknowledge subtitle_track val={value}")
             return ok
@@ -529,10 +530,10 @@ class VLCController:
             if node is None:
                 # Some versions might use 'subtitles'
                 node = status.find('subtitles')
+            # Build initial track list from <subtitle>/<subtitles>
             tracks: list[dict] = []
             if node is not None:
                 for t in node.findall('track'):
-                    # Robust id parse
                     raw_id = t.get('id')
                     tid = None
                     if raw_id is not None:
@@ -540,12 +541,136 @@ class VLCController:
                             tid = int(str(raw_id).strip())
                         except Exception:
                             tid = None
-                    # Prefer name attribute, then text
                     name_attr = t.get('name')
                     text_val = (t.text or '').strip()
                     name = name_attr if name_attr else (text_val if text_val else f"Track {raw_id if raw_id is not None else ''}")
-                    selected = (t.get('selected') == 'true')
+                    selected_token = (t.get('selected') or '').strip().lower()
+                    selected = selected_token in {'true', '1', 'yes'}
                     tracks.append({'id': tid, 'name': name, 'selected': selected})
+
+            # Parse stream categories to derive UI order (Stream 0, Stream 1, ...)
+            streams: list[Dict[str, Any]] = []
+            try:
+                info_root = status.find('information')
+                if info_root is not None:
+                    for category in info_root.findall('category'):
+                        cname = (category.get('name') or '')
+                        lcname = cname.lower()
+                        # Extract numeric stream index from name like "Stream 2"
+                        stream_index = None
+                        try:
+                            import re
+                            m = re.search(r'stream\s*(\d+)', lcname)
+                            if m:
+                                stream_index = int(m.group(1))
+                        except Exception:
+                            stream_index = None
+                        # Collect key/values
+                        imap: Dict[str, str] = {}
+                        for info in category.findall('info'):
+                            k = (info.get('name') or '')
+                            v = (info.text or '')
+                            imap[k] = v
+                        type_val = (imap.get('Type') or imap.get('type') or '').strip().lower()
+                        if 'stream' in lcname and type_val in {'subtitle', 'text', 'subtitles'}:
+                            # Potential ID keys in different builds
+                            raw_id = (imap.get('Track id') or imap.get('Track ID') or imap.get('track id') or
+                                      imap.get('TrackID') or imap.get('trackid') or imap.get('ID') or imap.get('id'))
+                            tid = None
+                            if raw_id:
+                                try:
+                                    tid = int(str(raw_id).strip())
+                                except Exception:
+                                    tid = None
+                            lang = (imap.get('Language') or imap.get('language') or '').strip()
+                            desc = (imap.get('Description') or imap.get('description') or '').strip()
+                            codec = (imap.get('Codec') or imap.get('codec') or '').strip()
+                            parts = [p for p in [lang, desc or None, (codec if not desc else None)] if p]
+                            name = ' / '.join(parts) if parts else (cname or 'Subtitle Stream')
+                            streams.append({'id': tid, 'name': name, 'stream_index': stream_index})
+            except Exception as e:
+                self.logger.debug(f"Subtitle streams parse failed: {e}")
+
+            # Filter out disable/off tracks (usually id=-1 or id=0 with name like "Disable" or "Off")
+            # These shouldn't be in the user-facing list
+            filtered_tracks = []
+            for tr in tracks:
+                tid = tr.get('id')
+                name_lower = (tr.get('name') or '').strip().lower()
+                # Skip tracks that are clearly "disable" options
+                if tid is not None and tid < 0:
+                    self.logger.debug(f"Filtering out disable track: id={tid}, name={tr.get('name')}")
+                    continue
+                if name_lower in {'disable', 'disabled', 'off', 'none'}:
+                    self.logger.debug(f"Filtering out disable track by name: id={tid}, name={tr.get('name')}")
+                    continue
+                filtered_tracks.append(tr)
+            tracks = filtered_tracks
+
+            # If we have stream info, map tracks to UI order by id or name
+            if streams:
+                # Sort streams by numeric index if available, else keep order
+                try:
+                    streams.sort(key=lambda s: (s.get('stream_index') is None, s.get('stream_index')))
+                except Exception:
+                    pass
+                # Build id->ui_index map (1-based, no gaps)
+                id_to_idx: Dict[int, int] = {}
+                name_to_idx: Dict[str, int] = {}
+                # Also store stream_index for VLC API calls
+                id_to_stream_idx: Dict[int, int] = {}
+                ui_counter = 1
+                for s in streams:
+                    sid = s.get('id')
+                    sindex = s.get('stream_index')
+                    # Skip negative IDs in stream mapping too
+                    if sid is not None and sid < 0:
+                        continue
+                    if sid is not None:
+                        id_to_idx[sid] = ui_counter
+                        if sindex is not None:
+                            id_to_stream_idx[sid] = sindex
+                    nm = (s.get('name') or '').strip().lower()
+                    if nm:
+                        name_to_idx[nm] = ui_counter
+                    ui_counter += 1
+                
+                # Attach index to tracks for display and selection
+                for tr in tracks:
+                    ui_idx = None
+                    stream_idx = None
+                    tid = tr.get('id')
+                    if tid is not None and tid in id_to_idx:
+                        ui_idx = id_to_idx[tid]
+                        stream_idx = id_to_stream_idx.get(tid)
+                    else:
+                        nm = (tr.get('name') or '').strip().lower()
+                        if nm and nm in name_to_idx:
+                            ui_idx = name_to_idx[nm]
+                    tr['index'] = ui_idx
+                    tr['stream_index'] = stream_idx
+
+                # If tracks list was empty, create tracks purely from streams (excluding negative IDs)
+                if not tracks:
+                    idx = 1
+                    for s in streams:
+                        if s.get('id') is not None and s.get('id') < 0:
+                            continue
+                        tracks.append({
+                            'id': s.get('id'), 
+                            'name': s.get('name'), 
+                            'selected': False, 
+                            'index': idx,
+                            'stream_index': s.get('stream_index')
+                        })
+                        idx += 1
+            else:
+                # No stream info available, use simple enumeration for tracks
+                for idx, tr in enumerate(tracks, start=1):
+                    tr['index'] = idx
+                    # Without stream info, we don't have stream_index, so it stays None
+
+            self.logger.debug(f"get_subtitle_tracks returning {len(tracks)} tracks (after filtering)")
             return tracks
         except Exception as e:
             self.logger.error(f"get_subtitle_tracks error: {e}")

@@ -1,3 +1,16 @@
+## 1.8.0 - 2025-12-22
+
+### Changed
+- Subtitles UX: `sub_set` now uses GUI order only (no `#`), making selection intuitive in Discord. `sub_list` shows a clean, aligned, monospaced list (e.g., `[x]  2. English`).
+- Help text updated: Controls/help and usage strings reflect the simpler `sub_set <number|off>` syntax.
+
+### Fixed
+- Subtitle selection reliability: Use VLC stream index where available and filter out the "Disable" pseudo-track so numbering matches what users expect.
+- Confirmation message: When VLC doesn't immediately mark selection, show the intended track without noisy suffixes.
+
+### Added
+- Extra logging around subtitle parsing/selection to aid troubleshooting (IDs, stream indexes, names).
+
 ## 1.7.2 - 2025-12-09
 
 ### Changed

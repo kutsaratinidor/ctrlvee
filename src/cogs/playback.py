@@ -250,7 +250,7 @@ class PlaybackCommands(commands.Cog):
                 color=discord.Color.orange()
             )
             try:
-                embed.set_footer(text="Admin cleanup tool — not broadcasted")
+                embed.set_footer(text="Cleanup tool")
             except Exception:
                 pass
             await ctx.send(embed=embed)
@@ -971,6 +971,10 @@ class PlaybackCommands(commands.Cog):
     async def subtitle_list(self, ctx):
         """List available subtitle tracks and indicate which is selected."""
         try:
+            try:
+                await ctx.trigger_typing()
+            except Exception:
+                pass
             tracks = self.vlc.get_subtitle_tracks()
             if tracks is None:
                 await ctx.send("Couldn't retrieve subtitle tracks from VLC.")
@@ -983,20 +987,29 @@ class PlaybackCommands(commands.Cog):
                 )
                 await ctx.send(embed=embed)
                 return
+            # Build a neatly aligned, monospaced list
             lines = []
-            for tr in tracks:
-                mark = "✅" if tr.get('selected') else "  "
-                tid = tr.get('id')
-                name = tr.get('name') or f"Track {tid}"
-                lines.append(f"{mark} ID {tid}: {name}")
+            # Determine width for index alignment
+            max_index = max((tr.get('index') or i) for i, tr in enumerate(tracks, start=1))
+            for i, tr in enumerate(tracks, start=1):
+                # Use fixed-width markers for alignment
+                mark = "[x]" if tr.get('selected') else "[ ]"
+                ui_idx = tr.get('index') or i
+                name = tr.get('name') or f"Track {ui_idx}"
+                lines.append(f"{mark} {str(ui_idx).rjust(len(str(max_index)))}. {name}")
+            list_text = "\n".join(lines[:20]) + ("\n..." if len(lines) > 20 else "")
+            # Wrap in code block for monospaced alignment in Discord
             embed = discord.Embed(
                 title="💬 Subtitle Tracks",
-                description="\n".join(lines[:20]) + ("\n..." if len(lines) > 20 else ""),
+                description=f"```\n{list_text}\n```",
                 color=discord.Color.blue()
             )
             embed.add_field(
                 name="Usage",
-                value=f"Use {format_cmd_inline('sub_set <id>')} to select, or {format_cmd_inline('sub_set off')} to disable.",
+                value=(
+                    f"Use {format_cmd_inline('sub_set <number>')} to select by position (as shown), or "
+                    f"{format_cmd_inline('sub_set off')} to disable."
+                ),
                 inline=False
             )
             await ctx.send(embed=embed)
@@ -1007,23 +1020,29 @@ class PlaybackCommands(commands.Cog):
     @commands.command(name='sub_set', aliases=['subset','subid'])
     @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def subtitle_set(self, ctx, track_id: str):
-        """Select a specific subtitle track by ID or 1-based index, or 'off' to disable.
+        """Select a specific subtitle track by position (from sub_list), or 'off' to disable.
 
         Examples:
-        - sub_set 2          # by ID
-        - sub_set #2         # by list index (from sub_list)
-        - sub_set off
+        - sub_set 2          # Select 2nd subtitle in the list
+        - sub_set 1          # Select 1st subtitle in the list
+        - sub_set off        # Disable subtitles
         """
         try:
             if not track_id:
-                await ctx.send(f"Usage: {format_cmd_inline('sub_set <id|off>')}")
+                await ctx.send(f"Usage: {format_cmd_inline('sub_set <number|off>')}")
                 return
             # Fetch tracks to support index-based addressing
             tracks = self.vlc.get_subtitle_tracks() or []
+            logger.info(f"sub_set: User requested '{track_id}', found {len(tracks)} tracks")
+            
+            # Log all tracks for debugging
+            for i, tr in enumerate(tracks, start=1):
+                logger.debug(f"  Track {i}: id={tr.get('id')}, index={tr.get('index')}, stream_index={tr.get('stream_index')}, name={tr.get('name')}, selected={tr.get('selected')}")
 
             # Handle disable synonyms
             tokens_off = {"off", "none", "disable", "disabled"}
             if track_id.lower() in tokens_off:
+                logger.info(f"sub_set: Disabling subtitles")
                 # Try -1 first, fallback to 0 for older VLC versions
                 ok = self.vlc.set_subtitle_track(-1)
                 if not ok:
@@ -1039,43 +1058,68 @@ class PlaybackCommands(commands.Cog):
                 await ctx.send(embed=embed)
                 return
 
-            # Determine target by ID or index
-            tid: int | None = None
-            idx_mode = False
-            if track_id.startswith('#'):
-                # Index mode (#1 is first in list)
-                idx_mode = True
-                try:
-                    pos = int(track_id[1:])
-                except Exception:
-                    await ctx.send("Invalid index. Use e.g., #2. See sub_list.")
-                    return
-                if pos < 1 or pos > len(tracks):
-                    await ctx.send(f"Index out of range. There are {len(tracks)} tracks.")
-                    return
-                tid = tracks[pos - 1].get('id')
-            else:
-                # Try as ID
-                try:
-                    tid = int(track_id)
-                except Exception:
-                    await ctx.send("Please provide a numeric track ID, a #index, or 'off'. Use sub_list to see tracks.")
-                    return
-                # If ID not present in list but appears to be a 1-based index, allow fallback
-                if tracks and all(tr.get('id') != tid for tr in tracks):
-                    if 1 <= tid <= len(tracks):
-                        idx_mode = True
-                        tid = tracks[tid - 1].get('id')
-
-            if tid is None:
-                await ctx.send("Couldn't resolve target subtitle track. Try sub_list first.")
+            # Parse position as 1-based GUI order
+            try:
+                pos_index = int(track_id)
+            except Exception:
+                await ctx.send(f"Please provide a numeric position or 'off'. Use {format_cmd_inline('sub_list')} to see available tracks.")
                 return
-
-            ok = self.vlc.set_subtitle_track(tid)
+            
+            if pos_index < 1 or pos_index > len(tracks):
+                await ctx.send(f"Position out of range. There are {len(tracks)} subtitle tracks. Use {format_cmd_inline('sub_list')} to see them.")
+                return
+            
+            logger.info(f"sub_set: Looking for track at position {pos_index}")
+            
+            # Find track by GUI order (index field)
+            tid = None
+            stream_idx = None
+            selected_track = None
+            for tr in tracks:
+                if tr.get('index') == pos_index:
+                    tid = tr.get('id')
+                    stream_idx = tr.get('stream_index')
+                    selected_track = tr
+                    logger.info(f"sub_set: Found track by index: id={tid}, stream_index={stream_idx}, name={tr.get('name')}")
+                    break
+            
+            # Fallback to list order if no index mapping available
+            if tid is None:
+                selected_track = tracks[pos_index - 1]
+                tid = selected_track.get('id')
+                stream_idx = selected_track.get('stream_index')
+                logger.info(f"sub_set: Using list order fallback: id={tid}, stream_index={stream_idx}, name={selected_track.get('name')}")
+            
+            # Try setting subtitle track - prefer stream_index over track ID
+            # VLC HTTP API typically uses stream index (0, 1, 2...) not track IDs
+            ok = False
+            if stream_idx is not None:
+                logger.info(f"sub_set: Attempting to set subtitle by stream_index={stream_idx}")
+                ok = self.vlc.set_subtitle_track(stream_idx)
+                if ok:
+                    logger.info(f"sub_set: Successfully set by stream_index={stream_idx}")
+            
+            if not ok and tid is not None:
+                logger.info(f"sub_set: Attempting to set subtitle by track id={tid}")
+                ok = self.vlc.set_subtitle_track(tid)
+                if ok:
+                    logger.info(f"sub_set: Successfully set by track id={tid}")
+            
+            if not ok:
+                # Try direct position fallback for VLC versions that support it
+                logger.warning(f"sub_set: Failed to set by stream_index and id, trying position-based fallback")
+                ok = self.vlc.set_subtitle_track(pos_index - 1)
+                if ok:
+                    logger.info(f"sub_set: Successfully set by position {pos_index - 1}")
+                else:
+                    ok = self.vlc.set_subtitle_track(pos_index)
+                    if ok:
+                        logger.info(f"sub_set: Successfully set by position {pos_index}")
+                
             if not ok:
                 embed = discord.Embed(
                     title="💬 Subtitles",
-                    description="Failed to set subtitle track. Use sub_list to view valid IDs.",
+                    description=f"Failed to set subtitle track {pos_index}. Use {format_cmd_inline('sub_list')} to verify available tracks.",
                     color=discord.Color.orange()
                 )
                 await ctx.send(embed=embed)
@@ -1083,20 +1127,23 @@ class PlaybackCommands(commands.Cog):
 
             # Confirm new selection by re-reading tracks
             tracks2 = self.vlc.get_subtitle_tracks() or []
-            selected_id = None
             selected_name = None
+            selected_pos = None
+            # Use the track we attempted to set as a fallback if VLC doesn't mark selection
+            fallback_name = selected_track.get('name') if selected_track else None
+            fallback_pos = selected_track.get('index') if selected_track else pos_index
             for tr in tracks2:
                 if tr.get('selected'):
-                    selected_id = tr.get('id')
                     selected_name = tr.get('name')
+                    selected_pos = tr.get('index')
+                    logger.info(f"sub_set: Confirmed selection - pos={selected_pos}, name={selected_name}")
                     break
 
-            if selected_id is None:
-                desc = "Subtitle selection changed, but current track could not be confirmed."
-            elif selected_id < 0:
-                desc = "Subtitles disabled."
+            if selected_pos is None:
+                # Show the intended track as a helpful hint even if VLC didn't mark it selected yet
+                desc = f"Set subtitle to {fallback_pos}: {fallback_name or 'Unknown'}"
             else:
-                desc = f"Selected subtitle track ID {selected_id}: {selected_name or 'Unknown'}"
+                desc = f"Selected subtitle {selected_pos}: {selected_name or 'Unknown'}"
 
             embed = discord.Embed(
                 title="💬 Subtitles",
@@ -1106,7 +1153,7 @@ class PlaybackCommands(commands.Cog):
             if tracks2:
                 embed.add_field(
                     name="Tip",
-                    value=f"You can also use indexes like {format_cmd_inline('sub_set #2')} or disable with {format_cmd_inline('sub_set off')}.",
+                    value=f"Use {format_cmd_inline('sub_set off')} to disable subtitles.",
                     inline=False
                 )
             await ctx.send(embed=embed)

@@ -100,6 +100,7 @@ from src.cogs.playback import PlaybackCommands
 from src.cogs.playlist import PlaylistCommands
 from src.cogs.scheduler import Scheduler
 from src.version import __version__
+from changelog_helper import parse_changelog
 
 # -------- Voice connection management --------
 # Reconnect guard variables (configurable)
@@ -1117,10 +1118,10 @@ async def controls(ctx):
         # Subtitles
         subtitles_commands = f"""
 `{prefix}sub_list` - List available subtitle tracks and show which one is selected
-`{prefix}sub_set <id|#index|off>` - Select subtitles by VLC track ID, list index (e.g., `#2`), or disable with `off`
+`{prefix}sub_set <number|off>` - Select subtitles by position (e.g., `2` for 2nd subtitle), or disable with `off`
 `{prefix}sub_next` / `{prefix}sub_prev` - Cycle to next/previous subtitle track (when supported by VLC)
 
-Tip: Use `{prefix}sub_list` first, then `{prefix}sub_set #2` to pick by list index, or `{prefix}sub_set off` to disable.
+Tip: Use `{prefix}sub_list` first, then `{prefix}sub_set 2` to select the 2nd subtitle, or `{prefix}sub_set off` to disable.
         """
         embed.add_field(name="💬 Subtitles", value=subtitles_commands, inline=False)
 
@@ -1175,6 +1176,38 @@ async def version(ctx):
     embed.add_field(name="Items Per Page", value=str(Config.ITEMS_PER_PAGE), inline=True)
     embed.add_field(name="TMDB", value=("Configured" if Config.TMDB_API_KEY else "Not Configured"), inline=True)
     await ctx.send(embed=embed)
+
+@bot.command(name="changelog", aliases=['changes', 'whatsnew'])
+async def changelog(ctx):
+    """Show recent changelog entries (latest 3 versions)"""
+    try:
+        entries = parse_changelog(max_versions=2)
+        if not entries:
+            await ctx.send("Changelog could not be loaded.")
+            return
+        
+        # Build and send embeds for each version
+        for entry in entries:
+            embed = discord.Embed(
+                title=f"v{entry['version']}",
+                description=f"Released: {entry['date']}",
+                color=discord.Color.blurple()
+            )
+            
+            # Add sections in preferred order
+            for section in ['Changed', 'Added', 'Fixed']:
+                if section in entry['sections'] and entry['sections'][section]:
+                    items = entry['sections'][section][:5]  # Limit to 5 items per section
+                    value = '\n'.join([f"• {item}" for item in items])
+                    if len(entry['sections'][section]) > 5:
+                        value += f"\n• ... and {len(entry['sections'][section]) - 5} more"
+                    embed.add_field(name=section, value=value, inline=False)
+            
+            await ctx.send(embed=embed)
+    
+    except Exception as e:
+        logger.error(f"changelog command error: {e}")
+        await ctx.send(f"Error loading changelog: {e}")
 
 def main():
     """Main entry point for the bot"""
