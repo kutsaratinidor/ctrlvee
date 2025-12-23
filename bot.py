@@ -63,10 +63,28 @@ from src.services.vlc_controller import VLCController
 from src.services.tmdb_service import TMDBService
 from src.services.watch_folder_service import WatchFolderService
 from src.utils.media_utils import MediaUtils
+from src.services.radarr_service import RadarrService
 
 vlc = VLCController(bot=bot)
 tmdb_service = TMDBService()
 watch_service = WatchFolderService(vlc)
+_radarr_services = []
+try:
+    # Build Radarr service instances from config (multi or single)
+    instances = Config.get_radarr_instances()
+    for inst in instances:
+        svc = RadarrService(host=inst['host'], port=inst['port'], api_key=inst['api_key'], use_ssl=inst['use_ssl'])
+        _radarr_services.append({
+            'name': inst['name'],
+            'display': inst['display_name'],
+            'service': svc,
+        })
+    if _radarr_services:
+        logger.info(f"Configured Radarr instances: {[i['display'] for i in _radarr_services]}")
+    else:
+        logger.info("No Radarr instances configured")
+except Exception as e:
+    logger.warning(f"Failed to initialize Radarr services: {e}")
 _startup_announced = False
 
 # Shared voice reconnect debounce
@@ -1125,6 +1143,14 @@ Tip: Use `{prefix}sub_list` first, then `{prefix}sub_set 2` to select the 2nd su
         """
         embed.add_field(name="💬 Subtitles", value=subtitles_commands, inline=False)
 
+        # Radarr Integration
+        radarr_commands = f"""
+`{prefix}radarr_recent [instance|all] [days] [limit]` - Show recently downloaded movies from Radarr
+Examples: `{prefix}radarr_recent` (all instances, 7 days), `{prefix}radarr_recent asian 14 15` (asian instance, 14 days, max 15)
+        """
+        if _radarr_services:
+            embed.add_field(name="🎬 Radarr Integration", value=radarr_commands, inline=False)
+
         # Add footer note about permissions
         roles_str = ", ".join(f"'{role}'" for role in Config.ALLOWED_ROLES)
         footer_text = f"⚠️ Most commands require one of these roles: {roles_str}"
@@ -1208,6 +1234,82 @@ async def changelog(ctx):
     except Exception as e:
         logger.error(f"changelog command error: {e}")
         await ctx.send(f"Error loading changelog: {e}")
+
+@bot.command(name="radarr_recent", aliases=["recent_movies", "recent_radarr"])
+async def radarr_recent(ctx, instance: str = 'all', days: int = 7, limit: int = 10):
+    """Show recently downloaded movies from configured Radarr instance(s).
+
+    Usage:
+    - !radarr_recent -> show all instances, last 7 days, max 10 per instance
+    - !radarr_recent asian 14 15 -> show 'asian' instance, last 14 days, max 15
+    - !radarr_recent all 3 5 -> all instances, last 3 days, max 5 each
+    """
+    try:
+        if not _radarr_services:
+            await ctx.send("Radarr is not configured. Please set RADARR_* environment variables.")
+            return
+
+        # Resolve instance filter
+        target = instance.strip().lower() if isinstance(instance, str) else 'all'
+        selected = _radarr_services
+        if target != 'all':
+            selected = [i for i in _radarr_services if i['name'].lower() == target or i['display'].lower() == target]
+            if not selected:
+                names = ", ".join([i['name'] for i in _radarr_services])
+                disp = ", ".join([i['display'] for i in _radarr_services])
+                await ctx.send(f"Unknown Radarr instance '{instance}'. Try one of: {names} (display: {disp}) or 'all'.")
+                return
+
+        # Clamp days/limit
+        days = max(1, int(days))
+        limit = max(1, min(25, int(limit)))
+
+        # Fetch concurrently
+        async def fetch_one(item):
+            name = item['display']
+            svc: RadarrService = item['service']
+            try:
+                return name, await svc.get_recent_downloads(days=days, limit=limit)
+            except Exception as e:
+                return name, {"success": False, "error": str(e)}
+
+        results = await asyncio.gather(*(fetch_one(i) for i in selected))
+
+        # Build embed
+        embed = discord.Embed(
+            title="🎬 Recently Added Movies",
+            description=f"Time window: last {days} day(s).",
+            color=discord.Color.purple()
+        )
+        embed.set_footer(text=f"Use {Config.DISCORD_COMMAND_PREFIX}radarr_recent [instance|all] [days] [limit]")
+
+        any_success = False
+        for display_name, res in results:
+            if res.get("success"):
+                any_success = True
+                movies = res.get("movies", [])
+                if not movies:
+                    value = "No recent items found."
+                else:
+                    lines = []
+                    for m in movies[:limit]:
+                        title = m.get('title') or 'Untitled'
+                        year = m.get('year') or '—'
+                        lines.append(f"• {title} ({year})")
+                    value = "\n".join(lines)
+                embed.add_field(name=display_name, value=value, inline=False)
+            else:
+                err = res.get("error", "Unknown error")
+                embed.add_field(name=f"{display_name} (error)", value=f"❌ {err}", inline=False)
+
+        if not any_success:
+            await ctx.send("Could not retrieve recent movies from any Radarr instance.")
+            return
+
+        await ctx.send(embed=embed)
+    except Exception as e:
+        logger.error(f"radarr_recent command error: {e}")
+        await ctx.send(f"Error fetching recent Radarr items: {e}")
 
 def main():
     """Main entry point for the bot"""

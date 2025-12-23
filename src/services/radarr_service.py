@@ -16,11 +16,19 @@ class RadarrService:
             api_key: Radarr API key (defaults to config)
             use_ssl: Whether to use HTTPS (defaults to config)
         """
-        from ..config import Config
-        self.host = host or Config.RADARR_HOST
-        self.port = port or Config.RADARR_PORT
-        self.api_key = api_key or Config.RADARR_API_KEY
-        self.use_ssl = use_ssl if use_ssl is not None else Config.RADARR_USE_SSL
+        # Import here to avoid circulars, and access attributes safely
+        try:
+            from ..config import Config
+        except Exception:
+            Config = None  # type: ignore
+        # Safely fall back to Config if provided params are None and attributes exist
+        self.host = host or (getattr(Config, 'RADARR_HOST', None) if Config else None)
+        self.port = port or (getattr(Config, 'RADARR_PORT', None) if Config else None)
+        self.api_key = api_key or (getattr(Config, 'RADARR_API_KEY', None) if Config else None)
+        if use_ssl is not None:
+            self.use_ssl = use_ssl
+        else:
+            self.use_ssl = getattr(Config, 'RADARR_USE_SSL', False) if Config else False
         self.logger = logging.getLogger(__name__)
         
         # Construct base URL

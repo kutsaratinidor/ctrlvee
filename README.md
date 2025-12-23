@@ -195,6 +195,49 @@ python --version
    - `DISCORD_COMMAND_PREFIX`: The command prefix for bot commands (default: `!`). You can set this to any string, e.g. `!!` or `$`. Multi-character prefixes are supported.
    - `PLAYLIST_AUTOSAVE_FILE`: Path (absolute or relative to project root) to save the current playlist. If it ends with `.xspf`, an XSPF playlist is written; otherwise JSON. Leave blank to disable.
    - `PLAYLIST_AUTOSAVE_INTERVAL`: Interval in seconds between autosaves (min 10; default 300)
+   
+   **Radarr Integration (Optional):**
+   
+   Configure one or more Radarr instances to view recently downloaded movies. Supports both single-instance and multi-instance setups.
+   
+   *Single Instance:*
+   ```bash
+   RADARR_HOST=localhost
+   RADARR_PORT=7878
+   RADARR_API_KEY=your_api_key_here
+   RADARR_USE_SSL=false
+   ```
+   
+   *Multiple Instances:*
+   ```bash
+   # Define instance names (comma-separated)
+   RADARR_INSTANCES=main,asian,pinoy,anime
+   
+   # Configure each instance
+   RADARR_MAIN_HOST=localhost
+   RADARR_MAIN_PORT=7878
+   RADARR_MAIN_API_KEY=your_main_api_key
+   RADARR_MAIN_USE_SSL=false
+   RADARR_MAIN_DISPLAY_NAME=Mainstream Movies
+   
+   RADARR_ASIAN_HOST=radarr-asian.local
+   RADARR_ASIAN_PORT=7878
+   RADARR_ASIAN_API_KEY=your_asian_api_key
+   RADARR_ASIAN_USE_SSL=true
+   RADARR_ASIAN_DISPLAY_NAME=Asian Cinema
+   
+   RADARR_PINOY_HOST=radarr-pinoy.local
+   RADARR_PINOY_PORT=7878
+   RADARR_PINOY_API_KEY=your_pinoy_api_key
+   RADARR_PINOY_USE_SSL=false
+   RADARR_PINOY_DISPLAY_NAME=Pinoy Movies
+   
+   RADARR_ANIME_HOST=radarr-anime.local
+   RADARR_ANIME_PORT=7878
+   RADARR_ANIME_API_KEY=your_anime_api_key
+   RADARR_ANIME_USE_SSL=false
+   RADARR_ANIME_DISPLAY_NAME=Anime Movies
+   ```
 
       - `KOFI_URL`: (optional) A full https:// URL to your Ko‑fi or support page. When set, certain embeds (status and notification embeds) will display a "Support CtrlVee" field with a clickable link. Leave blank to disable.
 
@@ -255,6 +298,10 @@ python --version
    - `!status` - Show current VLC status (state, volume, playing item)
    - `!version` - Show bot version and key config info
    - `!controls` - Show this help message
+
+   **Radarr Integration:**
+   - `!radarr_recent [instance|all] [days] [limit]` - Show recently downloaded movies from configured Radarr instance(s)
+     - Examples: `!radarr_recent` (all instances, 7 days), `!radarr_recent asian 14 15` (asian instance, 14 days, max 15)
 
    **Notification Settings:**
    - `!set_notification_channel` - Set current channel for VLC state notifications

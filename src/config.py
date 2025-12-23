@@ -33,6 +33,16 @@ class Config:
     # TMDB Settings
     TMDB_API_KEY: str = os.getenv('TMDB_API_KEY', '')
     
+    # Radarr (single-instance, backward-compatible)
+    RADARR_HOST: str = os.getenv('RADARR_HOST', '').strip()
+    RADARR_PORT: int = int(os.getenv('RADARR_PORT', '7878'))
+    RADARR_API_KEY: str = os.getenv('RADARR_API_KEY', '').strip()
+    RADARR_USE_SSL: bool = os.getenv('RADARR_USE_SSL', 'false').strip().lower() in {'1','true','yes','y'}
+    # Radarr (multi-instance): RADARR_INSTANCES="main,asian,anime"
+    # For each name N in RADARR_INSTANCES, configure:
+    #   RADARR_<N>_HOST, RADARR_<N>_PORT, RADARR_<N>_API_KEY, RADARR_<N>_USE_SSL, RADARR_<N>_DISPLAY_NAME (optional)
+    RADARR_INSTANCES: List[str] = [n.strip() for n in os.getenv('RADARR_INSTANCES', '').split(',') if n.strip()]
+    
     # Queue Settings
     QUEUE_BACKUP_FILE: str = os.getenv('QUEUE_BACKUP_FILE', 'queue_backup.json')
     # Optional: periodically save current VLC playlist to a file (relative to bot dir if not absolute)
@@ -170,6 +180,23 @@ class Config:
                     errors.append("PERIODIC_ANNOUNCE_INTERVAL must be at least 30 seconds")
             except ValueError:
                 errors.append("PERIODIC_ANNOUNCE_INTERVAL must be a valid integer")
+        
+        # Radarr validation (optional feature)
+        # If multi-instances are defined, validate each; else, if single is partially configured, warn via errors list.
+        if cls.RADARR_INSTANCES:
+            for name in cls.RADARR_INSTANCES:
+                up = name.upper()
+                host = os.getenv(f'RADARR_{up}_HOST', '').strip()
+                api = os.getenv(f'RADARR_{up}_API_KEY', '').strip()
+                if host and api:
+                    continue
+                # Do not hard-fail the whole app, but surface a helpful message
+                errors.append(f"RADARR instance '{name}' is missing HOST and/or API_KEY")
+        else:
+            # Single-instance mode: if any of the fields are set, require host+api
+            if any([cls.RADARR_HOST, cls.RADARR_API_KEY]):
+                if not (cls.RADARR_HOST and cls.RADARR_API_KEY):
+                    errors.append("RADARR single-instance is partially configured; set both RADARR_HOST and RADARR_API_KEY or clear both")
             
         return errors
     
@@ -213,6 +240,12 @@ class Config:
             f"Voice Guard Enabled: {cls.ENABLE_VOICE_GUARD}",
             f"Voice Events Reconnect Enabled: {cls.ENABLE_VOICE_EVENTS_RECONNECT}",
             f"TMDB API Key: {'Configured' if cls.TMDB_API_KEY else 'Not Configured'}",
+            # Radarr summary
+            (
+                f"Radarr Instances: {', '.join(cls.RADARR_INSTANCES)}" if cls.RADARR_INSTANCES else (
+                    f"Radarr (single): {'Configured' if (cls.RADARR_HOST and cls.RADARR_API_KEY) else 'Not Configured'}"
+                )
+            ),
             f"Discord Token: {'Configured' if cls.DISCORD_TOKEN else 'Not Configured'}",
             f"Ko-fi URL: {cls.KOFI_URL if cls.KOFI_URL else 'Not Configured'}",
             f"Presence Updates Enabled: {cls.ENABLE_PRESENCE}",
@@ -226,3 +259,45 @@ class Config:
         # Log each line separately for better formatting
         for line in config_lines:
             logger.info(line)
+
+    @classmethod
+    def get_radarr_instances(cls) -> list[dict]:
+        """Return configured Radarr instances.
+        Each item: {'name','display_name','host','port','api_key','use_ssl'}
+        Supports both multi-instance and single-instance fallback.
+        """
+        instances: list[dict] = []
+        if cls.RADARR_INSTANCES:
+            for name in cls.RADARR_INSTANCES:
+                up = name.upper()
+                host = os.getenv(f'RADARR_{up}_HOST', '').strip()
+                api_key = os.getenv(f'RADARR_{up}_API_KEY', '').strip()
+                if not (host and api_key):
+                    continue
+                port_str = os.getenv(f'RADARR_{up}_PORT', '7878').strip()
+                try:
+                    port = int(port_str)
+                except ValueError:
+                    port = 7878
+                use_ssl = os.getenv(f'RADARR_{up}_USE_SSL', 'false').strip().lower() in {'1','true','yes','y'}
+                display = os.getenv(f'RADARR_{up}_DISPLAY_NAME', '').strip() or name.title()
+                instances.append({
+                    'name': name,
+                    'display_name': display,
+                    'host': host,
+                    'port': port,
+                    'api_key': api_key,
+                    'use_ssl': use_ssl,
+                })
+        else:
+            # Single-instance fallback
+            if cls.RADARR_HOST and cls.RADARR_API_KEY:
+                instances.append({
+                    'name': 'default',
+                    'display_name': 'Radarr',
+                    'host': cls.RADARR_HOST,
+                    'port': cls.RADARR_PORT,
+                    'api_key': cls.RADARR_API_KEY,
+                    'use_ssl': cls.RADARR_USE_SSL,
+                })
+        return instances

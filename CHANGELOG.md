@@ -1,3 +1,18 @@
+## 1.9.0 - 2025-12-22
+
+### Added
+- **Radarr Integration**: New multi-instance Radarr support to view recently downloaded movies from one or more Radarr servers.
+  - Single-instance mode: Configure `RADARR_HOST`, `RADARR_PORT`, `RADARR_API_KEY`, `RADARR_USE_SSL` for simple setups.
+  - Multi-instance mode: Set `RADARR_INSTANCES` (comma-separated names) and configure each instance with `RADARR_<NAME>_*` environment variables.
+  - New command: `!radarr_recent [instance|all] [days] [limit]` - Shows recently added movies in a clean embed with Title (Year) grouped by instance.
+  - Examples: `!radarr_recent` (all instances, last 7 days), `!radarr_recent asian 14 15` (specific instance, 14 days, max 15 items).
+  - Help integration: Radarr commands appear in `!controls` when configured.
+- Config helper method `get_radarr_instances()` to retrieve all configured Radarr instances with display names.
+
+### Changed
+- `RadarrService` now safely handles missing config attributes using `getattr()` with fallbacks.
+- Updated `template.env` and README with comprehensive Radarr configuration examples.
+
 ## 1.8.0 - 2025-12-22
 
 ### Changed
