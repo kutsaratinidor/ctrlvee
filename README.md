@@ -57,6 +57,7 @@ A Discord bot that controls VLC media player, manages playlists, provides movie 
    - Automatically enqueues discovered files into VLC
    - Lightweight polling (no extra dependencies)
    - **Hot reloading**: Add new folders to `.env` and they are picked up live, no restart needed
+   - **Discord command to add folders**: Use `!watch_add <path>` to validate and add a folder directly; updates `.env` automatically
    - **Progress logging**: See N/total progress for each file enqueued in logs
    - If exactly one item is added in a scan, the bot posts a TMDB metadata embed for it (when TMDB is configured)
 
@@ -298,6 +299,9 @@ python --version
    - `!status` - Show current VLC status (state, volume, playing item)
    - `!version` - Show bot version and key config info
    - `!controls` - Show this help message
+
+   **Watch Folders:**
+   - `!watch_add <path>` - Add a new watch folder. Validates the directory exists and updates `.env` immediately.
 
    **Radarr Integration:**
    - `!radarr_recent [instance|all] [days] [limit]` - Show recently downloaded movies from configured Radarr instance(s)

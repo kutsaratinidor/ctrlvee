@@ -110,6 +110,8 @@ class Config:
     WATCH_ANNOUNCE_MAX_ITEMS: int = int(os.getenv('WATCH_ANNOUNCE_MAX_ITEMS', '10'))
     # Throttle in milliseconds between per-file announcements (when not initial scan)
     WATCH_ANNOUNCE_THROTTLE_MS: int = int(os.getenv('WATCH_ANNOUNCE_THROTTLE_MS', '500'))
+    # Suppress single TV episode announcements (default: true). Set to false to announce single episodes immediately.
+    SUPPRESS_SINGLE_TV: bool = os.getenv('SUPPRESS_SINGLE_TV', 'true').strip().lower() in {'1','true','yes','y'}
     
     @classmethod
     def validate(cls) -> List[str]:

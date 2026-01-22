@@ -1,3 +1,11 @@
+## 1.9.1 - 2026-01-22
+
+### Fixed
+- **SUPPRESS_SINGLE_TV**: Added missing Config class attribute to properly load `SUPPRESS_SINGLE_TV` from environment variables. Previously, the setting was ignored, causing single TV episodes to always be suppressed regardless of the `.env` value.
+
+### Added
+- **Watch Folder Management**: New `!watch_add <path>` command to add watch folders directly from Discord without manually editing `.env`. The command validates the directory, normalizes the path, and updates the `.env` file immediately with hot-reload support.
+
 ## 1.9.0 - 2025-12-22
 
 ### Added

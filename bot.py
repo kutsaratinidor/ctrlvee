@@ -117,6 +117,7 @@ _autosave_stop = threading.Event()
 from src.cogs.playback import PlaybackCommands
 from src.cogs.playlist import PlaylistCommands
 from src.cogs.scheduler import Scheduler
+from src.cogs.watch import WatchCommands
 from src.version import __version__
 from changelog_helper import parse_changelog
 
@@ -439,6 +440,7 @@ async def setup_hook():
         await bot.add_cog(PlaybackCommands(bot, vlc, tmdb_service, watch_service))
         await bot.add_cog(PlaylistCommands(bot, vlc, tmdb_service, watch_service))
         await bot.add_cog(Scheduler(bot, vlc))
+        await bot.add_cog(WatchCommands(bot))
         logger.info("Cogs loaded successfully")
     except Exception as e:
         logger.error(f"Error loading cogs: {e}")
@@ -494,7 +496,7 @@ async def on_ready():
 
                 # Add a visible field with the clickable link (angle brackets ensure a clean URL)
                 try:
-                    embed.add_field(name="Support CtrlVee", value=f"☕ {f'<{Config.KOFI_URL}>'}", inline=False)
+                    embed.add_field(name="Support kutsaratinidor by supporting CtrlVee", value=f"☕ {f'<{Config.KOFI_URL}>'}", inline=False)
                 except Exception:
                     pass
 
