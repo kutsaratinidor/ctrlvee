@@ -538,7 +538,7 @@ class PlaybackCommands(commands.Cog):
                 # Add Ko-fi support field when configured
                 try:
                     if Config.KOFI_URL:
-                        embed.add_field(name="Support CtrlVee", value=f"☕ {f'<{Config.KOFI_URL}>'}", inline=False)
+                        embed.add_field(name="Support kutsaratinidor by supporting CtrlVee", value=f"☕ {f'<{Config.KOFI_URL}>'}", inline=False)
                 except Exception:
                     pass
                 await ctx.send(embed=embed)
@@ -1236,7 +1236,7 @@ class PlaybackCommands(commands.Cog):
             # Add footer
             try:
                 if Config.KOFI_URL:
-                    final_embed.add_field(name="Support CtrlVee", value=f"☕ <{Config.KOFI_URL}>", inline=False)
+                    final_embed.add_field(name="Support kutsaratinidor by supporting CtrlVee", value=f"☕ <{Config.KOFI_URL}>", inline=False)
             except Exception:
                 pass
 
@@ -1777,7 +1777,7 @@ class PlaybackCommands(commands.Cog):
                 try:
                     if Config.KOFI_URL:
                         try:
-                            embed.add_field(name="Support CtrlVee", value=f"☕ {f'<{Config.KOFI_URL}>'}", inline=False)
+                            embed.add_field(name="Support kutsaratinidor by supporting CtrlVee", value=f"☕ {f'<{Config.KOFI_URL}>'}", inline=False)
                         except Exception:
                             pass
                 except Exception:
