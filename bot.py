@@ -717,7 +717,7 @@ async def on_ready():
                         # Add Support/Kofi field when configured
                         try:
                             if Config.KOFI_URL:
-                                embed.add_field(name="Support CtrlVee", value=f"☕ {f'<{Config.KOFI_URL}>'}", inline=False)
+                                embed.add_field(name="Support kutsaratinidor by supporting CtrlVee", value=f"☕ {f'<{Config.KOFI_URL}>'}", inline=False)
                         except Exception:
                             pass
                         # If initial scan, suppress TMDB lookups and show only compact list
@@ -1179,7 +1179,7 @@ Examples: `{prefix}radarr_recent` (all instances, 7 days), `{prefix}radarr_recen
         # Add a clickable Ko-fi link as a field (angle brackets make it clickable in Discord)
         if Config.KOFI_URL:
             try:
-                embed.add_field(name="Support CtrlVee", value=f"☕ {f'<{Config.KOFI_URL}>'}", inline=False)
+                embed.add_field(name="Support kutsaratinidor by supporting CtrlVee", value=f"☕ {f'<{Config.KOFI_URL}>'}", inline=False)
             except Exception:
                 # Non-fatal if link rendering fails
                 pass
