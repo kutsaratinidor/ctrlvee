@@ -226,6 +226,10 @@ class PlaybackCommands(commands.Cog):
 
         Scans the current VLC playlist for items whose underlying files no longer exist
         (e.g., replaced/upgraded files) and removes them. Shows a summary of removed items.
+        
+        IMPORTANT: Files on network shares are NOT deleted even if inaccessible, to prevent
+        accidental deletion due to network connectivity issues. Only locally-verified missing
+        files are removed.
         """
         try:
             await ctx.trigger_typing()
@@ -236,7 +240,7 @@ class PlaybackCommands(commands.Cog):
             removed = int(result.get('removed', 0))
             items = result.get('items', []) or []
             if removed == 0:
-                await ctx.send("✅ Playlist cleanup: no missing files detected.")
+                await ctx.send("✅ Playlist cleanup: no missing files detected.\n⚠️ Note: Files on network shares are skipped to prevent accidental deletion.")
                 return
             max_list = 10
             listed = items[:max_list]
@@ -253,7 +257,7 @@ class PlaybackCommands(commands.Cog):
                 color=discord.Color.orange()
             )
             try:
-                embed.set_footer(text="Cleanup tool")
+                embed.set_footer(text="Cleanup tool - network share files are protected from deletion")
             except Exception:
                 pass
             await ctx.send(embed=embed)

@@ -274,6 +274,10 @@ class VLCController:
 
     def remove_missing_playlist_items(self) -> dict:
         """Scan the playlist and remove items whose underlying files are missing.
+        
+        IMPORTANT: This function is very conservative with deletion, especially for network paths.
+        It only deletes items where the file definitely doesn't exist. Network shares and
+        paths that can't be verified are left alone to prevent accidental deletion.
 
         Returns a dict: { 'removed': int, 'items': [ { 'id': str, 'name': str } ... ] }
         """
@@ -293,6 +297,9 @@ class VLCController:
                     # Debug logging
                     self.logger.debug(f"Checking playlist item: name='{name}', uri='{uri}', resolved_path='{path}'")
                     
+                    # Check if this is a network path (UNC path on Windows or network mount on Unix)
+                    is_network_path = self._is_network_path(uri, path)
+                    
                     exists = False
                     try:
                         # Ensure path is properly normalized for the OS
@@ -300,7 +307,14 @@ class VLCController:
                             import pathlib
                             normalized_path = str(pathlib.Path(path))
                             exists = os.path.exists(normalized_path)
-                            self.logger.debug(f"  Normalized path: '{normalized_path}', exists={exists}")
+                            
+                            # For network paths, be extra cautious:
+                            # If we can't verify the path exists, assume it might and don't delete
+                            if is_network_path and not exists:
+                                self.logger.warning(f"  Network path could not be verified: '{normalized_path}' - SKIPPING deletion (network paths can be unreliable)")
+                                exists = True  # Mark as existing to skip deletion
+                            
+                            self.logger.debug(f"  Normalized path: '{normalized_path}', exists={exists}, is_network={is_network_path}")
                         else:
                             exists = False
                     except Exception as e:
@@ -308,6 +322,7 @@ class VLCController:
                         exists = False
                     
                     if not exists:
+
                         if item_id:
                             self.logger.warning(f"Missing file detected: '{name}' at '{path}', removing from playlist")
                             ok = self.delete_playlist_item(item_id)
@@ -1146,6 +1161,45 @@ class VLCController:
         
         # Save the updated state
         self._save_queue_backup()
+    
+    def _is_network_path(self, uri: str | None, path: str | None) -> bool:
+        """Check if a path is a network path that should be protected from deletion.
+        
+        Detects:
+        - file://IP_ADDRESS/... (SMB shares via IP, e.g., file://192.168.1.100/share/file)
+        - file://HOSTNAME/... (SMB shares via hostname)
+        - UNC paths (\\server\share, //server/share)
+        - Linux network mounts (/mnt/, /media/)
+        """
+        import re
+        
+        # Check the raw URI first
+        if uri:
+            uri_lower = str(uri).lower()
+            # file://192.168.x.x/... pattern
+            if re.search(r'file://\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/', uri_lower):
+                self.logger.debug(f"Detected network path (SMB via IP): {uri}")
+                return True
+            # file://hostname/... pattern (non-IP domain/hostname)
+            # file:// URLs with network hosts don't have triple slashes after file://
+            if uri_lower.startswith('file://') and not uri_lower.startswith('file:///'):
+                # file://hostname/path (only two slashes) indicates network path
+                self.logger.debug(f"Detected network path (SMB via hostname): {uri}")
+                return True
+        
+        # Check the resolved path
+        if path:
+            path_str = str(path)
+            # UNC paths: \\server\share or //server/share
+            if path_str.startswith('\\\\') or path_str.startswith('//'):
+                self.logger.debug(f"Detected network path (UNC): {path}")
+                return True
+            # Linux network mounts
+            if path_str.startswith('/mnt/') or path_str.startswith('/media/'):
+                self.logger.debug(f"Detected network mount: {path}")
+                return True
+        
+        return False
 
 
 # Error classes for VLC operations
