@@ -517,14 +517,19 @@ class VLCController:
     def get_subtitle_tracks(self) -> Optional[list[dict]]:
         """Return available subtitle tracks with selection info.
 
-        Parses VLC status.xml for a <subtitle> element containing <track> entries.
-        Each track dict has: { 'id': int, 'name': str, 'selected': bool }
+        Parses VLC status.xml for stream information to build subtitle track list.
+        Each track dict has: { 'id': int, 'name': str, 'selected': bool, 'index': int, 'stream_index': int }
+        
+        Note: VLC's HTTP API doesn't reliably expose which subtitle is currently selected,
+        so 'selected' will always be False unless set externally by the caller.
+        
         Returns None if status cannot be fetched.
         """
         try:
             status = self.get_status()
             if status is None:
                 return None
+            
             # VLC uses <subtitle><track id=".." selected="true">Name</track></subtitle>
             node = status.find('subtitle')
             if node is None:
@@ -544,9 +549,10 @@ class VLCController:
                     name_attr = t.get('name')
                     text_val = (t.text or '').strip()
                     name = name_attr if name_attr else (text_val if text_val else f"Track {raw_id if raw_id is not None else ''}")
-                    selected_token = (t.get('selected') or '').strip().lower()
-                    selected = selected_token in {'true', '1', 'yes'}
+                    # Note: VLC HTTP API doesn't reliably report selected status
+                    selected = False
                     tracks.append({'id': tid, 'name': name, 'selected': selected})
+                    self.logger.debug(f"Track from <subtitle>: id={tid}, name={name}")
 
             # Parse stream categories to derive UI order (Stream 0, Stream 1, ...)
             streams: list[Dict[str, Any]] = []
@@ -650,6 +656,7 @@ class VLCController:
                     tr['index'] = ui_idx
                     tr['stream_index'] = stream_idx
 
+
                 # If tracks list was empty, create tracks purely from streams (excluding negative IDs)
                 if not tracks:
                     idx = 1
@@ -659,7 +666,7 @@ class VLCController:
                         tracks.append({
                             'id': s.get('id'), 
                             'name': s.get('name'), 
-                            'selected': False, 
+                            'selected': False,  # Caller must set this based on external tracking
                             'index': idx,
                             'stream_index': s.get('stream_index')
                         })
@@ -677,13 +684,18 @@ class VLCController:
             return None
 
     def get_selected_subtitle_track_id(self) -> Optional[int]:
-        """Return the currently selected subtitle track id, or None."""
+        """Return the currently selected subtitle track id/index, or None.
+        
+        Note: VLC's HTTP API doesn't reliably expose the selected subtitle track.
+        This method is kept for compatibility but may not return accurate results.
+        Consider tracking subtitle selection externally in your application.
+        """
         tracks = self.get_subtitle_tracks()
         if not tracks:
             return None
         for tr in tracks:
             if tr.get('selected'):
-                return tr.get('id')
+                return tr.get('id') or tr.get('stream_index')
         return None
     
     def get_current_position(self):

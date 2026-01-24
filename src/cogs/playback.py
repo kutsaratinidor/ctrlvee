@@ -49,6 +49,9 @@ class PlaybackCommands(commands.Cog):
             self._presence_throttle_seconds = int(getattr(Config, 'PRESENCE_UPDATE_THROTTLE', 5))
         except Exception:
             self._presence_throttle_seconds = 5
+        
+        # Track selected subtitle since VLC API doesn't expose it
+        self.selected_subtitle_stream_index = None
         self._initial_scan_pending = True # Guard for startup presence
         
     def signal_initial_scan_complete(self):
@@ -975,6 +978,7 @@ class PlaybackCommands(commands.Cog):
                 await ctx.trigger_typing()
             except Exception:
                 pass
+            
             tracks = self.vlc.get_subtitle_tracks()
             if tracks is None:
                 await ctx.send("Couldn't retrieve subtitle tracks from VLC.")
@@ -987,23 +991,42 @@ class PlaybackCommands(commands.Cog):
                 )
                 await ctx.send(embed=embed)
                 return
-            # Build a neatly aligned, monospaced list
+            
+            # Mark selected track based on our tracking (VLC API doesn't expose this)
+            if self.selected_subtitle_stream_index is not None:
+                for tr in tracks:
+                    if tr.get('stream_index') == self.selected_subtitle_stream_index:
+                        tr['selected'] = True
+                        logger.info(f"Marked track as selected: stream_index={self.selected_subtitle_stream_index}")
+                        break
+            
+            # Build a neatly aligned list
             lines = []
             # Determine width for index alignment
             max_index = max((tr.get('index') or i) for i, tr in enumerate(tracks, start=1))
             for i, tr in enumerate(tracks, start=1):
-                # Use fixed-width markers for alignment
-                mark = "[x]" if tr.get('selected') else "[ ]"
+                # Use checkmark/empty circle markers for alignment
+                mark = "✅" if tr.get('selected') else "⚪"
                 ui_idx = tr.get('index') or i
                 name = tr.get('name') or f"Track {ui_idx}"
-                lines.append(f"{mark} {str(ui_idx).rjust(len(str(max_index)))}. {name}")
+                lines.append(f"{mark} **{ui_idx}.** {name}")
             list_text = "\n".join(lines[:20]) + ("\n..." if len(lines) > 20 else "")
-            # Wrap in code block for monospaced alignment in Discord
             embed = discord.Embed(
                 title="💬 Subtitle Tracks",
-                description=f"```\n{list_text}\n```",
+                description=list_text,
                 color=discord.Color.blue()
             )
+            # Show current selection explicitly
+            try:
+                selected_track = next((tr for tr in tracks if tr.get('selected')), None)
+            except Exception:
+                selected_track = None
+            if selected_track:
+                cur_idx = selected_track.get('index') or selected_track.get('id')
+                cur_name = selected_track.get('name') or (f"Track {cur_idx}" if cur_idx is not None else "Track")
+                embed.add_field(name="Current", value=f"✅ {cur_name} ({cur_idx})", inline=True)
+            else:
+                embed.add_field(name="Current", value="⚪ Off", inline=True)
             embed.add_field(
                 name="Usage",
                 value=(
@@ -1050,6 +1073,8 @@ class PlaybackCommands(commands.Cog):
                 if not ok:
                     await ctx.send("Failed to disable subtitles (tried -1 and 0).")
                     return
+                # Track that subtitles are disabled
+                self.selected_subtitle_stream_index = None
                 embed = discord.Embed(
                     title="💬 Subtitles",
                     description="Subtitles disabled.",
@@ -1098,12 +1123,15 @@ class PlaybackCommands(commands.Cog):
                 ok = self.vlc.set_subtitle_track(stream_idx)
                 if ok:
                     logger.info(f"sub_set: Successfully set by stream_index={stream_idx}")
+                    # Track the selected subtitle
+                    self.selected_subtitle_stream_index = stream_idx
             
             if not ok and tid is not None:
                 logger.info(f"sub_set: Attempting to set subtitle by track id={tid}")
                 ok = self.vlc.set_subtitle_track(tid)
                 if ok:
                     logger.info(f"sub_set: Successfully set by track id={tid}")
+                    self.selected_subtitle_stream_index = stream_idx if stream_idx else tid
             
             if not ok:
                 # Try direct position fallback for VLC versions that support it
@@ -1111,10 +1139,12 @@ class PlaybackCommands(commands.Cog):
                 ok = self.vlc.set_subtitle_track(pos_index - 1)
                 if ok:
                     logger.info(f"sub_set: Successfully set by position {pos_index - 1}")
+                    self.selected_subtitle_stream_index = stream_idx if stream_idx else (pos_index - 1)
                 else:
                     ok = self.vlc.set_subtitle_track(pos_index)
                     if ok:
                         logger.info(f"sub_set: Successfully set by position {pos_index}")
+                        self.selected_subtitle_stream_index = stream_idx if stream_idx else pos_index
                 
             if not ok:
                 embed = discord.Embed(
