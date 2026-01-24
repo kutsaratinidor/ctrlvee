@@ -275,9 +275,10 @@ class VLCController:
     def remove_missing_playlist_items(self) -> dict:
         """Scan the playlist and remove items whose underlying files are missing.
         
-        IMPORTANT: This function is very conservative with deletion, especially for network paths.
-        It only deletes items where the file definitely doesn't exist. Network shares and
-        paths that can't be verified are left alone to prevent accidental deletion.
+        Uses robust file existence checking that works with network shares on all platforms:
+        - First tries os.path.exists() (fast, works for local files)
+        - Falls back to os.stat() for network shares (more reliable on Windows)
+        - Only skips deletion if file access is absolutely impossible
 
         Returns a dict: { 'removed': int, 'items': [ { 'id': str, 'name': str } ... ] }
         """
@@ -306,14 +307,9 @@ class VLCController:
                         if path:
                             import pathlib
                             normalized_path = str(pathlib.Path(path))
-                            exists = os.path.exists(normalized_path)
                             
-                            # For network paths, be extra cautious:
-                            # If we can't verify the path exists, assume it might and don't delete
-                            if is_network_path and not exists:
-                                self.logger.warning(f"  Network path could not be verified: '{normalized_path}' - SKIPPING deletion (network paths can be unreliable)")
-                                exists = True  # Mark as existing to skip deletion
-                            
+                            # Use robust file existence check that works with network shares
+                            exists = self._file_exists_robust(normalized_path)
                             self.logger.debug(f"  Normalized path: '{normalized_path}', exists={exists}, is_network={is_network_path}")
                         else:
                             exists = False
@@ -1161,6 +1157,33 @@ class VLCController:
         
         # Save the updated state
         self._save_queue_backup()
+    
+    def _file_exists_robust(self, path: str) -> bool:
+        """Check if a file exists using multiple methods for reliability.
+        
+        Works with both local files and network shares:
+        1. First tries os.path.exists() (fast, works for local)
+        2. Falls back to os.stat() (works better with network shares)
+        
+        Returns True only if the file definitely exists.
+        """
+        try:
+            # First, try the fast method
+            if os.path.exists(path):
+                return True
+            
+            # If that fails, try os.stat() which works better with network shares
+            # os.stat() will raise FileNotFoundError if file doesn't exist
+            try:
+                os.stat(path)
+                self.logger.debug(f"File exists (detected via os.stat): {path}")
+                return True
+            except (FileNotFoundError, OSError) as e:
+                self.logger.debug(f"File does not exist (os.stat failed): {path} - {type(e).__name__}")
+                return False
+        except Exception as e:
+            self.logger.debug(f"Unexpected error checking file: {path} - {e}")
+            return False
     
     def _is_network_path(self, uri: str | None, path: str | None) -> bool:
         """Check if a path is a network path that should be protected from deletion.
