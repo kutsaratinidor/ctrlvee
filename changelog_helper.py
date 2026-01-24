@@ -18,7 +18,7 @@ def parse_changelog(max_versions: int = 2) -> List[Dict]:
     if not os.path.exists(changelog_path):
         return []
     
-    with open(changelog_path, 'r') as f:
+    with open(changelog_path, 'r', encoding='utf-8') as f:
         content = f.read()
     
     # Split by "## X.Y.Z" pattern
