@@ -234,15 +234,36 @@ class VLCController:
                     # After u[7:] we get: /C:/path/to/file
                     # After unquote: /C:/path/to/file
                     # We need to strip the leading / to get C:/path/to/file
-                    if p.startswith('/') and len(p) > 2 and p[2] == ':':
-                        p = p[1:]  # Remove only the first leading slash
-                    self.logger.debug(f"Windows path conversion: {u} -> {p}")
+                    # Check if this is a network path (file://IP/path or file://hostname/path)
+                    # file:// URIs with double slashes mean network path (no leading /)
+                    if not p.startswith('/'):
+                        # This is a network path like: 192.168.1.100/share/path
+                        # Convert to UNC path: \\192.168.1.100\share\path
+                        unc_path = '\\\\' + p.replace('/', '\\')
+                        self.logger.info(f"Network path conversion: {u} -> {unc_path}")
+                        return unc_path
+                    
+                    # Windows local file: file:///C:/path
+                    if len(p) > 2 and p[2] == ':':
+                        # Remove the leading / to get C:/path/to/file
+                        p = p[1:]
+                        self.logger.debug(f"Windows local path conversion: {u} -> {p}")
+                        return p
+                    
+                    # Fallback for other Windows paths
+                    return p
                 else:
                     # Unix/Linux URIs have format: file:///home/user/path
                     # After u[7:] we get: /home/user/path (correct)
-                    self.logger.debug(f"Unix path conversion: {u} -> {p}")
-                
-                return p
+                    # Check if this is a network path (file://IP/path)
+                    if not p.startswith('/'):
+                        # Network path on Unix - should be mounted
+                        self.logger.debug(f"Unix network path: {u} -> {p}")
+                        return p
+                    
+                    # Unix/Linux local file: file:///home/user/path
+                    self.logger.debug(f"Unix local path conversion: {u} -> {p}")
+                    return p
             # Fallback: if it looks like an absolute path, return as-is
             try:
                 import pathlib
