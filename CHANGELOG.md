@@ -1,3 +1,14 @@
+## 1.9.2 - 2026-01-23
+
+### Fixed
+- **Subtitle Selection Tracking**: Subtitle selection is now properly tracked and displayed. Since VLC's HTTP API doesn't expose the currently active subtitle track, the bot now maintains client-side tracking. When you use `!sub_set` to change subtitles, the bot remembers your selection and displays it with ✅ in `!sub_list`.
+- **Windows Playlist Cleanup Bug**: Fixed critical bug in `!cleanup` command on Windows that was incorrectly marking all files as missing. The issue was in path URI-to-path conversion where `.lstrip('/')` was removing multiple leading slashes instead of just the first one. Now uses `[1:]` for proper single-slash removal.
+- Added comprehensive debug logging to playlist cleanup to help diagnose file path resolution issues on all platforms.
+
+### Changed
+- `!sub_list` now displays subtitle selection more clearly with a dedicated "Current" field showing the selected track with ✅ or ⚪ (Off).
+- Improved error handling and logging in URI-to-path conversion for cross-platform compatibility.
+
 ## 1.9.1 - 2026-01-22
 
 ### Fixed

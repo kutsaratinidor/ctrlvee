@@ -222,13 +222,26 @@ class VLCController:
             # Handle file:// URIs
             if u.lower().startswith('file://'):
                 import urllib.parse
-                # Strip the scheme and decode percent-encoding
+                import pathlib
+                # Strip the scheme
                 path_part = u[7:]
-                # For local files, path_part typically starts with /
+                # URL-decode the path
                 p = urllib.parse.unquote(path_part)
-                # For Windows-style file URIs, they may have an extra leading slash
-                if os.name == 'nt' and p.startswith('/') and len(p) > 3 and p[2] == ':':
-                    p = p.lstrip('/')
+                
+                # For Windows-style file URIs (file:///C:/path), remove extra leading slash
+                if os.name == 'nt':
+                    # Windows URIs have format: file:///C:/path/to/file
+                    # After u[7:] we get: /C:/path/to/file
+                    # After unquote: /C:/path/to/file
+                    # We need to strip the leading / to get C:/path/to/file
+                    if p.startswith('/') and len(p) > 2 and p[2] == ':':
+                        p = p[1:]  # Remove only the first leading slash
+                    self.logger.debug(f"Windows path conversion: {u} -> {p}")
+                else:
+                    # Unix/Linux URIs have format: file:///home/user/path
+                    # After u[7:] we get: /home/user/path (correct)
+                    self.logger.debug(f"Unix path conversion: {u} -> {p}")
+                
                 return p
             # Fallback: if it looks like an absolute path, return as-is
             try:
@@ -276,13 +289,27 @@ class VLCController:
                     name = leaf.get('name', '')
                     uri = leaf.get('uri')
                     path = self._uri_to_path(uri) or name
+                    
+                    # Debug logging
+                    self.logger.debug(f"Checking playlist item: name='{name}', uri='{uri}', resolved_path='{path}'")
+                    
                     exists = False
                     try:
-                        exists = bool(path) and os.path.exists(path)
-                    except Exception:
+                        # Ensure path is properly normalized for the OS
+                        if path:
+                            import pathlib
+                            normalized_path = str(pathlib.Path(path))
+                            exists = os.path.exists(normalized_path)
+                            self.logger.debug(f"  Normalized path: '{normalized_path}', exists={exists}")
+                        else:
+                            exists = False
+                    except Exception as e:
+                        self.logger.debug(f"  Error checking existence: {e}")
                         exists = False
+                    
                     if not exists:
                         if item_id:
+                            self.logger.warning(f"Missing file detected: '{name}' at '{path}', removing from playlist")
                             ok = self.delete_playlist_item(item_id)
                             if ok:
                                 result['removed'] += 1
@@ -298,6 +325,10 @@ class VLCController:
                     self.get_playlist()
                 except Exception:
                     pass
+            return result
+        except Exception as e:
+            self.logger.error(f"remove_missing_playlist_items error: {e}")
+            return result
             return result
         except Exception as e:
             self.logger.error(f"remove_missing_playlist_items error: {e}")
