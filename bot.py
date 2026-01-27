@@ -739,11 +739,13 @@ async def on_ready():
                                     except Exception:
                                         series_name = None
                                     # Fallback to cleaning filename
+                                    series_year = None
                                     if not series_name and paths:
                                         try:
                                             # Prefer TV parser to strip SxxExx and noise
-                                            s_title, s_season, _ = MediaUtils.parse_tv_filename(os.path.basename(paths[0]))
+                                            s_title, s_season, _, s_year = MediaUtils.parse_tv_filename(os.path.basename(paths[0]))
                                             series_name = s_title or MediaUtils.clean_movie_title(os.path.basename(paths[0]))
+                                            series_year = s_year
                                             # If season not detected earlier, use from filename
                                             if season_num is None:
                                                 season_num = s_season
@@ -751,8 +753,8 @@ async def on_ready():
                                             series_name = None
 
                                     if series_name:
-                                        logger.info(f"Announcement TV parse: series='{series_name}' season={season_num}")
-                                        tv_embed = tmdb_service.get_tv_metadata(series_name, season_num)
+                                        logger.info(f"Announcement TV parse: series='{series_name}' year={series_year} season={season_num}")
+                                        tv_embed = tmdb_service.get_tv_metadata(series_name, season_num, series_year)
                             except Exception as e:
                                 logger.debug(f"TV metadata lookup failed: {e}")
 
@@ -839,9 +841,9 @@ async def on_ready():
                             if tmdb_service:
                                 fname = os.path.basename(paths[0])
                                 # Try TV parser first
-                                tv_title, tv_season, tv_episode = MediaUtils.parse_tv_filename(fname)
+                                tv_title, tv_season, tv_episode, tv_year = MediaUtils.parse_tv_filename(fname)
                                 if tv_title:
-                                    logger.info(f"Announcement single parse (TV): series='{tv_title}' season={tv_season} episode={tv_episode} from '{fname}'")
+                                    logger.info(f"Announcement single parse (TV): series='{tv_title}' year={tv_year} season={tv_season} episode={tv_episode} from '{fname}'")
                                 # Tighten TV suppression: only suppress if an explicit episode is detected
                                 # e.g., S01E02 or 1x02 patterns (tv_episode parsed) or a clear season number with episode-like pattern
                                 has_explicit_episode = bool(tv_episode) or bool(re.search(r"(?i)(s\d{1,2}e\d{1,2}|\d{1,2}x\d{1,2})", fname))
@@ -855,7 +857,7 @@ async def on_ready():
                                     if not suppress_single_tv and clean_title:
                                         tmdb_embed = tmdb_service.get_movie_metadata(clean_title, year)
                                     if not tmdb_embed and tv_title:
-                                        tmdb_embed = tmdb_service.get_tv_metadata(tv_title, tv_season)
+                                        tmdb_embed = tmdb_service.get_tv_metadata(tv_title, tv_season, tv_year)
                                     if not tmdb_embed and clean_title:
                                         tmdb_embed = tmdb_service.get_tv_metadata(clean_title)
                                     if tmdb_embed:

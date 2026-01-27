@@ -145,18 +145,23 @@ class MediaUtils:
         return title
 
     @staticmethod
-    def parse_tv_filename(filename: str) -> Tuple[Optional[str], Optional[int], Optional[int]]:
-        """Parse a TV episode filename into (series_title, season, episode).
+    def parse_tv_filename(filename: str) -> Tuple[Optional[str], Optional[int], Optional[int], Optional[int]]:
+        """Parse a TV episode filename into (series_title, season, episode, year).
 
         Handles common scene patterns like:
         - Show.Name.S02E03.1080p...
         - Show Name - S02E03 - ...
         - Show Name 2x03 ...
+        - Show.Name.2023.S02E03...
         - Season folders: parent directory 'Season 2'
+        
+        Returns:
+            Tuple of (series_title, season, episode, year) where year is extracted if present
         """
         base = os.path.basename(filename)
         name, _ = os.path.splitext(base)
         work = name.replace('.', ' ').replace('_', ' ')
+        
         # Season/Episode patterns
         m = re.search(r'(?i)\bS(\d{1,2})E(\d{1,2})\b', work)
         if not m:
@@ -164,9 +169,16 @@ class MediaUtils:
         season = int(m.group(1)) if m else None
         episode = int(m.group(2)) if m else None
 
+        # Extract year if present (4-digit year between 1900-2099)
+        year_match = re.search(r'\b(19|20)\d{2}\b', work)
+        year = int(year_match.group(0)) if year_match else None
+
         # Remove season/episode token and common noise to extract series name
         if m:
             work = work[:m.start()].strip()
+        # Remove year from series name
+        if year_match:
+            work = work[:year_match.start()].strip() + work[year_match.end():].strip()
         # Drop release noise similar to movie cleaning
         work = re.sub(r'\s*\b(480|576|720|1080|2160|4320)p\b', ' ', work, flags=re.IGNORECASE)
         work = re.sub(r'\b(?:web(?:-?dl|-?rip)?|bluray|brrip|bdrip|hdrip|hdtv|dvdrip|remux)\b', ' ', work, flags=re.IGNORECASE)
@@ -176,7 +188,7 @@ class MediaUtils:
         work = re.sub(r'[\-–]+\s*$', '', work).strip()
 
         series = work if work else None
-        return series, season, episode
+        return series, season, episode, year
 
     @staticmethod
     def get_media_icon(filename):

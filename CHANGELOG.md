@@ -1,3 +1,13 @@
+## 1.9.3 - 2026-01-27
+
+### Fixed
+- **TMDB Metadata Matching**: Significantly improved accuracy of movie and TV show metadata retrieval to resolve incorrect matches for similar titles.
+  - Enhanced scoring algorithm: Uses multi-factor scoring (title similarity, year proximity, popularity) instead of simple ranking to better distinguish between similar results.
+  - **Original title support**: Now checks both `title` and `original_title` fields, fixing issues with anime and foreign films (e.g., "Hell's Paradise" was incorrectly matched to "My Paradise Is Darker Than Your Hell").
+  - **Year-based disambiguation**: Implements year proximity scoring (exact match +50pts, 1-year difference +40pts, etc.) to resolve cases like "Memory of a Killer (2026)" being matched to "The Memory of a Killer (2010)".
+  - **TV show year extraction**: `parse_tv_filename()` now extracts year from filenames like "Show.Name.2026.S01E01.mkv" and passes it to TMDB API for better filtering.
+  - **Improved logging**: Metadata lookups now log the matched title, original title, year, and confidence score for better debugging.
+
 ## 1.9.2 - 2026-01-23
 
 ### Fixed

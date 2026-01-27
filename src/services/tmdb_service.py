@@ -59,32 +59,59 @@ class TMDBService:
                 self.logger.info(f"TMDB movie lookup: no results for title='{title}' (year={year})")
                 return None
             
-            # Choose best match: prefer exact title and year when provided
+            # Choose best match with improved scoring algorithm
             def norm(s: str) -> str:
                 return ''.join(ch for ch in s.lower() if ch.isalnum())
 
             target = norm(title)
             best = None
             for item in response['results']:
-                item_title = item.get('title') or item.get('original_title') or ''
+                item_title = item.get('title') or ''
+                item_original_title = item.get('original_title') or ''
                 n = norm(item_title)
+                n_orig = norm(item_original_title)
+                
                 item_year = None
                 rd = item.get('release_date')
                 if rd and len(rd) >= 4 and rd[:4].isdigit():
                     item_year = int(rd[:4])
 
-                # Ranking tuple: higher is better
-                rank = (
-                    3 if (n == target and year and item_year == year) else
-                    2 if (n == target) else
-                    1 if (year and item_year == year) else
-                    0
-                )
-                if best is None or rank > best[0]:
-                    best = (rank, item)
+                # Compute score (higher is better)
+                score = 0.0
+                
+                # Title matching: exact match is best, then check original_title (for anime/foreign films)
+                if n == target or n_orig == target:
+                    score += 100.0  # Exact match bonus
+                elif target in n or n in target or target in n_orig or n_orig in target:
+                    score += 50.0  # Partial match bonus
+                else:
+                    score += 0.0  # No match
+                
+                # Year matching: exact year match, then proximity
+                if year and item_year:
+                    if item_year == year:
+                        score += 50.0  # Exact year match
+                    else:
+                        # Penalize by year distance (max penalty at 5+ years)
+                        year_diff = abs(item_year - year)
+                        score += max(0, 50.0 - (year_diff * 10.0))
+                elif not year:
+                    # No year provided, slight bonus for recent releases
+                    score += 5.0
+                
+                # Popularity/quality indicators (helps differentiate similar titles)
+                popularity = item.get('popularity', 0.0)
+                vote_count = item.get('vote_count', 0)
+                if popularity > 0:
+                    score += min(20.0, popularity * 0.5)  # Cap at 20 points
+                if vote_count > 100:
+                    score += min(10.0, vote_count / 100)  # Cap at 10 points
+                
+                if best is None or score > best[0]:
+                    best = (score, item)
 
             movie = (best[1] if best else response['results'][0])
-            self.logger.info(f"TMDB movie match: '{movie.get('title')}' year={(movie.get('release_date') or '')[:4]}")
+            self.logger.info(f"TMDB movie match: '{movie.get('title')}' (orig: '{movie.get('original_title')}') year={(movie.get('release_date') or '')[:4]} score={best[0] if best else 0:.1f}")
             
             # Get more detailed movie info
             movie_info = tmdb.Movies(movie['id']).info()
@@ -118,12 +145,13 @@ class TMDBService:
             self.logger.error(f"Error getting movie metadata for title='{title}' year={year}: {e}")
             return None
 
-    def get_tv_metadata(self, title: str, season: int | None = None):
+    def get_tv_metadata(self, title: str, season: int | None = None, year: int | None = None):
         """Get TV show or season metadata from TMDB.
 
         Args:
             title: Clean TV show title
             season: Optional season number to fetch season-specific info
+            year: Optional first air year to disambiguate results
         Returns:
             discord.Embed or None
         """
@@ -135,17 +163,40 @@ class TMDBService:
             # Normalize title: strip trailing year in parentheses (e.g., "Show (2015)")
             try:
                 import re as _re
+                match = _re.search(r"\s*\((19|20)\d{2}\)\s*$", title)
+                if match and not year:
+                    # Extract year from title if not explicitly provided
+                    year = int(match.group(0).strip('() '))
                 norm_title = _re.sub(r"\s*\((19|20)\d{2}\)\s*$", "", title).strip()
             except Exception:
                 norm_title = title
-            self.logger.info(f"TMDB TV lookup: title='{norm_title}' season={season}")
+            self.logger.info(f"TMDB TV lookup: title='{norm_title}' year={year} season={season}")
             search = tmdb.Search()
-            response = search.tv(query=norm_title)
-            try:
-                res = response.get('results') or []
-                self.logger.info(f"TMDB TV results: count={len(res)} sample={[ (r.get('name') or r.get('original_name')) for r in res[:5] ]}")
-            except Exception:
-                pass
+            
+            # Try with year first if provided
+            if year:
+                response = search.tv(query=norm_title, first_air_date_year=year)
+                try:
+                    res = response.get('results') or []
+                    self.logger.info(f"TMDB TV results (with year): count={len(res)} sample={[ (r.get('name') or r.get('original_name')) for r in res[:5] ]}")
+                except Exception:
+                    pass
+                if not response.get('results'):
+                    self.logger.info(f"TMDB TV lookup returned no results with year={year}; retrying without year")
+                    response = search.tv(query=norm_title)
+                    try:
+                        res = response.get('results') or []
+                        self.logger.info(f"TMDB TV results (no year): count={len(res)} sample={[ (r.get('name') or r.get('original_name')) for r in res[:5] ]}")
+                    except Exception:
+                        pass
+            else:
+                response = search.tv(query=norm_title)
+                try:
+                    res = response.get('results') or []
+                    self.logger.info(f"TMDB TV results: count={len(res)} sample={[ (r.get('name') or r.get('original_name')) for r in res[:5] ]}")
+                except Exception:
+                    pass
+                    
             if not response.get('results'):
                 self.logger.debug(f"No TV results found for: {norm_title}")
                 return None
@@ -153,27 +204,56 @@ class TMDBService:
             def norm(s: str) -> str:
                 return ''.join(ch for ch in s.lower() if ch.isalnum())
 
-            target = norm(title)
+            target = norm(norm_title)
             best = None
             for item in response['results']:
-                item_name = item.get('name') or item.get('original_name') or ''
+                item_name = item.get('name') or ''
+                item_original_name = item.get('original_name') or ''
                 n = norm(item_name)
+                n_orig = norm(item_original_name)
+                
                 # TV has 'first_air_date' which may include year
                 item_year = None
                 fd = item.get('first_air_date')
                 if fd and len(fd) >= 4 and fd[:4].isdigit():
                     item_year = int(fd[:4])
 
-                rank = (
-                    2 if (n == target) else
-                    1 if (target in n or n in target) else
-                    0
-                )
-                if best is None or rank > best[0]:
-                    best = (rank, item)
+                # Compute score (higher is better)
+                score = 0.0
+                
+                # Title matching: exact match is best, check both name and original_name (for anime)
+                if n == target or n_orig == target:
+                    score += 100.0  # Exact match bonus
+                elif target in n or n in target or target in n_orig or n_orig in target:
+                    score += 50.0  # Partial match bonus
+                else:
+                    score += 0.0  # No match
+                
+                # Year matching: exact year match, then proximity
+                if year and item_year:
+                    if item_year == year:
+                        score += 50.0  # Exact year match
+                    else:
+                        # Penalize by year distance (max penalty at 5+ years)
+                        year_diff = abs(item_year - year)
+                        score += max(0, 50.0 - (year_diff * 10.0))
+                elif not year:
+                    # No year provided, slight bonus for recent shows
+                    score += 5.0
+                
+                # Popularity/quality indicators (helps differentiate similar titles)
+                popularity = item.get('popularity', 0.0)
+                vote_count = item.get('vote_count', 0)
+                if popularity > 0:
+                    score += min(20.0, popularity * 0.5)  # Cap at 20 points
+                if vote_count > 100:
+                    score += min(10.0, vote_count / 100)  # Cap at 10 points
+                
+                if best is None or score > best[0]:
+                    best = (score, item)
 
             tv = best[1] if best else response['results'][0]
-            self.logger.info(f"TMDB TV match: '{tv.get('name')}' year={(tv.get('first_air_date') or '')[:4]}")
+            self.logger.info(f"TMDB TV match: '{tv.get('name')}' (orig: '{tv.get('original_name')}') year={(tv.get('first_air_date') or '')[:4]} score={best[0] if best else 0:.1f}")
 
             tv_info = tmdb.TV(tv['id']).info()
 
