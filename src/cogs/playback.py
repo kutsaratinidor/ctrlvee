@@ -1344,7 +1344,7 @@ class PlaybackCommands(commands.Cog):
             self.logger.error(f"Error getting status embed: {e}")
             return None
             
-    @commands.command(name='play')
+    @commands.command(name='play',aliases=['start','resume'])
     @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def play(self, ctx):
         """Start or resume playback"""
@@ -1459,7 +1459,7 @@ class PlaybackCommands(commands.Cog):
             )
             await ctx.send(embed=embed)
  
-    @commands.command(name='forward', aliases=['ff'])
+    @commands.command(name='forward', aliases=['ff','skip'])
     @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def forward(self, ctx, seconds: int = 10):
         """Fast forward playback by specified number of seconds"""
