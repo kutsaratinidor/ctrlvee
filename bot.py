@@ -852,14 +852,49 @@ async def on_ready():
                                 clean_title, year = MediaUtils.parse_movie_filename(fname)
                                 logger.info(f"Announcement single parse (Movie): title='{clean_title}' year={year} from '{fname}'")
                                 tmdb_embed = None
-                                # Prefer movie metadata when both parse and no explicit episode token
+                                # When no explicit episode marker: try both movie and TV, use the better match
                                 if not is_initial:
-                                    if not suppress_single_tv and clean_title:
-                                        tmdb_embed = tmdb_service.get_movie_metadata(clean_title, year)
-                                    if not tmdb_embed and tv_title:
-                                        tmdb_embed = tmdb_service.get_tv_metadata(tv_title, tv_season, tv_year)
-                                    if not tmdb_embed and clean_title:
-                                        tmdb_embed = tmdb_service.get_tv_metadata(clean_title)
+                                    if not has_explicit_episode:
+                                        # No explicit episode: try both and compare scores
+                                        movie_embed = None
+                                        tv_embed = None
+                                        movie_score = 0.0
+                                        tv_score = 0.0
+                                        
+                                        if not suppress_single_tv and clean_title:
+                                            movie_embed = tmdb_service.get_movie_metadata(clean_title, year)
+                                            movie_score = getattr(tmdb_service, '_last_match_score', 0.0)
+                                            logger.info(f"Movie lookup score: {movie_score:.1f}")
+                                        
+                                        if tv_title:
+                                            tv_embed = tmdb_service.get_tv_metadata(tv_title, tv_season, tv_year)
+                                            tv_score = getattr(tmdb_service, '_last_match_score', 0.0)
+                                            logger.info(f"TV lookup score: {tv_score:.1f}")
+                                        
+                                        # Choose the better match
+                                        if tv_embed and movie_embed:
+                                            if tv_score > movie_score:
+                                                logger.info(f"Chose TV (score {tv_score:.1f}) over movie (score {movie_score:.1f})\"")
+                                                tmdb_embed = tv_embed
+                                            else:
+                                                logger.info(f"Chose movie (score {movie_score:.1f}) over TV (score {tv_score:.1f})\"")
+                                                tmdb_embed = movie_embed
+                                        elif tv_embed:
+                                            tmdb_embed = tv_embed
+                                        elif movie_embed:
+                                            tmdb_embed = movie_embed
+                                        else:
+                                            # Both failed: try generic TV lookup as last resort
+                                            if clean_title:
+                                                tmdb_embed = tmdb_service.get_tv_metadata(clean_title)
+                                    else:
+                                        # Has explicit episode: prefer TV
+                                        if tv_title:
+                                            tmdb_embed = tmdb_service.get_tv_metadata(tv_title, tv_season, tv_year)
+                                        elif not suppress_single_tv and clean_title:
+                                            tmdb_embed = tmdb_service.get_movie_metadata(clean_title, year)
+                                        if not tmdb_embed and clean_title:
+                                            tmdb_embed = tmdb_service.get_tv_metadata(clean_title)
                                     if tmdb_embed:
                                         tmdb_embed.title = f"✨ New Media Added: {tmdb_embed.title}"
                                         # Add the pretty filename line above TMDB overview

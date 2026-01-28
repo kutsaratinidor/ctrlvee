@@ -16,6 +16,58 @@ class TMDBService:
         if self.api_key:
             tmdb.API_KEY = self.api_key
 
+    def _compute_title_score(self, search_title: str, item_title: str, item_original_title: str, target_year: int | None, item_year: int | None, popularity: float, vote_count: int) -> float:
+        """Compute a matching score for a search result.
+        
+        Args:
+            search_title: The title being searched for
+            item_title: The result's primary title
+            item_original_title: The result's original title
+            target_year: The year being searched for (None if not provided)
+            item_year: The result's release/air year
+            popularity: The result's TMDB popularity score
+            vote_count: The result's vote count
+            
+        Returns:
+            A float score (higher is better, typically 0-200+)
+        """
+        def norm(s: str) -> str:
+            return ''.join(ch for ch in s.lower() if ch.isalnum())
+
+        target = norm(search_title)
+        n = norm(item_title)
+        n_orig = norm(item_original_title)
+        
+        score = 0.0
+        
+        # Title matching: exact match is best, then check original_title (for anime/foreign content)
+        if n == target or n_orig == target:
+            score += 100.0  # Exact match bonus
+        elif target in n or n in target or target in n_orig or n_orig in target:
+            score += 50.0  # Partial match bonus
+        else:
+            score += 0.0  # No match
+        
+        # Year matching: exact year match, then proximity
+        if target_year and item_year:
+            if item_year == target_year:
+                score += 50.0  # Exact year match
+            else:
+                # Penalize by year distance (max penalty at 5+ years)
+                year_diff = abs(item_year - target_year)
+                score += max(0, 50.0 - (year_diff * 10.0))
+        elif not target_year:
+            # No year provided, slight bonus for recent releases
+            score += 5.0
+        
+        # Popularity/quality indicators (helps differentiate similar titles)
+        if popularity > 0:
+            score += min(20.0, popularity * 0.5)  # Cap at 20 points
+        if vote_count > 100:
+            score += min(10.0, vote_count / 100)  # Cap at 10 points
+        
+        return score
+
     def get_movie_metadata(self, title: str, year: int | None = None):
         """Get movie metadata from TMDB
         
@@ -111,7 +163,11 @@ class TMDBService:
                     best = (score, item)
 
             movie = (best[1] if best else response['results'][0])
-            self.logger.info(f"TMDB movie match: '{movie.get('title')}' (orig: '{movie.get('original_title')}') year={(movie.get('release_date') or '')[:4]} score={best[0] if best else 0:.1f}")
+            best_score = best[0] if best else 0.0
+            self.logger.info(f"TMDB movie match: '{movie.get('title')}' (orig: '{movie.get('original_title')}') year={(movie.get('release_date') or '')[:4]} score={best_score:.1f}")
+            
+            # Store score for comparison when deciding between movie/TV
+            self._last_match_score = best_score
             
             # Get more detailed movie info
             movie_info = tmdb.Movies(movie['id']).info()
@@ -253,7 +309,11 @@ class TMDBService:
                     best = (score, item)
 
             tv = best[1] if best else response['results'][0]
-            self.logger.info(f"TMDB TV match: '{tv.get('name')}' (orig: '{tv.get('original_name')}') year={(tv.get('first_air_date') or '')[:4]} score={best[0] if best else 0:.1f}")
+            best_score = best[0] if best else 0.0
+            self.logger.info(f"TMDB TV match: '{tv.get('name')}' (orig: '{tv.get('original_name')}') year={(tv.get('first_air_date') or '')[:4]} score={best_score:.1f}")
+            
+            # Store score for comparison when deciding between movie/TV
+            self._last_match_score = best_score
 
             tv_info = tmdb.TV(tv['id']).info()
 

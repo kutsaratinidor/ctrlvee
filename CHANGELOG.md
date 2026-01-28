@@ -2,6 +2,11 @@
 
 ### Fixed
 - **TMDB Metadata Matching**: Significantly improved accuracy of movie and TV show metadata retrieval to resolve incorrect matches for similar titles.
+  - **Dual-lookup strategy applied everywhere**: For files without explicit episode markers, the bot now tries both movie and TV series lookups and intelligently selects the better match based on scoring. This fix is now applied to:
+    - Playback track changes (now playing)
+    - Watch folder announcements
+    - Status command lookups
+  - This resolves cases where TV shows like "Hell's Paradise" or "Memory of a Killer" were being looked up as movies and returning completely wrong results.
   - Enhanced scoring algorithm: Uses multi-factor scoring (title similarity, year proximity, popularity) instead of simple ranking to better distinguish between similar results.
   - **Original title support**: Now checks both `title` and `original_title` fields, fixing issues with anime and foreign films (e.g., "Hell's Paradise" was incorrectly matched to "My Paradise Is Darker Than Your Hell").
   - **Year-based disambiguation**: Implements year proximity scoring (exact match +50pts, 1-year difference +40pts, etc.) to resolve cases like "Memory of a Killer (2026)" being matched to "The Memory of a Killer (2010)".

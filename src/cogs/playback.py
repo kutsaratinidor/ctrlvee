@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 import asyncio
 import logging
+import re
 import xml.etree.ElementTree as ET
 from ..utils.media_utils import MediaUtils
 from ..config import Config
@@ -162,9 +163,40 @@ class PlaybackCommands(commands.Cog):
             tmdb_embed = None
             try:
                 title, year = MediaUtils.parse_movie_filename(name)
-                tmdb_embed = self.tmdb.get_movie_metadata(title, year)
-                if not tmdb_embed:
-                    tmdb_embed = self.tmdb.get_tv_metadata(title)
+                tv_title, tv_season, tv_episode, tv_year = MediaUtils.parse_tv_filename(name)
+                
+                # Detect if there's an explicit episode marker
+                has_explicit_episode = bool(tv_episode) or bool(re.search(r"(?i)(s\d{1,2}e\d{1,2}|\d{1,2}x\d{1,2})", name))
+                
+                if has_explicit_episode and tv_title:
+                    # Has explicit episode: prefer TV
+                    tmdb_embed = self.tmdb.get_tv_metadata(tv_title, tv_season, tv_year)
+                else:
+                    # No explicit episode: try both and compare scores
+                    movie_embed = None
+                    tv_embed = None
+                    movie_score = 0.0
+                    tv_score = 0.0
+                    
+                    if title:
+                        movie_embed = self.tmdb.get_movie_metadata(title, year)
+                        movie_score = getattr(self.tmdb, '_last_match_score', 0.0)
+                    
+                    if tv_title:
+                        tv_embed = self.tmdb.get_tv_metadata(tv_title, tv_season, tv_year)
+                        tv_score = getattr(self.tmdb, '_last_match_score', 0.0)
+                    
+                    # Choose the better match
+                    if tv_embed and movie_embed:
+                        tmdb_embed = tv_embed if tv_score > movie_score else movie_embed
+                    elif tv_embed:
+                        tmdb_embed = tv_embed
+                    elif movie_embed:
+                        tmdb_embed = movie_embed
+                    else:
+                        # Fallback: try generic TV lookup
+                        if title:
+                            tmdb_embed = self.tmdb.get_tv_metadata(title)
             except Exception:
                 tmdb_embed = None
             if tmdb_embed:
@@ -1223,9 +1255,40 @@ class PlaybackCommands(commands.Cog):
             tmdb_embed = None
             if item_name:
                 clean_title, year = MediaUtils.parse_movie_filename(item_name)
-                tmdb_embed = self.tmdb.get_movie_metadata(clean_title, year)
-                if not tmdb_embed:
-                    tmdb_embed = self.tmdb.get_tv_metadata(clean_title)
+                tv_title, tv_season, tv_episode, tv_year = MediaUtils.parse_tv_filename(item_name)
+                
+                # Detect if there's an explicit episode marker
+                has_explicit_episode = bool(tv_episode) or bool(re.search(r"(?i)(s\d{1,2}e\d{1,2}|\d{1,2}x\d{1,2})", item_name))
+                
+                if has_explicit_episode and tv_title:
+                    # Has explicit episode: prefer TV
+                    tmdb_embed = self.tmdb.get_tv_metadata(tv_title, tv_season, tv_year)
+                else:
+                    # No explicit episode: try both and compare scores
+                    movie_embed = None
+                    tv_embed = None
+                    movie_score = 0.0
+                    tv_score = 0.0
+                    
+                    if clean_title:
+                        movie_embed = self.tmdb.get_movie_metadata(clean_title, year)
+                        movie_score = getattr(self.tmdb, '_last_match_score', 0.0)
+                    
+                    if tv_title:
+                        tv_embed = self.tmdb.get_tv_metadata(tv_title, tv_season, tv_year)
+                        tv_score = getattr(self.tmdb, '_last_match_score', 0.0)
+                    
+                    # Choose the better match
+                    if tv_embed and movie_embed:
+                        tmdb_embed = tv_embed if tv_score > movie_score else movie_embed
+                    elif tv_embed:
+                        tmdb_embed = tv_embed
+                    elif movie_embed:
+                        tmdb_embed = movie_embed
+                    else:
+                        # Fallback: try generic TV lookup
+                        if clean_title:
+                            tmdb_embed = self.tmdb.get_tv_metadata(clean_title)
 
             if tmdb_embed:
                 # Use the rich embed from TMDB
@@ -1757,10 +1820,45 @@ class PlaybackCommands(commands.Cog):
             
             if name:
                 logger.debug(f"Status - Found name: {name}")
-                # Get movie metadata
+                # Get metadata (try both movie and TV)
                 search_title, search_year = MediaUtils.parse_movie_filename(name)
+                tv_title, tv_season, tv_episode, tv_year = MediaUtils.parse_tv_filename(name)
                 logger.debug(f"Status - Cleaned title: {search_title}, Year: {search_year}")
-                movie_data = self.tmdb.get_movie_metadata(search_title, search_year)
+                
+                # Detect if there's an explicit episode marker
+                has_explicit_episode = bool(tv_episode) or bool(re.search(r"(?i)(s\d{1,2}e\d{1,2}|\d{1,2}x\d{1,2})", name))
+                
+                movie_data = None
+                if has_explicit_episode and tv_title:
+                    # Has explicit episode: prefer TV
+                    movie_data = self.tmdb.get_tv_metadata(tv_title, tv_season, tv_year)
+                else:
+                    # No explicit episode: try both and compare scores
+                    movie_embed = None
+                    tv_embed = None
+                    movie_score = 0.0
+                    tv_score = 0.0
+                    
+                    if search_title:
+                        movie_embed = self.tmdb.get_movie_metadata(search_title, search_year)
+                        movie_score = getattr(self.tmdb, '_last_match_score', 0.0)
+                    
+                    if tv_title:
+                        tv_embed = self.tmdb.get_tv_metadata(tv_title, tv_season, tv_year)
+                        tv_score = getattr(self.tmdb, '_last_match_score', 0.0)
+                    
+                    # Choose the better match
+                    if tv_embed and movie_embed:
+                        movie_data = tv_embed if tv_score > movie_score else movie_embed
+                    elif tv_embed:
+                        movie_data = tv_embed
+                    elif movie_embed:
+                        movie_data = movie_embed
+                    else:
+                        # Fallback: try generic TV lookup
+                        if search_title:
+                            movie_data = self.tmdb.get_tv_metadata(search_title)
+                
                 logger.debug(f"Status - Movie data: {movie_data}")
                 
                 # Log movie data attributes
