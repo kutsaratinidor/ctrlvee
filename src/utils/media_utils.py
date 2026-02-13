@@ -4,6 +4,28 @@ import re
 
 class MediaUtils:
     @staticmethod
+    def extract_edition_tag(filename: str) -> Optional[str]:
+        """Extract a movie edition tag like {edition-IMAX} from a filename.
+
+        Returns the cleaned edition name or None if no tag is found.
+        """
+        try:
+            basename = os.path.basename(filename)
+            match = re.search(r"\{edition-([^}]+)\}", basename, flags=re.IGNORECASE)
+            if not match:
+                return None
+            raw = match.group(1).strip()
+            if not raw:
+                return None
+            # Normalize separators while preserving original casing
+            cleaned = re.sub(r"[._]+", " ", raw)
+            cleaned = cleaned.replace("-", " ")
+            cleaned = " ".join(cleaned.split())
+            return cleaned or None
+        except Exception:
+            return None
+
+    @staticmethod
     def get_media_duration(item) -> int | str | None:
         """Try to extract duration (in seconds) from a VLC playlist item (Element). Returns int, 'Loading...', or None."""
         import logging

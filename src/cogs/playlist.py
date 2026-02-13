@@ -208,8 +208,14 @@ class PlaylistCommands(commands.Cog):
                 # Get parsed title and optional year for metadata search
                 search_title, search_year = MediaUtils.parse_movie_filename(item.get('name'))
                 movie_embed = self.tmdb.get_movie_metadata(search_title, search_year)
+                edition_tag = MediaUtils.extract_edition_tag(item.get('name'))
                 
                 if movie_embed:
+                    if edition_tag:
+                        try:
+                            movie_embed.add_field(name="Edition", value=edition_tag, inline=True)
+                        except Exception:
+                            pass
                     movie_embed.set_footer(text=f"Now Playing #{playlist_num}")
                     await ctx.send(embed=movie_embed)
                 else:

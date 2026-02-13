@@ -1,3 +1,10 @@
+## 1.9.4 - 2026-02-12
+
+### Added
+- **Movie Edition Tags**: Movie embeds now surface `{edition-...}` tags from filenames (e.g., IMAX, Remastered, Directors Cut) for clearer status and announcements.
+- **TV Episode Labels**: Status and now-playing embeds for TV episodes now include an `SxxExx` episode label when present in the filename.
+- **Scheduled Announcements Broadcast**: Heads-up reminders and “now playing” notices for scheduled movies are now sent to all configured announce channels (in addition to the scheduling channel).
+
 ## 1.9.3 - 2026-01-27
 
 ### Fixed

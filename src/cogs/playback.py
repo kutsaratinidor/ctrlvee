@@ -161,9 +161,16 @@ class PlaybackCommands(commands.Cog):
                 return
             # Prepare TMDB embed if possible
             tmdb_embed = None
+            edition_tag = None
+            is_movie_embed = False
+            has_explicit_episode = False
+            episode_label = None
             try:
                 title, year = MediaUtils.parse_movie_filename(name)
                 tv_title, tv_season, tv_episode, tv_year = MediaUtils.parse_tv_filename(name)
+                edition_tag = MediaUtils.extract_edition_tag(name)
+                if tv_season and tv_episode:
+                    episode_label = f"S{int(tv_season):02d}E{int(tv_episode):02d}"
                 
                 # Detect if there's an explicit episode marker
                 has_explicit_episode = bool(tv_episode) or bool(re.search(r"(?i)(s\d{1,2}e\d{1,2}|\d{1,2}x\d{1,2})", name))
@@ -189,10 +196,12 @@ class PlaybackCommands(commands.Cog):
                     # Choose the better match
                     if tv_embed and movie_embed:
                         tmdb_embed = tv_embed if tv_score > movie_score else movie_embed
+                        is_movie_embed = (tmdb_embed == movie_embed)
                     elif tv_embed:
                         tmdb_embed = tv_embed
                     elif movie_embed:
                         tmdb_embed = movie_embed
+                        is_movie_embed = True
                     else:
                         # Fallback: try generic TV lookup
                         if title:
@@ -202,8 +211,28 @@ class PlaybackCommands(commands.Cog):
             if tmdb_embed:
                 final = tmdb_embed
                 final.title = f"Now Playing: {final.title}"
+                if edition_tag and is_movie_embed:
+                    try:
+                        final.add_field(name="Edition", value=edition_tag, inline=True)
+                    except Exception:
+                        pass
+                if episode_label and not is_movie_embed:
+                    try:
+                        final.add_field(name="Episode", value=episode_label, inline=True)
+                    except Exception:
+                        pass
             else:
                 final = discord.Embed(title=f"Now Playing: {name}", color=discord.Color.blue())
+                if edition_tag and not has_explicit_episode:
+                    try:
+                        final.add_field(name="Edition", value=edition_tag, inline=True)
+                    except Exception:
+                        pass
+                if episode_label:
+                    try:
+                        final.add_field(name="Episode", value=episode_label, inline=True)
+                    except Exception:
+                        pass
             # Add position if available
             if position:
                 try:
@@ -1254,8 +1283,13 @@ class PlaybackCommands(commands.Cog):
             # Try to get TMDB metadata
             tmdb_embed = None
             if item_name:
+                edition_tag = MediaUtils.extract_edition_tag(item_name)
+                is_movie_embed = False
+                episode_label = None
                 clean_title, year = MediaUtils.parse_movie_filename(item_name)
                 tv_title, tv_season, tv_episode, tv_year = MediaUtils.parse_tv_filename(item_name)
+                if tv_season and tv_episode:
+                    episode_label = f"S{int(tv_season):02d}E{int(tv_episode):02d}"
                 
                 # Detect if there's an explicit episode marker
                 has_explicit_episode = bool(tv_episode) or bool(re.search(r"(?i)(s\d{1,2}e\d{1,2}|\d{1,2}x\d{1,2})", item_name))
@@ -1281,10 +1315,12 @@ class PlaybackCommands(commands.Cog):
                     # Choose the better match
                     if tv_embed and movie_embed:
                         tmdb_embed = tv_embed if tv_score > movie_score else movie_embed
+                        is_movie_embed = (tmdb_embed == movie_embed)
                     elif tv_embed:
                         tmdb_embed = tv_embed
                     elif movie_embed:
                         tmdb_embed = movie_embed
+                        is_movie_embed = True
                     else:
                         # Fallback: try generic TV lookup
                         if clean_title:
@@ -1294,6 +1330,16 @@ class PlaybackCommands(commands.Cog):
                 # Use the rich embed from TMDB
                 final_embed = tmdb_embed
                 final_embed.title = f"Now Playing: {final_embed.title}"
+                if edition_tag and is_movie_embed:
+                    try:
+                        final_embed.add_field(name="Edition", value=edition_tag, inline=True)
+                    except Exception:
+                        pass
+                if episode_label and not is_movie_embed:
+                    try:
+                        final_embed.add_field(name="Episode", value=episode_label, inline=True)
+                    except Exception:
+                        pass
             else:
                 # Create a basic embed
                 title = "VLC Status"
@@ -1301,6 +1347,16 @@ class PlaybackCommands(commands.Cog):
                     title = f"Now Playing: {item_name}"
                 
                 final_embed = discord.Embed(title=title, color=discord.Color.blue())
+                if item_name and edition_tag and not has_explicit_episode:
+                    try:
+                        final_embed.add_field(name="Edition", value=edition_tag, inline=True)
+                    except Exception:
+                        pass
+                if episode_label:
+                    try:
+                        final_embed.add_field(name="Episode", value=episode_label, inline=True)
+                    except Exception:
+                        pass
 
             # Add playback state and position
             state_emoji_map = {
@@ -1817,12 +1873,36 @@ class PlaybackCommands(commands.Cog):
                         if item.get('current'):
                             name = item.get('name')
                             break
+
+            # Prefer playlist name for episode parsing when it contains SxxEyy/1x02
+            playlist_name = None
+            try:
+                playlist = self.vlc.get_playlist()
+                if playlist is not None:
+                    for item in playlist.findall('.//leaf'):
+                        if item.get('current'):
+                            playlist_name = item.get('name')
+                            break
+            except Exception:
+                playlist_name = None
+
+            parse_name = name
+            try:
+                if playlist_name and re.search(r"(?i)(s\d{1,2}e\d{1,2}|\d{1,2}x\d{1,2})", playlist_name):
+                    parse_name = playlist_name
+            except Exception:
+                parse_name = name or playlist_name
             
             if name:
                 logger.debug(f"Status - Found name: {name}")
+                edition_tag = MediaUtils.extract_edition_tag(parse_name or name)
+                is_movie_embed = False
+                episode_label = None
                 # Get metadata (try both movie and TV)
-                search_title, search_year = MediaUtils.parse_movie_filename(name)
-                tv_title, tv_season, tv_episode, tv_year = MediaUtils.parse_tv_filename(name)
+                search_title, search_year = MediaUtils.parse_movie_filename(parse_name or name)
+                tv_title, tv_season, tv_episode, tv_year = MediaUtils.parse_tv_filename(parse_name or name)
+                if tv_season and tv_episode:
+                    episode_label = f"S{int(tv_season):02d}E{int(tv_episode):02d}"
                 logger.debug(f"Status - Cleaned title: {search_title}, Year: {search_year}")
                 
                 # Detect if there's an explicit episode marker
@@ -1850,10 +1930,12 @@ class PlaybackCommands(commands.Cog):
                     # Choose the better match
                     if tv_embed and movie_embed:
                         movie_data = tv_embed if tv_score > movie_score else movie_embed
+                        is_movie_embed = (movie_data == movie_embed)
                     elif tv_embed:
                         movie_data = tv_embed
                     elif movie_embed:
                         movie_data = movie_embed
+                        is_movie_embed = True
                     else:
                         # Fallback: try generic TV lookup
                         if search_title:
@@ -1880,6 +1962,16 @@ class PlaybackCommands(commands.Cog):
                     logger.debug("Status - Using TMDB movie data")
                     # Use the movie_data embed directly and update the state field
                     embed = movie_data
+                    if edition_tag and is_movie_embed:
+                        try:
+                            embed.add_field(name="Edition", value=edition_tag, inline=True)
+                        except Exception:
+                            pass
+                    if episode_label and not is_movie_embed:
+                        try:
+                            embed.add_field(name="Episode", value=episode_label, inline=True)
+                        except Exception:
+                            pass
                     embed.insert_field_at(0, name="State", value=state.capitalize(), inline=True)
                 else:
                     logger.debug("Status - No movie data, using filename")
@@ -1889,6 +1981,16 @@ class PlaybackCommands(commands.Cog):
                         value=name,
                         inline=False
                     )
+                    if edition_tag and not has_explicit_episode:
+                        try:
+                            embed.add_field(name="Edition", value=edition_tag, inline=True)
+                        except Exception:
+                            pass
+                    if episode_label:
+                        try:
+                            embed.add_field(name="Episode", value=episode_label, inline=True)
+                        except Exception:
+                            pass
                     
                 # Add progress information
                 time_elem = status.find('time')

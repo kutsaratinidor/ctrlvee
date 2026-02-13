@@ -683,6 +683,7 @@ async def on_ready():
                             total_size += s
                         except Exception:
                             sizes[p] = None
+                    edition_tag = None
                     # Multi-episode batch: try to create a compact season summary
                     if len(paths) > 1:
                         season_num, season_parent = _detect_season(paths)
@@ -776,6 +777,8 @@ async def on_ready():
                                     desc_lines.append("• <new media>")
 
                         embed = discord.Embed(title=title, description="\n".join(desc_lines), color=discord.Color.green())
+                        if paths:
+                            edition_tag = MediaUtils.extract_edition_tag(paths[0])
 
                         try:
                             if len(paths) == 1 and tmdb_service:
@@ -852,6 +855,7 @@ async def on_ready():
                                 clean_title, year = MediaUtils.parse_movie_filename(fname)
                                 logger.info(f"Announcement single parse (Movie): title='{clean_title}' year={year} from '{fname}'")
                                 tmdb_embed = None
+                                is_movie_embed = False
                                 # When no explicit episode marker: try both movie and TV, use the better match
                                 if not is_initial:
                                     if not has_explicit_episode:
@@ -879,10 +883,12 @@ async def on_ready():
                                             else:
                                                 logger.info(f"Chose movie (score {movie_score:.1f}) over TV (score {tv_score:.1f})\"")
                                                 tmdb_embed = movie_embed
+                                                is_movie_embed = True
                                         elif tv_embed:
                                             tmdb_embed = tv_embed
                                         elif movie_embed:
                                             tmdb_embed = movie_embed
+                                            is_movie_embed = True
                                         else:
                                             # Both failed: try generic TV lookup as last resort
                                             if clean_title:
@@ -893,6 +899,7 @@ async def on_ready():
                                             tmdb_embed = tmdb_service.get_tv_metadata(tv_title, tv_season, tv_year)
                                         elif not suppress_single_tv and clean_title:
                                             tmdb_embed = tmdb_service.get_movie_metadata(clean_title, year)
+                                            is_movie_embed = True
                                         if not tmdb_embed and clean_title:
                                             tmdb_embed = tmdb_service.get_tv_metadata(clean_title)
                                     if tmdb_embed:
@@ -905,6 +912,11 @@ async def on_ready():
                                         else:
                                             tmdb_embed.description = f"**{pretty}** has been added to the library."
                                         tmdb_embed.color = discord.Color.purple()
+                                        if edition_tag and is_movie_embed:
+                                            try:
+                                                tmdb_embed.add_field(name="Edition", value=edition_tag, inline=True)
+                                            except Exception:
+                                                pass
                                         # Add file size
                                         try:
                                             sz = sizes.get(paths[0])
@@ -933,6 +945,11 @@ async def on_ready():
                                         embed.add_field(name="Total Size", value=_format_bytes(total_size), inline=True)
                                 except Exception:
                                     pass
+                                if len(paths) == 1 and edition_tag:
+                                    try:
+                                        embed.add_field(name="Edition", value=edition_tag, inline=True)
+                                    except Exception:
+                                        pass
                                 final_embed = embed
                             else:
                                 # Last-resort minimal embed
@@ -951,6 +968,11 @@ async def on_ready():
                                         final_embed.add_field(name="Total Size", value=_format_bytes(total_size), inline=True)
                                 except Exception:
                                     pass
+                                if len(paths) == 1 and edition_tag:
+                                    try:
+                                        final_embed.add_field(name="Edition", value=edition_tag, inline=True)
+                                    except Exception:
+                                        pass
                         except Exception:
                             title_text = os.path.basename(paths[0]) if paths else "New Media"
                             final_embed = discord.Embed(

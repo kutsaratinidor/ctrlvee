@@ -179,9 +179,16 @@ class Scheduler(commands.Cog):
                 delta = (s['dt'] - now).total_seconds()
                 if 0 < delta <= 600:  # 10 minutes
                     announce_ids = Config.get_announce_channel_ids()
+                    channel_ids = set(announce_ids or [])
+                    # Also notify the original scheduling channel for visibility
+                    try:
+                        if s.get('channel'):
+                            channel_ids.add(s['channel'])
+                    except Exception:
+                        pass
                     role_id = getattr(Config, 'WATCH_ANNOUNCE_ROLE_ID', 0)
                     mention = f'<@&{role_id}>' if role_id else ''
-                    for cid in announce_ids:
+                    for cid in channel_ids:
                         channel = self.bot.get_channel(cid)
                         if not channel:
                             try:
@@ -205,27 +212,55 @@ class Scheduler(commands.Cog):
                 if 0 <= idx < len(items):
                     item_id = items[idx].get('id')
                     self.vlc.play_item(item_id)
-                    channel = self.bot.get_channel(s["channel"])
-                    if channel:
-                        # Include configured announce role mention (if any)
-                        role_id = getattr(Config, 'WATCH_ANNOUNCE_ROLE_ID', 0)
-                        mention = f'<@&{role_id}>' if role_id else ''
-                        # Use .strip() so there is no leading space when mention is empty
-                        msg = f"{mention} 🎬 Scheduled movie #{s['number']} ({s.get('title', 'Unknown')}) is now playing!".strip()
-                        await channel.send(msg)
-                        # Try to fetch and send TMDB metadata embed
-                        title = s.get('title', None)
-                        year = None
-                        # Try to extract year from title if present (e.g. "Movie Title (2020)")
-                        import re
-                        m = re.search(r"\((\d{4})\)$", title or "")
-                        if m:
-                            year = int(m.group(1))
-                            title = title[:m.start()].strip()
-                        if title:
-                            embed = self.tmdb.get_movie_metadata(title, year)
-                            if embed:
-                                await channel.send(embed=embed)
+                    announce_ids = Config.get_announce_channel_ids()
+                    channel_ids = set(announce_ids or [])
+                    # Also notify the original scheduling channel for visibility
+                    try:
+                        if s.get('channel'):
+                            channel_ids.add(s['channel'])
+                    except Exception:
+                        pass
+                    # Include configured announce role mention (if any)
+                    role_id = getattr(Config, 'WATCH_ANNOUNCE_ROLE_ID', 0)
+                    mention = f'<@&{role_id}>' if role_id else ''
+                    # Use .strip() so there is no leading space when mention is empty
+                    msg = f"{mention} 🎬 Scheduled movie #{s['number']} ({s.get('title', 'Unknown')}) is now playing!".strip()
+                    for cid in channel_ids:
+                        channel = self.bot.get_channel(cid)
+                        if not channel:
+                            try:
+                                channel = await self.bot.fetch_channel(cid)
+                            except Exception:
+                                channel = None
+                        if channel:
+                            try:
+                                await channel.send(msg)
+                            except Exception:
+                                pass
+                    # Try to fetch and send TMDB metadata embed
+                    title = s.get('title', None)
+                    year = None
+                    # Try to extract year from title if present (e.g. "Movie Title (2020)")
+                    import re
+                    m = re.search(r"\((\d{4})\)$", title or "")
+                    if m:
+                        year = int(m.group(1))
+                        title = title[:m.start()].strip()
+                    if title:
+                        embed = self.tmdb.get_movie_metadata(title, year)
+                        if embed:
+                            for cid in channel_ids:
+                                channel = self.bot.get_channel(cid)
+                                if not channel:
+                                    try:
+                                        channel = await self.bot.fetch_channel(cid)
+                                    except Exception:
+                                        channel = None
+                                if channel:
+                                    try:
+                                        await channel.send(embed=embed)
+                                    except Exception:
+                                        pass
                 else:
                     logger.warning(f"Scheduled movie number {s['number']} not found in playlist.")
             except Exception as e:
