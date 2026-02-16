@@ -1,11 +1,10 @@
 import os
-import re
 import time
 import threading
 import logging
 from typing import Iterable, Set, Optional, List, Callable
 
-from ..config import Config
+from ..config import Config, get_watch_folders_from_env
 
 
 MEDIA_EXTENSIONS = {
@@ -171,28 +170,28 @@ class WatchFolderService:
             from dotenv import load_dotenv
             load_dotenv(override=True)
             env_val = os.environ.get('WATCH_FOLDERS', '') or ''
+            file_val = os.environ.get('WATCH_FOLDERS_FILE', '').strip()
         except Exception:
             self.logger.warning("Failed to reload .env for hot watch folder changes.")
             env_val = ''
+            file_val = ''
 
-        # Parse WATCH_FOLDERS robustly: allow comma or semicolon separators, strip quotes, normalize paths
-        raw_parts = [p for p in re.split(r'[;,]', env_val) if p is not None]
-        parsed_folders = []
-        for p in raw_parts:
-            s = p.strip().strip('"\'')
-            if not s:
-                continue
-            np = os.path.normpath(os.path.abspath(s))
-            parsed_folders.append(np)
+        parsed_folders = get_watch_folders_from_env()
 
         # Hot-reload folders from env (only add new ones)
         current_folders = set(os.path.normpath(os.path.abspath(p)) for p in self.folders)
         config_folders = set(parsed_folders)
 
         # Optional diagnostic when the env value changes
-        if env_val and env_val != self._last_env_val:
-            self.logger.info(f"WATCH_FOLDERS changed: '{self._last_env_val or ''}' -> '{env_val}'")
-            self._last_env_val = env_val
+        env_snapshot = f"{file_val}|{env_val}"
+        if env_snapshot and env_snapshot != self._last_env_val:
+            if file_val:
+                self.logger.info(
+                    f"WATCH_FOLDERS source changed: file='{file_val}', env='{env_val}'"
+                )
+            else:
+                self.logger.info(f"WATCH_FOLDERS changed: '{self._last_env_val or ''}' -> '{env_val}'")
+            self._last_env_val = env_snapshot
 
         new_folders = sorted(config_folders - current_folders)
         if new_folders:

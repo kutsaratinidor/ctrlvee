@@ -1,12 +1,11 @@
 import os
-import re
 import logging
 from typing import List
 
 import discord
 from discord.ext import commands
 
-from ..config import Config
+from ..config import Config, get_watch_folders_from_env, parse_watch_folders_value
 
 logger = logging.getLogger(__name__)
 
@@ -29,22 +28,23 @@ def _env_path() -> str:
 
 def _parse_watch_folders(val: str) -> List[str]:
     """Parse WATCH_FOLDERS env value into normalized absolute paths."""
-    parts = [p for p in re.split(r"[;,]", val or "") if p is not None]
-    result: List[str] = []
-    for p in parts:
-        s = p.strip().strip("\"'")
-        if not s:
-            continue
-        np = os.path.normpath(os.path.abspath(os.path.expanduser(s)))
-        result.append(np)
-    # Deduplicate while preserving order
-    seen = set()
-    ordered: List[str] = []
-    for p in result:
-        if p not in seen:
-            seen.add(p)
-            ordered.append(p)
-    return ordered
+    return parse_watch_folders_value(val)
+
+
+def _write_watch_folders_file(file_path: str, new_list: List[str]) -> bool:
+    try:
+        lines = [p for p in new_list if p]
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        try:
+            from dotenv import load_dotenv
+            load_dotenv(override=True)
+        except Exception:
+            pass
+        return True
+    except Exception as e:
+        logger.error(f"Failed to update WATCH_FOLDERS_FILE '{file_path}': {e}")
+        return False
 
 
 def _write_env_watch_folders(new_list: List[str]) -> bool:
@@ -52,6 +52,9 @@ def _write_env_watch_folders(new_list: List[str]) -> bool:
 
     Returns True on success, False otherwise.
     """
+    file_path = os.environ.get("WATCH_FOLDERS_FILE", "").strip()
+    if file_path:
+        return _write_watch_folders_file(file_path, new_list)
     env_file = _env_path()
     try:
         lines: List[str] = []
@@ -115,8 +118,7 @@ class WatchCommands(commands.Cog):
                 return
 
             # Current list from env
-            current_val = os.environ.get("WATCH_FOLDERS", "")
-            current_list = _parse_watch_folders(current_val)
+            current_list = get_watch_folders_from_env()
 
             # Already present?
             if norm in current_list:

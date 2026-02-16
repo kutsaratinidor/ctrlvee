@@ -3,6 +3,87 @@ import os
 import logging
 from dotenv import load_dotenv
 
+
+def _dedupe_preserve_order(items: List[str]) -> List[str]:
+    seen = set()
+    ordered: List[str] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        ordered.append(item)
+    return ordered
+
+
+def _normalize_path(val: str) -> str:
+    return os.path.normpath(os.path.abspath(os.path.expanduser(val)))
+
+
+def _split_watch_folders_value(val: str) -> List[str]:
+    if not val:
+        return []
+    parts: List[str] = []
+    buf: List[str] = []
+    in_quotes = False
+    for ch in val:
+        if ch == '"':
+            in_quotes = not in_quotes
+            continue
+        if (not in_quotes) and ch in {',', ';', '\n'}:
+            parts.append("".join(buf))
+            buf = []
+            continue
+        buf.append(ch)
+    if buf:
+        parts.append("".join(buf))
+    cleaned: List[str] = []
+    for p in parts:
+        s = p.strip()
+        if not s:
+            continue
+        if len(s) >= 2 and s[0] == s[-1] and s[0] in {"'", '"'}:
+            s = s[1:-1].strip()
+        if s:
+            cleaned.append(s)
+    return cleaned
+
+
+def parse_watch_folders_value(val: str) -> List[str]:
+    raw = _split_watch_folders_value(val)
+    normalized = [_normalize_path(p) for p in raw if p]
+    return _dedupe_preserve_order(normalized)
+
+
+def _read_watch_folders_file(file_path: str) -> List[str]:
+    if not file_path:
+        return []
+    if not os.path.isfile(file_path):
+        return []
+    entries: List[str] = []
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            for line in f.read().splitlines():
+                if not line.strip():
+                    continue
+                if line.lstrip().startswith("#"):
+                    continue
+                s = line.strip()
+                if len(s) >= 2 and s[0] == s[-1] and s[0] in {"'", '"'}:
+                    s = s[1:-1].strip()
+                if s:
+                    entries.append(s)
+    except Exception:
+        return []
+    normalized = [_normalize_path(p) for p in entries if p]
+    return _dedupe_preserve_order(normalized)
+
+
+def get_watch_folders_from_env() -> List[str]:
+    file_path = os.getenv('WATCH_FOLDERS_FILE', '').strip()
+    if file_path:
+        return _read_watch_folders_file(file_path)
+    return parse_watch_folders_value(os.getenv('WATCH_FOLDERS', ''))
+
 # Load environment variables
 load_dotenv()
 
@@ -93,8 +174,10 @@ class Config:
     ENABLE_VOICE_EVENTS_RECONNECT: bool = os.getenv('ENABLE_VOICE_EVENTS_RECONNECT', 'true').strip().lower() in {'1','true','yes','y'}
 
     # Watch Folders
-    # Comma-separated absolute paths. If empty, watch service is disabled.
-    WATCH_FOLDERS = [p.strip() for p in os.getenv('WATCH_FOLDERS', '').split(',') if p.strip()]
+    # WATCH_FOLDERS supports commas/semicolons; quote paths with commas using double quotes.
+    # Or set WATCH_FOLDERS_FILE to a file with one path per line.
+    WATCH_FOLDERS_FILE: str = os.getenv('WATCH_FOLDERS_FILE', '').strip()
+    WATCH_FOLDERS = get_watch_folders_from_env()
     # Polling interval in seconds for watch service
     WATCH_SCAN_INTERVAL: int = int(os.getenv('WATCH_SCAN_INTERVAL', '10'))
     # Minimum age (seconds) a file must remain unchanged before it is considered stable
@@ -151,6 +234,8 @@ class Config:
                 errors.append("PLAYLIST_AUTOSAVE_INTERVAL must be a valid integer (seconds)")
 
         # Validate watch folders if provided
+        if cls.WATCH_FOLDERS_FILE and not os.path.isfile(cls.WATCH_FOLDERS_FILE):
+            errors.append(f"WATCH_FOLDERS_FILE not found or not a file: {cls.WATCH_FOLDERS_FILE}")
         for folder in cls.WATCH_FOLDERS:
             if not os.path.isabs(folder):
                 errors.append(f"WATCH_FOLDERS entry must be an absolute path: {folder}")

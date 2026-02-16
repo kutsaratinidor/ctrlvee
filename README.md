@@ -188,7 +188,8 @@ python --version
    - `VLC_PASSWORD`: VLC HTTP interface password (default: vlc)
    - `QUEUE_BACKUP_FILE`: Path to queue backup file (default: queue_backup.json)
    - `ITEMS_PER_PAGE`: Number of items per page in playlist view (default: 20)
-   - `WATCH_FOLDERS`: Comma-separated absolute paths to watch (optional)
+   - `WATCH_FOLDERS`: Comma- or semicolon-separated absolute paths to watch (optional). If a path contains a comma, wrap it in double quotes.
+   - `WATCH_FOLDERS_FILE`: Optional path to a file with one watch folder per line (useful for long lists or commas in names). If set, it overrides `WATCH_FOLDERS`.
    - `WATCH_SCAN_INTERVAL`: Poll interval in seconds (default: 10)
    - `WATCH_ENQUEUE_ON_START`: If true, enqueue files discovered on the first scan (default: true)
    - `WATCH_ANNOUNCE_CHANNEL_ID`: Comma-separated list of Discord channel IDs for adding-file announcements (e.g. `123456789,987654321`). Set to 0 or leave empty to disable. **(v1.0.0: Now supports multiple channels!)**
@@ -319,6 +320,11 @@ python --version
 
 
 ## Recent Improvements
+
+- **v1.9.5 (Breaking Change): WATCH_FOLDERS_FILE precedence**
+   - If `WATCH_FOLDERS_FILE` is set, the bot uses it exclusively and ignores `WATCH_FOLDERS`.
+   - If the file path is invalid or missing, no watch folders are loaded.
+   - Quote paths with commas in `WATCH_FOLDERS` using double quotes.
 
 - **v1.5.0: Playlist Autosave + Watch-Folder Robustness**
    - New autosave feature: save to XSPF (preferred) or JSON periodically via `PLAYLIST_AUTOSAVE_FILE` and `PLAYLIST_AUTOSAVE_INTERVAL`

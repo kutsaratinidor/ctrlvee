@@ -1,3 +1,14 @@
+## 1.9.5 - 2026-02-16
+
+### Added
+- **Watch Folder File Support**: New `WATCH_FOLDERS_FILE` option lets you store one watch folder per line in a separate file.
+
+### Changed
+- **Watch Folder Parsing**: `WATCH_FOLDERS` now supports commas or semicolons, and paths with commas must be wrapped in double quotes.
+
+### Breaking
+- **WATCH_FOLDERS_FILE precedence**: If `WATCH_FOLDERS_FILE` is set, it overrides `WATCH_FOLDERS`. If the file path is invalid, no watch folders are loaded.
+
 ## 1.9.4 - 2026-02-12
 
 ### Added
