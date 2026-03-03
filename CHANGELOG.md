@@ -1,3 +1,12 @@
+## 1.9.6 - 2026-03-03
+
+### Changed
+- **Playlist Search Matching**: Improved normalization for playlist search so punctuation/spacing variants match reliably (e.g., `V H S 2`, `V.H.S.2`, and `VHS2`).
+- **Ranked Search Results**: Search results are now ranked by relevance, prioritizing exact/closest matches first.
+
+### Added
+- **Top Match Hint in `play_search`**: When multiple matches exist, the bot now indicates that the top-ranked match was selected.
+
 ## 1.9.5 - 2026-02-16
 
 ### Added

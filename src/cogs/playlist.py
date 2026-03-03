@@ -3,6 +3,7 @@ import discord
 from discord.ext import commands
 import os
 import logging
+import re
 from ..utils.media_utils import MediaUtils
 from ..config import Config
 from ..utils.command_utils import format_cmd, format_cmd_inline
@@ -130,6 +131,64 @@ class PlaylistCommands(commands.Cog):
                 return item, i
         return None, -1
 
+    def _normalize_search_text(self, text: str) -> Tuple[str, str, List[str]]:
+        """Normalize text for fuzzy search matching.
+
+        Returns:
+            Tuple of (normalized_with_spaces, compact_alnum, tokens)
+        """
+        lowered = (text or '').lower()
+        # Convert common separators to spaces first, then strip other punctuation.
+        normalized = re.sub(r'[._\-]+', ' ', lowered)
+        normalized = re.sub(r'[^a-z0-9]+', ' ', normalized)
+        normalized = ' '.join(normalized.split())
+        compact = normalized.replace(' ', '')
+        tokens = normalized.split() if normalized else []
+        return normalized, compact, tokens
+
+    def _score_match(self, query_norm: str, query_compact: str, query_tokens: List[str], item_name: str) -> int:
+        """Return a relevance score for query vs item name.
+
+        Higher score means better match.
+        """
+        item_norm, item_compact, _ = self._normalize_search_text(item_name)
+        if not item_norm:
+            return 0
+
+        score = 0
+
+        # Strong exact matches
+        if query_norm == item_norm:
+            score += 1000
+        if query_compact and query_compact == item_compact:
+            score += 900
+
+        # Strong substring matches
+        if query_norm and query_norm in item_norm:
+            score += 700
+        if query_compact and query_compact in item_compact:
+            score += 650
+
+        # Token coverage and order
+        if query_tokens:
+            matched = sum(1 for token in query_tokens if token in item_norm)
+            score += matched * 80
+            if matched == len(query_tokens):
+                score += 120
+
+            # Prefer exact token sequence starts (prefix-like behavior)
+            item_tokens = item_norm.split()
+            if len(query_tokens) <= len(item_tokens) and item_tokens[:len(query_tokens)] == query_tokens:
+                score += 160
+
+        # Small preference for tighter titles (reduces noisy broad matches)
+        try:
+            score -= abs(len(item_compact) - len(query_compact))
+        except Exception:
+            pass
+
+        return max(0, score)
+
     def _search_items(self, query: str) -> List[Tuple[int, dict]]:
         """Search for items in the playlist
         
@@ -140,10 +199,30 @@ class PlaylistCommands(commands.Cog):
             List of tuples (position, item) where position is 1-based index
         """
         items = self._get_playlist_items()
-        search_words = query.lower().split()
-        # Item matches if ALL words in query are found in its name
-        return [(i+1, item) for i, item in enumerate(items)
-                if all(word in item.get('name', '').lower() for word in search_words)]
+        query_norm, query_compact, query_tokens = self._normalize_search_text(query)
+        if not query_tokens:
+            return []
+
+        scored_results: List[Tuple[int, int, dict]] = []
+        for i, item in enumerate(items):
+            raw_name = item.get('name', '')
+            item_norm, item_compact, _ = self._normalize_search_text(raw_name)
+
+            # Accept multiple match strategies to handle spacing/punctuation variants.
+            matches = (
+                (query_norm and query_norm in item_norm) or
+                (query_compact and query_compact in item_compact) or
+                all(token in item_norm for token in query_tokens)
+            )
+
+            if matches:
+                score = self._score_match(query_norm, query_compact, query_tokens, raw_name)
+                scored_results.append((score, i + 1, item))
+
+        # Rank by best score first; use playlist position as stable tiebreaker.
+        scored_results.sort(key=lambda r: (-r[0], r[1]))
+
+        return [(pos, itm) for _, pos, itm in scored_results]
 
     @commands.command(name='search')
     @commands.has_any_role(*Config.ALLOWED_ROLES)
@@ -203,7 +282,10 @@ class PlaylistCommands(commands.Cog):
             
             if self.vlc.play_item(item_id):
                 logger.info(f"Playing search result: {item.get('name')} (#{playlist_num})")
-                await ctx.send(f'Loading item #{playlist_num}...')
+                hint = ""
+                if len(results) > 1:
+                    hint = f"\n💡 Top match selected from {len(results)} results."
+                await ctx.send(f'Loading item #{playlist_num}...{hint}')
                 
                 # Get parsed title and optional year for metadata search
                 search_title, search_year = MediaUtils.parse_movie_filename(item.get('name'))
