@@ -1277,8 +1277,45 @@ class PlaybackCommands(commands.Cog):
             position, current_item = self._find_current_position(playlist)
             
             item_name = None
+            playlist_name = None
             if current_item is not None:
                 item_name = current_item.get('name')
+                playlist_name = current_item.get('name')
+
+            # Fallback: pull filename from VLC status information when playlist current item is missing.
+            if not item_name:
+                try:
+                    info_root = status.find('information')
+                    if info_root is not None:
+                        for category in info_root.findall('category'):
+                            for info in category.findall('info'):
+                                if info.get('name') == 'filename' and info.text:
+                                    item_name = info.text
+                                    break
+                            if item_name:
+                                break
+                except Exception:
+                    item_name = None
+
+            # Secondary fallback: scan playlist leaf nodes for current item.
+            if not item_name and playlist is not None:
+                try:
+                    for leaf in playlist.findall('.//leaf'):
+                        if leaf.get('current'):
+                            item_name = leaf.get('name')
+                            if not playlist_name:
+                                playlist_name = item_name
+                            break
+                except Exception:
+                    pass
+
+            # Prefer playlist name for parsing when it contains explicit TV episode markers.
+            parse_name = item_name
+            try:
+                if playlist_name and re.search(r"(?i)(s\d{1,2}e\d{1,2}|\d{1,2}x\d{1,2})", playlist_name):
+                    parse_name = playlist_name
+            except Exception:
+                parse_name = item_name or playlist_name
 
             # Try to get TMDB metadata
             tmdb_embed = None
@@ -1286,13 +1323,13 @@ class PlaybackCommands(commands.Cog):
                 edition_tag = MediaUtils.extract_edition_tag(item_name)
                 is_movie_embed = False
                 episode_label = None
-                clean_title, year = MediaUtils.parse_movie_filename(item_name)
-                tv_title, tv_season, tv_episode, tv_year = MediaUtils.parse_tv_filename(item_name)
+                clean_title, year = MediaUtils.parse_movie_filename(parse_name or item_name)
+                tv_title, tv_season, tv_episode, tv_year = MediaUtils.parse_tv_filename(parse_name or item_name)
                 if tv_season and tv_episode:
                     episode_label = f"S{int(tv_season):02d}E{int(tv_episode):02d}"
                 
                 # Detect if there's an explicit episode marker
-                has_explicit_episode = bool(tv_episode) or bool(re.search(r"(?i)(s\d{1,2}e\d{1,2}|\d{1,2}x\d{1,2})", item_name))
+                has_explicit_episode = bool(tv_episode) or bool(re.search(r"(?i)(s\d{1,2}e\d{1,2}|\d{1,2}x\d{1,2})", parse_name or item_name))
                 
                 if has_explicit_episode and tv_title:
                     # Has explicit episode: prefer TV
@@ -1811,9 +1848,8 @@ class PlaybackCommands(commands.Cog):
         except Exception as e:
             logger.debug(f"Presence update error: {e}")
             
-    @commands.command(name='status')
-    async def status(self, ctx):
-        """Show current VLC status with enhanced metadata"""
+    async def _status_legacy(self, ctx):
+        """Legacy status implementation (kept for reference, not registered as a command)."""
         if not await self._check_vlc_connection(ctx):
             return
         # Use formatting helper for commands

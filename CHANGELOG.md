@@ -1,3 +1,10 @@
+## 1.9.7 - 2026-03-06
+
+### Fixed
+- **Status vs Periodic Metadata Consistency**: Unified metadata resolution behavior so periodic now-playing announcements and `!status` use the same robust lookup path.
+- **VLC Name Fallbacks**: Improved `get_status_embed()` fallback order to better resolve the currently playing item name from playlist and VLC status information when one source is temporarily missing.
+- **Duplicate Status Handler Override**: Removed command override behavior from a legacy status implementation so the intended `!status` command path is consistently used.
+
 ## 1.9.6 - 2026-03-03
 
 ### Changed
