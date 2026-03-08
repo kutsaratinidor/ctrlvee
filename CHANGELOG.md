@@ -1,3 +1,10 @@
+## 1.9.8 - 2026-03-08
+
+### Fixed
+- **Voice Reconnect Attempt Exhaustion**: Reconnect counters now increment only on failed reconnects and reset on successful joins, reducing false exhaustion during transient voice events.
+- **Reconnect Debounce State Reliability**: Voice debounce and settle windows are now consistently updated in shared state after successful connect/move flows, preventing rapid re-attempt loops.
+- **Reconnect Path Consistency**: `join_voice_channel()` now returns explicit success/failure, and both guard/event reconnect handlers use that result for accurate retry behavior.
+
 ## 1.9.7 - 2026-03-06
 
 ### Fixed

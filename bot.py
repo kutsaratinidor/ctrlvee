@@ -157,7 +157,7 @@ async def _voice_connection_guard():
     except Exception:
         return
 
-    global _last_voice_disconnect_ts, _reconnect_attempts
+    global _last_voice_disconnect_ts, _reconnect_attempts, _voice_debounce_until
     while not bot.is_closed():
         try:
             if not getattr(Config, 'ENABLE_VOICE_JOIN', False):
@@ -197,14 +197,18 @@ async def _voice_connection_guard():
 
             # Attempt reconnect using existing join logic
             try:
-                await join_voice_channel()
-                _reconnect_attempts += 1
-                _last_voice_disconnect_ts = now
+                joined = await join_voice_channel()
                 # Post-verify after short delay; if healthy, set debounce window
                 await asyncio.sleep(1.0)
-                if _is_connected_to_channel(ch.guild, ch.id):
+                if joined and _is_connected_to_channel(ch.guild, ch.id):
+                    _reconnect_attempts = 0
                     _voice_debounce_until = time.time() + max(5.0, float(getattr(Config, 'VOICE_DEBOUNCE_SECONDS', 5.0)))
+                else:
+                    _reconnect_attempts += 1
+                    _last_voice_disconnect_ts = now
             except Exception as e:
+                _reconnect_attempts += 1
+                _last_voice_disconnect_ts = now
                 logger.debug(f"Voice guard reconnect attempt failed: {e}")
             # Small delay before next guard check
             await asyncio.sleep(_VOICE_ERROR_RETRY_DELAY)
@@ -246,15 +250,15 @@ async def _resolve_voice_channel() -> discord.VoiceChannel | None:
         logger.warning(f"Error resolving voice channel: {e}")
         return None
 
-async def join_voice_channel():
+async def join_voice_channel() -> bool:
     """Join the configured voice channel with retries and verification."""
     if not getattr(Config, 'ENABLE_VOICE_JOIN', False) or not getattr(Config, 'VOICE_AUTO_JOIN_ON_START', True):
         logger.info("Voice auto-join is disabled by configuration")
-        return
+        return False
 
     async with _voice_join_lock:
         # Debounce overlapping attempts between guard and initial join
-        global __last_connect_attempt_ts
+        global __last_connect_attempt_ts, _initial_voice_settle_until, _voice_debounce_until
         try:
             if (time.time() - __last_connect_attempt_ts) < (_VOICE_CONNECT_RETRY_DELAY * 0.8):
                 await asyncio.sleep(_VOICE_CONNECT_RETRY_DELAY)
@@ -263,14 +267,14 @@ async def join_voice_channel():
         __last_connect_attempt_ts = time.time()
         ch = await _resolve_voice_channel()
         if not ch:
-            return
+            return False
 
         guild = ch.guild
 
         # If already connected correctly, do nothing
         if _is_connected_to_channel(guild, ch.id):
             logger.info(f"Already connected to voice channel: {ch.name}")
-            return
+            return True
 
         # If connected to a different channel in the same guild, try moving first
         existing = discord.utils.get(bot.voice_clients, guild=guild)
@@ -281,7 +285,9 @@ async def join_voice_channel():
                 await asyncio.sleep(1)
                 if existing.channel and existing.channel.id == ch.id:
                     logger.info("Voice client moved to configured channel successfully")
-                    return
+                    _initial_voice_settle_until = time.time() + max(20.0, float(getattr(Config, 'VOICE_INITIAL_SETTLE_SECONDS', 20.0)))
+                    _voice_debounce_until = time.time() + max(5.0, float(getattr(Config, 'VOICE_DEBOUNCE_SECONDS', 5.0)))
+                    return True
             except Exception as e:
                 logger.warning(f"Failed to move voice client; will reconnect: {e}")
 
@@ -298,7 +304,7 @@ async def join_voice_channel():
             # Abort further attempts if we detect a good connection
             if _is_connected_to_channel(guild, ch.id):
                 logger.info("Detected active connection to target channel; stopping retries")
-                return
+                return True
 
             if attempt > 0:
                 logger.info(f"Waiting {_VOICE_CONNECT_RETRY_DELAY}s before retry...")
@@ -322,7 +328,7 @@ async def join_voice_channel():
                     # Longer initial settle period to avoid library auto-reconnect noise
                     _initial_voice_settle_until = time.time() + max(20.0, float(getattr(Config, 'VOICE_INITIAL_SETTLE_SECONDS', 20.0)))
                     _voice_debounce_until = time.time() + max(5.0, float(getattr(Config, 'VOICE_DEBOUNCE_SECONDS', 5.0)))
-                    return
+                    return True
                 if verify and verify.is_connected() and getattr(verify, 'channel', None) and verify.channel.id != ch.id:
                     try:
                         logger.info(f"Connected to {verify.channel.name}; moving to '{ch.name}'")
@@ -330,7 +336,9 @@ async def join_voice_channel():
                         await asyncio.sleep(0.8)
                         if verify.channel and verify.channel.id == ch.id:
                             logger.info("Voice client moved to configured channel successfully")
-                            return
+                            _initial_voice_settle_until = time.time() + max(20.0, float(getattr(Config, 'VOICE_INITIAL_SETTLE_SECONDS', 20.0)))
+                            _voice_debounce_until = time.time() + max(5.0, float(getattr(Config, 'VOICE_DEBOUNCE_SECONDS', 5.0)))
+                            return True
                     except Exception as e:
                         logger.debug(f"Move after connect failed: {e}")
                 # If we reached here, treat as unclear and retry without spamming warnings
@@ -340,7 +348,9 @@ async def join_voice_channel():
                     existing = discord.utils.get(bot.voice_clients, guild=guild)
                     if existing and existing.is_connected():
                         logger.info("Detected existing active voice connection; keeping it")
-                        return
+                        _initial_voice_settle_until = time.time() + max(20.0, float(getattr(Config, 'VOICE_INITIAL_SETTLE_SECONDS', 20.0)))
+                        _voice_debounce_until = time.time() + max(5.0, float(getattr(Config, 'VOICE_DEBOUNCE_SECONDS', 5.0)))
+                        return True
                     logger.info("Detected stale voice connection; cleaning up and retrying")
                     try:
                         if existing:
@@ -363,6 +373,7 @@ async def join_voice_channel():
                 await asyncio.sleep(_VOICE_ERROR_RETRY_DELAY)
 
         logger.warning("Voice connection attempts exhausted; will rely on reconnection handler")
+        return False
 
 
 @bot.event
@@ -408,14 +419,12 @@ async def on_voice_state_update(member, before, after):
         if now - _last_voice_disconnect_ts > _RECONNECT_WINDOW:
             _reconnect_attempts = 0
 
-        _reconnect_attempts += 1
-        if _reconnect_attempts > _MAX_RECONNECTS:
+        if _reconnect_attempts >= _MAX_RECONNECTS:
             logger.warning("Too many reconnection attempts - entering cooldown")
             _last_voice_disconnect_ts = now
             return
 
-        _last_voice_disconnect_ts = now
-        logger.info(f"Bot was disconnected from voice. Attempting reconnect... (Attempt {_reconnect_attempts}/{_MAX_RECONNECTS})")
+        logger.info(f"Bot was disconnected from voice. Attempting reconnect... (Attempt {_reconnect_attempts + 1}/{_MAX_RECONNECTS})")
 
         # Clean up any existing client in this guild
         try:
@@ -428,7 +437,13 @@ async def on_voice_state_update(member, before, after):
             pass
 
         # Try to rejoin the configured channel
-        await join_voice_channel()
+        joined = await join_voice_channel()
+        if joined:
+            _reconnect_attempts = 0
+            _voice_debounce_until = time.time() + max(5.0, float(getattr(Config, 'VOICE_DEBOUNCE_SECONDS', 5.0)))
+        else:
+            _reconnect_attempts += 1
+            _last_voice_disconnect_ts = now
     except Exception as e:
         logger.warning(f"Error in voice reconnection handler: {e}")
 @bot.event
