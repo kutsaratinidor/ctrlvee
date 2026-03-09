@@ -1,3 +1,10 @@
+## 1.9.9 - 2026-03-09
+
+### Fixed
+- **TV Filename Parsing for Metadata**: Improved `parse_tv_filename()` to avoid release-group/tracker suffix pollution (e.g., `-iKA[eztv.re]`) when building TMDB queries.
+- **Movie Filename Parsing Parity**: Applied the same robust suffix/extension handling to `parse_movie_filename()` so movie metadata lookups are not skewed by scene tags.
+- **Safer Extension Handling**: Parsers now strip only known video extensions (instead of generic `splitext()` behavior), preventing malformed title extraction on filenames containing dotted bracket tags.
+
 ## 1.9.8 - 2026-03-08
 
 ### Fixed

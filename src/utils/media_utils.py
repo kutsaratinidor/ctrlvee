@@ -71,11 +71,18 @@ class MediaUtils:
             (title, year) where title is cleaned for searching and year is an int or None
         """
         basename = os.path.basename(filename)
-        name, _ = os.path.splitext(basename)
+
+        # Remove only known video extensions (avoid splitext confusion with scene tags like [eztv.re]).
+        name = re.sub(r'(?i)\.(mkv|mp4|avi|mov|m4v|ts|m2ts|wmv|flv|webm)$', '', basename)
+
+        # Remove bracketed tracker/release suffixes often appended by indexers.
+        name = re.sub(r'\[[^\]]*\]', ' ', name)
 
         # Normalize separators and remove brackets to simplify tokenization
         normalized = name.replace('.', ' ').replace('_', ' ')
-        normalized = re.sub(r'[\(\)\[\]]', ' ', normalized)
+        normalized = re.sub(r'[\(\)]', ' ', normalized)
+        # Remove trailing release-group style suffixes like "-iKA" after normalization.
+        normalized = re.sub(r'\s*[-–]\s*[A-Za-z0-9]{2,}$', ' ', normalized)
         normalized = ' '.join(normalized.split())
 
         tokens = re.split(r"[\s\-]+", normalized)
@@ -181,8 +188,14 @@ class MediaUtils:
             Tuple of (series_title, season, episode, year) where year is extracted if present
         """
         base = os.path.basename(filename)
-        name, _ = os.path.splitext(base)
+
+        # Remove only known video extensions (avoid splitext() confusion with scene tags like [eztv.re]).
+        name = re.sub(r'(?i)\.(mkv|mp4|avi|mov|m4v|ts|m2ts|wmv|flv|webm)$', '', base)
+
+        # Remove bracketed tracker/release suffixes and normalize separators.
+        name = re.sub(r'\[[^\]]*\]', ' ', name)
         work = name.replace('.', ' ').replace('_', ' ')
+        work = re.sub(r'\s+', ' ', work).strip()
         
         # Season/Episode patterns
         m = re.search(r'(?i)\bS(\d{1,2})E(\d{1,2})\b', work)
@@ -191,13 +204,15 @@ class MediaUtils:
         season = int(m.group(1)) if m else None
         episode = int(m.group(2)) if m else None
 
-        # Extract year if present (4-digit year between 1900-2099)
-        year_match = re.search(r'\b(19|20)\d{2}\b', work)
+        # Extract title segment before episode marker (if present) to avoid release-group tail pollution.
+        title_segment = work[:m.start()].strip() if m else work
+
+        # Extract year if present (4-digit year between 1900-2099), from title segment only.
+        year_match = re.search(r'\b(19|20)\d{2}\b', title_segment)
         year = int(year_match.group(0)) if year_match else None
 
         # Remove season/episode token and common noise to extract series name
-        if m:
-            work = work[:m.start()].strip()
+        work = title_segment
         # Remove year from series name
         if year_match:
             work = work[:year_match.start()].strip() + work[year_match.end():].strip()
@@ -205,6 +220,9 @@ class MediaUtils:
         work = re.sub(r'\s*\b(480|576|720|1080|2160|4320)p\b', ' ', work, flags=re.IGNORECASE)
         work = re.sub(r'\b(?:web(?:-?dl|-?rip)?|bluray|brrip|bdrip|hdrip|hdtv|dvdrip|remux)\b', ' ', work, flags=re.IGNORECASE)
         work = re.sub(r'\b(?:x?26[45]|h\.?26[45]|hevc|av1|xvid)\b', ' ', work, flags=re.IGNORECASE)
+        work = re.sub(r'\b(?:nf|amzn|atvp|dsnp|hulu|max|hbo)\b', ' ', work, flags=re.IGNORECASE)
+        # Remove trailing release-group style suffixes (e.g., -iKA)
+        work = re.sub(r'\s*[-–]\s*[A-Za-z0-9]{2,}$', ' ', work)
         work = re.sub(r'\s+', ' ', work).strip()
         # Cleanup trailing separators like '-' or '–'
         work = re.sub(r'[\-–]+\s*$', '', work).strip()
