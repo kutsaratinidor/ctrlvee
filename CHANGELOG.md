@@ -1,3 +1,9 @@
+## 1.9.10 - 2026-03-09
+
+### Changed
+- **Voice Stack Dependency Upgrade**: Updated `discord.py[voice]` baseline to `>=2.6.4,<3.0.0` to align with current Discord voice behavior and improve compatibility with post-migration voice requirements.
+- **Crypto Dependency Constraint**: Explicitly constrained `PyNaCl` to `>=1.5.0,<2.0.0` in `requirements.txt` for consistent voice runtime behavior across environments.
+
 ## 1.9.9 - 2026-03-09
 
 ### Fixed
