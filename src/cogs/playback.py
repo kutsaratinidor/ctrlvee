@@ -2,8 +2,10 @@ import discord
 from discord.ext import commands
 import asyncio
 import logging
+import os
 import re
 import xml.etree.ElementTree as ET
+from urllib.parse import unquote, urlparse
 from ..utils.media_utils import MediaUtils
 from ..config import Config
 from ..utils.command_utils import format_cmd, format_cmd_inline
@@ -54,6 +56,57 @@ class PlaybackCommands(commands.Cog):
         # Track selected subtitle since VLC API doesn't expose it
         self.selected_subtitle_stream_index = None
         self._initial_scan_pending = True # Guard for startup presence
+
+    def _filename_from_uri(self, uri: str | None) -> str | None:
+        """Extract a filename from VLC item URI/path for metadata fallback."""
+        try:
+            if not uri:
+                return None
+            raw = unquote(str(uri))
+            parsed = urlparse(raw)
+            path = parsed.path if parsed.scheme else raw
+            if not path:
+                return None
+            base = os.path.basename(path)
+            return base or None
+        except Exception:
+            return None
+
+    def _looks_like_release_group_name(self, name: str | None) -> bool:
+        """Heuristic: detect low-quality VLC names like scene group tags (e.g., IKA)."""
+        try:
+            if not name:
+                return True
+            n = str(name).strip()
+            if not n:
+                return True
+            # If it already looks like a media filename/path, it's not a group-only token.
+            if any(sep in n for sep in ['.', '/', '\\']) or n.lower().endswith(('.mkv', '.mp4', '.avi', '.mov', '.m4v', '.webm')):
+                return False
+            token = re.sub(r'[^A-Za-z0-9]', '', n)
+            if not token:
+                return True
+            # Typical scene-group style short alnum token.
+            if re.fullmatch(r'[A-Za-z0-9]{2,6}', token):
+                return True
+            # Parsed title is too short to be a meaningful media title.
+            parsed_title, _ = MediaUtils.parse_movie_filename(n)
+            if parsed_title and len(parsed_title.strip()) <= 4:
+                return True
+            return False
+        except Exception:
+            return False
+
+    def _choose_metadata_source_name(self, item_name: str | None, item_uri: str | None) -> str:
+        """Choose best source name for metadata parsing, preferring URI filename when needed."""
+        name = (item_name or '').strip()
+        uri_name = self._filename_from_uri(item_uri)
+
+        if not name and uri_name:
+            return uri_name
+        if self._looks_like_release_group_name(name) and uri_name:
+            return uri_name
+        return name
         
     def signal_initial_scan_complete(self):
         """Signal that the initial watch folder scan is complete."""
@@ -151,10 +204,13 @@ class PlaybackCommands(commands.Cog):
             if item is None:
                 return
             name = item.get('name') or ''
-            if not name:
+            uri = item.get('uri')
+            metadata_name = self._choose_metadata_source_name(name, uri)
+            display_name = metadata_name or name
+            if not display_name:
                 return
             # Build a de-duplication key from cleaned name and position
-            key = f"{MediaUtils.clean_filename_for_display(name)}|{position or ''}"
+            key = f"{MediaUtils.clean_filename_for_display(display_name)}|{position or ''}"
             now_ts = asyncio.get_event_loop().time()
             # Cooldown: avoid re-announcing the same item too frequently
             if self._last_now_playing_key == key and (now_ts - self._last_now_playing_ts) < self._np_cooldown:
@@ -166,14 +222,14 @@ class PlaybackCommands(commands.Cog):
             has_explicit_episode = False
             episode_label = None
             try:
-                title, year = MediaUtils.parse_movie_filename(name)
-                tv_title, tv_season, tv_episode, tv_year = MediaUtils.parse_tv_filename(name)
-                edition_tag = MediaUtils.extract_edition_tag(name)
+                title, year = MediaUtils.parse_movie_filename(metadata_name)
+                tv_title, tv_season, tv_episode, tv_year = MediaUtils.parse_tv_filename(metadata_name)
+                edition_tag = MediaUtils.extract_edition_tag(metadata_name)
                 if tv_season and tv_episode:
                     episode_label = f"S{int(tv_season):02d}E{int(tv_episode):02d}"
                 
                 # Detect if there's an explicit episode marker
-                has_explicit_episode = bool(tv_episode) or bool(re.search(r"(?i)(s\d{1,2}e\d{1,2}|\d{1,2}x\d{1,2})", name))
+                has_explicit_episode = bool(tv_episode) or bool(re.search(r"(?i)(s\d{1,2}e\d{1,2}|\d{1,2}x\d{1,2})", metadata_name))
                 
                 if has_explicit_episode and tv_title:
                     # Has explicit episode: prefer TV
@@ -222,7 +278,7 @@ class PlaybackCommands(commands.Cog):
                     except Exception:
                         pass
             else:
-                final = discord.Embed(title=f"Now Playing: {name}", color=discord.Color.blue())
+                final = discord.Embed(title=f"Now Playing: {display_name}", color=discord.Color.blue())
                 if edition_tag and not has_explicit_episode:
                     try:
                         final.add_field(name="Edition", value=edition_tag, inline=True)
@@ -241,7 +297,7 @@ class PlaybackCommands(commands.Cog):
                     pass
             # Update presence
             try:
-                await self._set_presence(name, reason=f"now playing ({origin})")
+                await self._set_presence(display_name, reason=f"now playing ({origin})")
             except Exception:
                 pass
             # Send to announce channels
@@ -1278,9 +1334,13 @@ class PlaybackCommands(commands.Cog):
             
             item_name = None
             playlist_name = None
+            item_uri = None
             if current_item is not None:
                 item_name = current_item.get('name')
                 playlist_name = current_item.get('name')
+                item_uri = current_item.get('uri')
+
+            metadata_name = self._choose_metadata_source_name(item_name, item_uri)
 
             # Fallback: pull filename from VLC status information when playlist current item is missing.
             if not item_name:
@@ -1310,26 +1370,26 @@ class PlaybackCommands(commands.Cog):
                     pass
 
             # Prefer playlist name for parsing when it contains explicit TV episode markers.
-            parse_name = item_name
+            parse_name = metadata_name or item_name
             try:
                 if playlist_name and re.search(r"(?i)(s\d{1,2}e\d{1,2}|\d{1,2}x\d{1,2})", playlist_name):
                     parse_name = playlist_name
             except Exception:
-                parse_name = item_name or playlist_name
+                parse_name = metadata_name or item_name or playlist_name
 
             # Try to get TMDB metadata
             tmdb_embed = None
-            if item_name:
-                edition_tag = MediaUtils.extract_edition_tag(item_name)
+            if item_name or metadata_name:
+                edition_tag = MediaUtils.extract_edition_tag(parse_name or metadata_name or item_name)
                 is_movie_embed = False
                 episode_label = None
-                clean_title, year = MediaUtils.parse_movie_filename(parse_name or item_name)
-                tv_title, tv_season, tv_episode, tv_year = MediaUtils.parse_tv_filename(parse_name or item_name)
+                clean_title, year = MediaUtils.parse_movie_filename(parse_name or metadata_name or item_name)
+                tv_title, tv_season, tv_episode, tv_year = MediaUtils.parse_tv_filename(parse_name or metadata_name or item_name)
                 if tv_season and tv_episode:
                     episode_label = f"S{int(tv_season):02d}E{int(tv_episode):02d}"
                 
                 # Detect if there's an explicit episode marker
-                has_explicit_episode = bool(tv_episode) or bool(re.search(r"(?i)(s\d{1,2}e\d{1,2}|\d{1,2}x\d{1,2})", parse_name or item_name))
+                has_explicit_episode = bool(tv_episode) or bool(re.search(r"(?i)(s\d{1,2}e\d{1,2}|\d{1,2}x\d{1,2})", parse_name or metadata_name or item_name or ''))
                 
                 if has_explicit_episode and tv_title:
                     # Has explicit episode: prefer TV
@@ -1380,8 +1440,8 @@ class PlaybackCommands(commands.Cog):
             else:
                 # Create a basic embed
                 title = "VLC Status"
-                if item_name:
-                    title = f"Now Playing: {item_name}"
+                if metadata_name or item_name:
+                    title = f"Now Playing: {metadata_name or item_name}"
                 
                 final_embed = discord.Embed(title=title, color=discord.Color.blue())
                 if item_name and edition_tag and not has_explicit_episode:
