@@ -1,6 +1,7 @@
 from typing import Optional, Tuple
 import os
 import re
+from urllib.parse import unquote
 
 class MediaUtils:
     @staticmethod
@@ -71,6 +72,7 @@ class MediaUtils:
             (title, year) where title is cleaned for searching and year is an int or None
         """
         basename = os.path.basename(filename)
+        basename = unquote(basename)
 
         # Remove only known video extensions (avoid splitext confusion with scene tags like [eztv.re]).
         name = re.sub(r'(?i)\.(mkv|mp4|avi|mov|m4v|ts|m2ts|wmv|flv|webm)$', '', basename)
@@ -188,6 +190,7 @@ class MediaUtils:
             Tuple of (series_title, season, episode, year) where year is extracted if present
         """
         base = os.path.basename(filename)
+        base = unquote(base)
 
         # Remove only known video extensions (avoid splitext() confusion with scene tags like [eztv.re]).
         name = re.sub(r'(?i)\.(mkv|mp4|avi|mov|m4v|ts|m2ts|wmv|flv|webm)$', '', base)
@@ -215,7 +218,9 @@ class MediaUtils:
         work = title_segment
         # Remove year from series name
         if year_match:
-            work = work[:year_match.start()].strip() + work[year_match.end():].strip()
+            left = work[:year_match.start()].strip()
+            right = work[year_match.end():].strip()
+            work = f"{left} {right}".strip()
         # Drop release noise similar to movie cleaning
         work = re.sub(r'\s*\b(480|576|720|1080|2160|4320)p\b', ' ', work, flags=re.IGNORECASE)
         work = re.sub(r'\b(?:web(?:-?dl|-?rip)?|bluray|brrip|bdrip|hdrip|hdtv|dvdrip|remux)\b', ' ', work, flags=re.IGNORECASE)
