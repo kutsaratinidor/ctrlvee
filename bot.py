@@ -109,6 +109,93 @@ def _format_bytes(n: int) -> str:
     except Exception:
         return "-"
 
+
+def _format_allowed_roles_for_display() -> str:
+    """Format ALLOWED_ROLES for logs/help text, supporting names and IDs."""
+    parts = []
+    for role in Config.ALLOWED_ROLES:
+        if isinstance(role, int):
+            parts.append(f"ID:{role}")
+        else:
+            parts.append(f"'{role}'")
+    return ", ".join(parts)
+
+
+def _warn_unknown_allowed_roles_on_startup() -> None:
+    """Log startup warnings when configured ALLOWED_ROLES do not match guild roles."""
+    try:
+        configured_names = [r.strip() for r in Config.ALLOWED_ROLES if isinstance(r, str) and r.strip()]
+        configured_ids = [r for r in Config.ALLOWED_ROLES if isinstance(r, int)]
+        if not configured_names and not configured_ids:
+            return
+
+        total_guilds = len(bot.guilds)
+        guilds_with_issues = 0
+        total_missing_names = 0
+        total_case_mismatches = 0
+        total_missing_ids = 0
+
+        for guild in bot.guilds:
+            exact_names = {role.name for role in guild.roles}
+            lowercase_names = {role.name.lower() for role in guild.roles}
+
+            unknown_names = []
+            case_mismatch_names = []
+            for wanted in configured_names:
+                if wanted in exact_names:
+                    continue
+                if wanted.lower() in lowercase_names:
+                    case_mismatch_names.append(wanted)
+                else:
+                    unknown_names.append(wanted)
+
+            missing_ids = [rid for rid in configured_ids if guild.get_role(rid) is None]
+
+            has_issue = bool(unknown_names or case_mismatch_names or missing_ids)
+            if has_issue:
+                guilds_with_issues += 1
+                total_missing_names += len(unknown_names)
+                total_case_mismatches += len(case_mismatch_names)
+                total_missing_ids += len(missing_ids)
+
+            if unknown_names:
+                formatted = ", ".join(f"'{name}'" for name in unknown_names)
+                logger.warning(
+                    "ALLOWED_ROLES names not found in guild '%s' (%s): %s",
+                    guild.name,
+                    guild.id,
+                    formatted,
+                )
+
+            if case_mismatch_names:
+                formatted = ", ".join(f"'{name}'" for name in case_mismatch_names)
+                logger.warning(
+                    "ALLOWED_ROLES name case mismatch in guild '%s' (%s): %s",
+                    guild.name,
+                    guild.id,
+                    formatted,
+                )
+
+            if missing_ids:
+                formatted = ", ".join(str(rid) for rid in missing_ids)
+                logger.warning(
+                    "ALLOWED_ROLES IDs not found in guild '%s' (%s): %s",
+                    guild.name,
+                    guild.id,
+                    formatted,
+                )
+
+        logger.info(
+            "ALLOWED_ROLES startup check: guilds=%s, guilds_with_issues=%s, missing_names=%s, case_mismatches=%s, missing_ids=%s",
+            total_guilds,
+            guilds_with_issues,
+            total_missing_names,
+            total_case_mismatches,
+            total_missing_ids,
+        )
+    except Exception as e:
+        logger.debug(f"Skipping ALLOWED_ROLES startup validation due to error: {e}")
+
 # Optional: background playlist autosave
 _autosave_thread = None
 _autosave_stop = threading.Event()
@@ -379,7 +466,7 @@ async def join_voice_channel() -> bool:
 @bot.event
 async def on_voice_state_update(member, before, after):
     """When the bot itself gets disconnected from voice, attempt a controlled reconnect."""
-    global _last_voice_disconnect_ts, _reconnect_attempts
+    global _last_voice_disconnect_ts, _reconnect_attempts, _voice_debounce_until
 
     try:
         if not getattr(Config, 'ENABLE_VOICE_JOIN', False):
@@ -572,6 +659,9 @@ async def on_ready():
         await send_startup_announcement()
     """Called when the bot is ready"""
     logger.info(f'{bot.user} has connected to Discord!')
+
+    # Startup sanity check for role configuration across joined guilds.
+    _warn_unknown_allowed_roles_on_startup()
     
     # Log all loaded commands and their checks
     logger.info("Loaded commands:")
@@ -1143,7 +1233,7 @@ async def on_message(message):
 @bot.event
 async def on_command_error(ctx, error):
     if isinstance(error, commands.MissingAnyRole):
-        allowed_roles = ", ".join(f"'{role}'" for role in Config.ALLOWED_ROLES)
+        allowed_roles = _format_allowed_roles_for_display()
         logger.warning(f"Role check failed: required roles (any of): {allowed_roles}")
         await ctx.send(f"You need one of these roles to use this command: {allowed_roles}")
     elif isinstance(error, commands.CommandNotFound):
@@ -1227,8 +1317,15 @@ Examples: `{prefix}radarr_recent` (all instances, 7 days), `{prefix}radarr_recen
         if _radarr_services:
             embed.add_field(name="🎬 Radarr Integration", value=radarr_commands, inline=False)
 
+        # Utility (owner-only)
+        utility_commands = f"""
+    `{prefix}list_guilds` - List all servers this bot is currently in (owner-only)
+    `{prefix}leave_server [guild_id]` - Make the bot leave the current server (or a specific server by ID)
+        """
+        embed.add_field(name="🛠️ Utility", value=utility_commands, inline=False)
+
         # Add footer note about permissions
-        roles_str = ", ".join(f"'{role}'" for role in Config.ALLOWED_ROLES)
+        roles_str = _format_allowed_roles_for_display()
         footer_text = f"⚠️ Most commands require one of these roles: {roles_str}"
         embed.set_footer(text=footer_text)
 
@@ -1386,6 +1483,77 @@ async def radarr_recent(ctx, instance: str = 'all', days: int = 7, limit: int = 
     except Exception as e:
         logger.error(f"radarr_recent command error: {e}")
         await ctx.send(f"Error fetching recent Radarr items: {e}")
+
+
+@bot.command(name="leave_server", aliases=["leave_guild", "leave"])
+@commands.is_owner()
+async def leave_server(ctx, guild_id: int | None = None):
+    """Owner-only: make the bot leave the current guild or a specified guild by ID."""
+    try:
+        target_guild = None
+
+        if guild_id is not None:
+            target_guild = bot.get_guild(guild_id)
+            if target_guild is None:
+                await ctx.send(f"I am not in a server with ID `{guild_id}`.")
+                return
+        else:
+            if ctx.guild is None:
+                await ctx.send("When used in DMs, provide a guild ID: `leave_server <guild_id>`.")
+                return
+            target_guild = ctx.guild
+
+        guild_name = target_guild.name
+        guild_id_text = str(target_guild.id)
+
+        # Notify target guild before leaving, if possible.
+        try:
+            if target_guild.system_channel and target_guild.system_channel.permissions_for(target_guild.me).send_messages:
+                await target_guild.system_channel.send("Leaving this server by owner request.")
+        except Exception:
+            pass
+
+        await ctx.send(f"Leaving server: **{guild_name}** (`{guild_id_text}`).")
+        logger.warning(f"leave_server command invoked by {ctx.author} ({ctx.author.id}) for guild {guild_name} ({guild_id_text})")
+        await target_guild.leave()
+
+    except Exception as e:
+        logger.error(f"leave_server command error: {e}")
+        await ctx.send(f"Error leaving server: {e}")
+
+
+@bot.command(name="list_guilds", aliases=["guilds", "servers"])
+@commands.is_owner()
+async def list_guilds(ctx):
+    """Owner-only: list all guilds the bot has joined."""
+    try:
+        guilds = sorted(list(bot.guilds), key=lambda g: (g.name or "").lower())
+
+        if not guilds:
+            await ctx.send("I am not currently in any servers.")
+            return
+
+        lines = [f"{i}. {g.name} ({g.id})" for i, g in enumerate(guilds, start=1)]
+        chunks = []
+        current = ""
+        for line in lines:
+            candidate = f"{current}\n{line}" if current else line
+            if len(candidate) > 1900:
+                chunks.append(current)
+                current = line
+            else:
+                current = candidate
+        if current:
+            chunks.append(current)
+
+        header = f"I am in **{len(guilds)}** server(s):"
+        for idx, chunk in enumerate(chunks):
+            prefix = f"{header}\n" if idx == 0 else "(continued)\n"
+            await ctx.send(f"{prefix}{chunk}")
+
+    except Exception as e:
+        logger.error(f"list_guilds command error: {e}")
+        await ctx.send(f"Error listing servers: {e}")
 
 def main():
     """Main entry point for the bot"""

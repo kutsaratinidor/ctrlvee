@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Union
 import os
 import logging
 from dotenv import load_dotenv
@@ -13,6 +13,35 @@ def _dedupe_preserve_order(items: List[str]) -> List[str]:
         seen.add(item)
         ordered.append(item)
     return ordered
+
+
+def parse_allowed_roles_value(val: str) -> List[Union[str, int]]:
+    """Parse ALLOWED_ROLES from env as role names and/or role IDs.
+
+    Supported token formats (comma-separated):
+    - Role name (e.g. Theater Host)
+    - Role ID (e.g. 123456789012345678)
+    - Role mention (e.g. <@&123456789012345678>)
+    """
+    raw_parts = [part.strip() for part in (val or '').split(',') if part.strip()]
+    parsed: List[Union[str, int]] = []
+    seen = set()
+
+    for token in raw_parts:
+        role_value: Union[str, int] = token
+        mention_match = token.startswith('<@&') and token.endswith('>') and token[3:-1].isdigit()
+        if mention_match:
+            role_value = int(token[3:-1])
+        elif token.isdigit():
+            role_value = int(token)
+
+        dedupe_key = f"id:{role_value}" if isinstance(role_value, int) else f"name:{role_value.lower()}"
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        parsed.append(role_value)
+
+    return parsed
 
 
 def _normalize_path(val: str) -> str:
@@ -101,7 +130,9 @@ class Config:
     
     # Discord Bot Settings
     DISCORD_TOKEN: str = os.getenv('DISCORD_TOKEN', '')
-    ALLOWED_ROLES: List[str] = [role.strip() for role in os.getenv('ALLOWED_ROLES', 'Theater 2,Theater Host').split(',')]
+    ALLOWED_ROLES: List[Union[str, int]] = parse_allowed_roles_value(
+        os.getenv('ALLOWED_ROLES', 'Theater 2,Theater Host')
+    )
     
     # VLC Settings
     VLC_HOST: str = os.getenv('VLC_HOST', 'localhost')
@@ -292,13 +323,16 @@ class Config:
         """Log the current configuration (excluding sensitive values)"""
         logger = logging.getLogger(__name__)
         announce_ids = cls.get_announce_channel_ids()
+        allowed_roles_display = ", ".join(
+            [f"'{r}'" if isinstance(r, str) else f"ID:{r}" for r in cls.ALLOWED_ROLES]
+        )
         config_lines = [
             f"Discord Command Prefix: {cls.DISCORD_COMMAND_PREFIX}",
             "Current Configuration:",
             "-" * 50,
             f"VLC Host: {cls.VLC_HOST}",
             f"VLC Port: {cls.VLC_PORT}",
-            f"Allowed Roles: {', '.join(cls.ALLOWED_ROLES)}",
+            f"Allowed Roles: {allowed_roles_display}",
             f"Queue Backup File: {cls.QUEUE_BACKUP_FILE}",
             f"Items Per Page: {cls.ITEMS_PER_PAGE}",
             f"Watch Folders: {', '.join(cls.WATCH_FOLDERS) if cls.WATCH_FOLDERS else 'Disabled'}",

@@ -182,7 +182,7 @@ python --version
    - `TMDB_API_KEY`: Your TMDB API key (optional, but recommended for movie metadata)
    
    Optional Configuration:
-   - `ALLOWED_ROLES`: Comma-separated list of roles that can control playback (default: "Theater Host")
+   - `ALLOWED_ROLES`: Comma-separated list of role names and/or role IDs that can control playback (default: "Theater Host"). Example: `ALLOWED_ROLES=Theater Host,123456789012345678`
    - `VLC_HOST`: VLC HTTP interface host (default: localhost)
    - `VLC_PORT`: VLC HTTP interface port (default: 8080)
    - `VLC_PASSWORD`: VLC HTTP interface password (default: vlc)
@@ -373,7 +373,7 @@ Contributions are welcome! Please feel free to submit a Pull Request. For major 
 - **Cross-platform**: CtrlVee works on Windows, macOS, and Linux. All setup and commands are supported on Linux as well.
 - **Queue System**: Uses a soft queue approach compatible with VLC 3.x that temporarily disables shuffle when needed and automatically restores it after queued items finish playing.
 - **State Monitoring**: Enhanced monitoring helps track manual changes made directly in VLC and automatically handles queue transitions.
-- **Role-Based Access**: Most commands require specific Discord roles (configurable via `ALLOWED_ROLES` in `.env`).
+- **Role-Based Access**: Most commands require specific Discord roles, configurable via role name and/or role ID in `ALLOWED_ROLES` in `.env`.
 - **Queue Persistence**: Queue state is automatically saved to `queue_backup.json` and restored when the bot restarts.
 - **Watch Folders**: When `WATCH_FOLDERS` is set, the bot runs a lightweight watcher that scans every `WATCH_SCAN_INTERVAL` seconds. New media files are enqueued once they appear stable (size unchanged for ~2s). Hidden files and folders are ignored. Supported extensions include common video/audio types (mp4, mkv, avi, mov, mp3, flac, etc.). You can control whether the initial scan also enqueues existing files via `WATCH_ENQUEUE_ON_START`.
 

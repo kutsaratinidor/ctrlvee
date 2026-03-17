@@ -1,3 +1,17 @@
+## 1.9.11 - 2026-03-16
+
+### Added
+- **Owner Utility Commands for Guild Management**: Added `!list_guilds` (aliases: `!guilds`, `!servers`) to list all guilds the bot is in, and `!leave_server [guild_id]` (aliases: `!leave_guild`, `!leave`) to leave the current guild or a specific guild by ID.
+- **Startup Role-Config Diagnostics**: Added startup validation warnings for `ALLOWED_ROLES` mismatches (missing names, case-only name mismatches, missing role IDs) per guild, plus a compact aggregate summary line for quick log scanning.
+
+### Changed
+- **Flexible Role Authorization Inputs**: `ALLOWED_ROLES` now accepts a mixed list of role names and role IDs, including role mention format (e.g., `<@&123...>`), making role checks resilient for special-character role names.
+- **Role Requirement Display Formatting**: Help/footer and permission error messaging now render configured role IDs clearly (e.g., `ID:123456789012345678`) alongside role names.
+- **Configuration Documentation Updates**: Updated `template.env` and README guidance to document mixed role-name/role-ID usage for `ALLOWED_ROLES`.
+
+### Fixed
+- **Voice Reconnect Debounce Scope Error**: Fixed an `UnboundLocalError` in `on_voice_state_update` for `_voice_debounce_until` by correcting variable scope handling during reconnect debounce updates.
+
 ## 1.9.10 - 2026-03-09
 
 ### Changed
