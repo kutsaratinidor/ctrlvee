@@ -406,7 +406,7 @@ async def join_voice_channel() -> bool:
                     logger.warning(f"Channel verification failed before connect: {e}")
                     continue
 
-                vc = await ch.connect(timeout=_VOICE_CONNECT_TIMEOUT, self_mute=True, self_deaf=True)
+                await ch.connect(timeout=_VOICE_CONNECT_TIMEOUT, self_mute=True, self_deaf=True)
                 # Post-verify after short delay to avoid transient false negatives
                 await asyncio.sleep(0.8)
                 verify = discord.utils.get(bot.voice_clients, guild=guild)
@@ -550,6 +550,7 @@ async def setup_hook():
 
 @bot.event
 async def on_ready():
+    """Called when the bot is ready."""
     # Log voice join/reconnect configuration to confirm loaded values
     try:
         logger.info(
@@ -657,7 +658,6 @@ async def on_ready():
         threading.Thread(target=wait_and_announce, name="AnnounceAfterInitialScan", daemon=True).start()
     else:
         await send_startup_announcement()
-    """Called when the bot is ready"""
     logger.info(f'{bot.user} has connected to Discord!')
 
     # Startup sanity check for role configuration across joined guilds.
@@ -1317,13 +1317,6 @@ Examples: `{prefix}radarr_recent` (all instances, 7 days), `{prefix}radarr_recen
         if _radarr_services:
             embed.add_field(name="🎬 Radarr Integration", value=radarr_commands, inline=False)
 
-        # Utility (owner-only)
-        utility_commands = f"""
-    `{prefix}list_guilds` - List all servers this bot is currently in (owner-only)
-    `{prefix}leave_server [guild_id]` - Make the bot leave the current server (or a specific server by ID)
-        """
-        embed.add_field(name="🛠️ Utility", value=utility_commands, inline=False)
-
         # Add footer note about permissions
         roles_str = _format_allowed_roles_for_display()
         footer_text = f"⚠️ Most commands require one of these roles: {roles_str}"
@@ -1364,6 +1357,8 @@ Examples: `{prefix}radarr_recent` (all instances, 7 days), `{prefix}radarr_recen
         await ctx.send("❌ I need the 'Embed Links' permission to show the help message.")
     except Exception as e:
         await ctx.send(f"An error occurred: {str(e)}")
+
+
 @bot.command(name="version")
 async def version(ctx):
     """Show the bot version and basic configuration info"""
@@ -1378,7 +1373,7 @@ async def version(ctx):
 
 @bot.command(name="changelog", aliases=['changes', 'whatsnew'])
 async def changelog(ctx):
-    """Show recent changelog entries (latest 3 versions)"""
+    """Show recent changelog entries (latest 2 versions)."""
     try:
         entries = parse_changelog(max_versions=2)
         if not entries:
@@ -1527,6 +1522,7 @@ async def leave_server(ctx, guild_id: int | None = None):
 async def list_guilds(ctx):
     """Owner-only: list all guilds the bot has joined."""
     try:
+        max_message_chars = 1900
         guilds = sorted(list(bot.guilds), key=lambda g: (g.name or "").lower())
 
         if not guilds:
@@ -1538,7 +1534,7 @@ async def list_guilds(ctx):
         current = ""
         for line in lines:
             candidate = f"{current}\n{line}" if current else line
-            if len(candidate) > 1900:
+            if len(candidate) > max_message_chars:
                 chunks.append(current)
                 current = line
             else:

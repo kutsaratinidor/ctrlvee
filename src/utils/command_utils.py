@@ -1,4 +1,3 @@
-from typing import Callable
 from ..config import Config
 
 
@@ -18,6 +17,6 @@ def format_cmd_inline(command: str) -> str:
     """Return the formatted command wrapped in backticks for inline display.
 
     Example:
-        format_cmd_inline('play_num 1') -> '`!play_num 1'`
+        format_cmd_inline('play_num 1') -> '`!play_num 1`'
     """
     return f"`{format_cmd(command)}`"
