@@ -1,12 +1,11 @@
 from typing import Optional, List, Tuple
 import discord
 from discord.ext import commands
-import os
 import logging
 import re
 from ..utils.media_utils import MediaUtils
 from ..config import Config
-from ..utils.command_utils import format_cmd, format_cmd_inline
+from ..utils.command_utils import format_cmd_inline
 
 logger = logging.getLogger(__name__)
 
@@ -15,9 +14,68 @@ class PlaylistView(discord.ui.View):
         super().__init__(timeout=300)  # 5 minute timeout
         self.items = items
         # Default to Config if not provided
-        self.items_per_page = items_per_page or Config.ITEMS_PER_PAGE
+        self.items_per_page = max(1, items_per_page or Config.ITEMS_PER_PAGE)
+        self.max_chars_per_page = 1000
         self.current_page = 1
-        self.total_pages = (len(items) + self.items_per_page - 1) // self.items_per_page
+        self.pages = self._build_pages()
+        self.total_pages = max(1, len(self.pages))
+
+    def _build_pages(self) -> List[List[str]]:
+        """Paginate playlist lines by item-count and field character limits."""
+        pages: List[List[str]] = []
+        current_page: List[str] = []
+        current_chars = 0
+
+        for i, item in enumerate(self.items, start=1):
+            name = item.get('name', '')
+            icon = MediaUtils.get_media_icon(name)
+            basename = MediaUtils.clean_filename_for_display(name)
+            line = f"{icon}`{i}` {basename}"
+
+            # Ensure one very long title still fits safely in a page.
+            if len(line) > self.max_chars_per_page:
+                keep = max(0, self.max_chars_per_page - len(f"{icon}`{i}` ..."))
+                line = f"{icon}`{i}` {basename[:keep]}..."
+
+            projected = current_chars + len(line) + (1 if current_page else 0)
+            would_overflow_chars = projected > self.max_chars_per_page
+            would_overflow_items = len(current_page) >= self.items_per_page
+
+            if current_page and (would_overflow_chars or would_overflow_items):
+                pages.append(current_page)
+                current_page = []
+                current_chars = 0
+
+            current_page.append(line)
+            current_chars += len(line) + (1 if len(current_page) > 1 else 0)
+
+        if current_page:
+            pages.append(current_page)
+
+        return pages
+
+    def build_embed(self) -> discord.Embed:
+        page_idx = self.current_page - 1
+        page_lines = self.pages[page_idx] if self.pages else []
+
+        # Compute global displayed range for this page.
+        start = sum(len(p) for p in self.pages[:page_idx]) + 1 if page_lines else 0
+        end = start + len(page_lines) - 1 if page_lines else 0
+
+        embed = discord.Embed(
+            title="VLC Playlist",
+            color=discord.Color.blue()
+        )
+        embed.add_field(
+            name=f"📋 Page {self.current_page}/{self.total_pages}",
+            value="\n".join(page_lines) if page_lines else "No items in playlist",
+            inline=False
+        )
+        if start and end:
+            embed.set_footer(text=f"📑 Showing items {start}-{end} of {len(self.items)}")
+        else:
+            embed.set_footer(text=f"📑 Showing items 0-0 of {len(self.items)}")
+        return embed
 
     @discord.ui.button(label="⏮️", style=discord.ButtonStyle.secondary)
     async def first_page(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -46,35 +104,7 @@ class PlaylistView(discord.ui.View):
 
     async def update_message(self, interaction: discord.Interaction):
         """Update the playlist view message"""
-        start_idx = (self.current_page - 1) * self.items_per_page
-        end_idx = min(start_idx + self.items_per_page, len(self.items))
-        current_items = self.items[start_idx:end_idx]
-
-        embed = discord.Embed(
-            title="VLC Playlist",
-            color=discord.Color.blue()
-        )
-        
-        playlist_text = ""
-        for i, item in enumerate(current_items, start=start_idx + 1):
-            name = item.get('name', '')
-            icon = MediaUtils.get_media_icon(name)
-            basename = MediaUtils.clean_filename_for_display(name)
-            
-            next_line = f"{icon}`{i}` {basename}\n"
-            if len(playlist_text) + len(next_line) > 1000:
-                playlist_text += "...(more items on next page)"
-                break
-                
-            playlist_text += next_line
-        
-        embed.add_field(
-            name=f"📋 Page {self.current_page}/{self.total_pages}",
-            value=playlist_text if playlist_text else "No items in playlist",
-            inline=False
-        )
-        
-        embed.set_footer(text=f"📑 Showing items {start_idx + 1}-{end_idx} of {len(self.items)}")
+        embed = self.build_embed()
         await interaction.response.edit_message(embed=embed, view=self)
 
 class PageSelectModal(discord.ui.Modal, title='Go to Page'):
@@ -108,6 +138,67 @@ class PageSelectModal(discord.ui.Modal, title='Go to Page'):
                 "Please enter a valid number",
                 ephemeral=True
             )
+
+
+class SearchResultsView(discord.ui.View):
+    def __init__(self, query: str, pages: List[List[str]], total_matches: int):
+        super().__init__(timeout=300)
+        self.query = query
+        self.pages = pages
+        self.total_matches = total_matches
+        self.current_page = 1
+        self.total_pages = max(1, len(pages))
+
+    @discord.ui.button(label="⏮️", style=discord.ButtonStyle.secondary)
+    async def first_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page = 1
+        await self.update_message(interaction)
+
+    @discord.ui.button(label="◀️", style=discord.ButtonStyle.primary)
+    async def prev_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page = max(1, self.current_page - 1)
+        await self.update_message(interaction)
+
+    @discord.ui.button(label="📖", style=discord.ButtonStyle.success)
+    async def goto_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = PageSelectModal(self.total_pages, self)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="▶️", style=discord.ButtonStyle.primary)
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page = min(self.total_pages, self.current_page + 1)
+        await self.update_message(interaction)
+
+    @discord.ui.button(label="⏭️", style=discord.ButtonStyle.secondary)
+    async def last_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page = self.total_pages
+        await self.update_message(interaction)
+
+    async def update_message(self, interaction: discord.Interaction):
+        page_idx = self.current_page - 1
+        page_lines = self.pages[page_idx] if self.pages else []
+
+        # Compute item range shown in this page for clearer navigation context.
+        start = sum(len(p) for p in self.pages[:page_idx]) + 1 if page_lines else 0
+        end = start + len(page_lines) - 1 if page_lines else 0
+
+        embed = discord.Embed(
+            title="🔍 Search Results",
+            description=f"Search query: '{self.query}'",
+            color=discord.Color.blue()
+        )
+        embed.add_field(
+            name=f"Found {self.total_matches} matches • Page {self.current_page}/{self.total_pages}",
+            value="\n".join(page_lines) if page_lines else "No matches on this page",
+            inline=False
+        )
+        if start and end:
+            footer = f"💡 Use {format_cmd_inline('play_num <number>')} to play an item • Showing {start}-{end} of {self.total_matches}"
+        else:
+            footer = f"💡 Use {format_cmd_inline('play_num <number>')} to play an item"
+        embed.set_footer(text=footer)
+
+        await interaction.response.edit_message(embed=embed, view=self)
 
 class PlaylistCommands(commands.Cog):
     def __init__(self, bot: commands.Bot, vlc_controller, tmdb_service, watch_service):
@@ -224,6 +315,47 @@ class PlaylistCommands(commands.Cog):
 
         return [(pos, itm) for _, pos, itm in scored_results]
 
+    def _build_search_pages(self, results: List[Tuple[int, dict]]) -> List[List[str]]:
+        """Paginate search lines while respecting Discord embed field limits.
+
+        Pages are constrained by both max line count (`Config.ITEMS_PER_PAGE`) and
+        max rendered characters to avoid hitting Discord's 1024-char field cap.
+        """
+        max_items_per_page = max(1, int(getattr(Config, 'ITEMS_PER_PAGE', 20)))
+        max_chars_per_page = 1000
+
+        pages: List[List[str]] = []
+        current_page: List[str] = []
+        current_chars = 0
+
+        for playlist_num, item in results:
+            name = item.get('name', '')
+            icon = MediaUtils.get_media_icon(name)
+            basename = MediaUtils.clean_filename_for_display(name)
+            line = f"{icon}`{playlist_num}` {basename}"
+
+            # Truncate very long single lines so one item can always fit a page.
+            if len(line) > max_chars_per_page:
+                keep = max(0, max_chars_per_page - len(f"{icon}`{playlist_num}` ..."))
+                line = f"{icon}`{playlist_num}` {basename[:keep]}..."
+
+            projected = current_chars + len(line) + (1 if current_page else 0)
+            would_overflow_chars = projected > max_chars_per_page
+            would_overflow_items = len(current_page) >= max_items_per_page
+
+            if current_page and (would_overflow_chars or would_overflow_items):
+                pages.append(current_page)
+                current_page = []
+                current_chars = 0
+
+            current_page.append(line)
+            current_chars += len(line) + (1 if len(current_page) > 1 else 0)
+
+        if current_page:
+            pages.append(current_page)
+
+        return pages
+
     @commands.command(name='search')
     @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def search_playlist(self, ctx: commands.Context, *, query: str):
@@ -239,29 +371,36 @@ class PlaylistCommands(commands.Cog):
             )
             
             if results:
-                # Format results with proper icons and cleaned names
-                results_text = ""
-                for playlist_num, item in results:
-                    name = item.get('name', '')
-                    icon = MediaUtils.get_media_icon(name)
-                    basename = MediaUtils.clean_filename_for_display(name)
-                    results_text += f"{icon}`{playlist_num}` {basename}\n"
-                
-                # Add results to embed
+                pages = self._build_search_pages(results)
+                first_page = pages[0] if pages else []
                 embed.add_field(
-                    name=f"Found {len(results)} matches",
-                    value=results_text if len(results_text) <= 1024 else results_text[:1021] + "...",
+                    name=f"Found {len(results)} matches • Page 1/{max(1, len(pages))}",
+                    value="\n".join(first_page) if first_page else "No matches found in the playlist",
                     inline=False
                 )
-                embed.set_footer(text=f"💡 Use {format_cmd_inline('play_num <number>')} to play an item")
+                shown = len(first_page)
+                if shown:
+                    embed.set_footer(
+                        text=(
+                            f"💡 Use {format_cmd_inline('play_num <number>')} to play an item "
+                            f"• Showing 1-{shown} of {len(results)}"
+                        )
+                    )
+                else:
+                    embed.set_footer(text=f"💡 Use {format_cmd_inline('play_num <number>')} to play an item")
+
+                if len(pages) > 1:
+                    view = SearchResultsView(query=query, pages=pages, total_matches=len(results))
+                    await ctx.send(embed=embed, view=view)
+                else:
+                    await ctx.send(embed=embed)
             else:
                 embed.add_field(
                     name="No Results",
                     value="No matches found in the playlist",
                     inline=False
                 )
-            
-            await ctx.send(embed=embed)
+                await ctx.send(embed=embed)
         except Exception as e:
             logger.error(f"Error searching playlist: {e}")
             await ctx.send(f'Error searching playlist: {str(e)}')
@@ -321,27 +460,7 @@ class PlaylistCommands(commands.Cog):
                 return
 
             view = PlaylistView(items, items_per_page=Config.ITEMS_PER_PAGE)
-            
-            # Create initial embed
-            embed = discord.Embed(
-                title="VLC Playlist",
-                color=discord.Color.blue()
-            )
-            
-            # Show first page
-            current_items = items[:Config.ITEMS_PER_PAGE]
-            playlist_text = ""
-            for i, item in enumerate(current_items, start=1):
-                name = item.get('name', '')
-                icon = MediaUtils.get_media_icon(name)
-                basename = MediaUtils.clean_filename_for_display(name)
-                playlist_text += f"{icon}`{i}` {basename}\n"
-            
-            embed.add_field(
-                name=f"📋 Page 1/{(len(items) + (Config.ITEMS_PER_PAGE - 1)) // Config.ITEMS_PER_PAGE}",
-                value=playlist_text if playlist_text else "No items in playlist",
-                inline=False
-            )
+            embed = view.build_embed()
             
             # Add media library size to footer
             size_bytes = self.watch_service.get_total_media_size() if self.watch_service else 0
@@ -351,7 +470,9 @@ class PlaylistCommands(commands.Cog):
                         return f"{num:.2f} {unit}"
                     num /= 1024.0
                 return f"{num:.2f} PB"
-            embed.set_footer(text=f"📑 Showing items 1-{len(current_items)} of {len(items)} | Media Library Size: {human_size(size_bytes)}")
+            # Preserve the page range and append media size.
+            page_footer = embed.footer.text or ""
+            embed.set_footer(text=f"{page_footer} | Media Library Size: {human_size(size_bytes)}")
             await ctx.send(embed=embed, view=view)
             
         except Exception as e:

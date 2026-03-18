@@ -1,3 +1,13 @@
+## 1.9.12 - 2026-03-18
+
+### Changed
+- **Owner Utility Command Visibility**: Removed owner-only guild management commands from the public `!controls` help embed to reduce discoverability by non-owners.
+- **Search Results UX**: `!search` now uses interactive pagination for multi-page results instead of truncating output in a single embed field.
+
+### Fixed
+- **Search Result Field Overflow Handling**: Search result rendering now enforces character-aware page splitting to stay within Discord embed field limits.
+- **Playlist List Pagination Integrity**: `!list` pagination now respects both item count and character limits, preventing long entries from causing hidden/skipped items on a page.
+
 ## 1.9.11 - 2026-03-16
 
 ### Added
