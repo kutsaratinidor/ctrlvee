@@ -2,9 +2,8 @@
 
 import discord
 from discord.ext import commands, tasks
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-import asyncio
 import logging
 import json
 import os
@@ -31,8 +30,7 @@ SCHEDULE_BACKUP_FILE = "schedule_backup.json"
 
 
 from src.services.tmdb_service import TMDBService
-from ..config import Config
-from ..utils.command_utils import format_cmd, format_cmd_inline
+from ..utils.command_utils import format_cmd_inline
 
 class Scheduler(commands.Cog):
     def __init__(self, bot, vlc_controller):
@@ -101,10 +99,12 @@ class Scheduler(commands.Cog):
                 return
             filename = items[idx].get('name', 'Unknown')
             title = MediaUtils.clean_movie_title(filename)
+            item_uri = items[idx].get('uri')
             duration = MediaUtils.get_media_duration(items[idx])
             entry = {
                 "number": number,
                 "title": title,
+                "uri": item_uri,
                 "dt": dt,
                 "user": ctx.author.id,
                 "channel": ctx.channel.id,
@@ -247,7 +247,7 @@ class Scheduler(commands.Cog):
                         year = int(m.group(1))
                         title = title[:m.start()].strip()
                     if title:
-                        embed = self.tmdb.get_movie_metadata(title, year)
+                        embed = self.tmdb.get_movie_metadata(title, year, file_path=s.get('uri'))
                         if embed:
                             for cid in channel_ids:
                                 channel = self.bot.get_channel(cid)

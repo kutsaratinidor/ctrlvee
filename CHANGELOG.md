@@ -1,3 +1,9 @@
+## 1.9.13 - 2026-03-23
+
+### Fixed
+- **AKA Title Fallback for Metadata Lookup**: When a movie filename contains `AKA` (e.g., `Hachikô monogatari AKA Hachi-ko`), each alternative title is now tried as a separate TMDB search term before giving up, improving hit rate for foreign/dubbed releases with dual titles.
+- **Folder Name Fallback for Metadata Lookup**: If all title-based TMDB searches fail, the parent folder name of the file is parsed and used as a final search candidate. Movie folders typically contain a clean title and year, recovering metadata for files with ambiguous or garbled names.
+
 ## 1.9.12 - 2026-03-18
 
 ### Changed

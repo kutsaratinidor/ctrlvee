@@ -1,7 +1,9 @@
-import os
 import logging
+import os
+import re
 import discord
 import tmdbsimple as tmdb
+from urllib.parse import unquote
 
 class TMDBService:
     def __init__(self, api_key=None):
@@ -68,135 +70,169 @@ class TMDBService:
         
         return score
 
-    def get_movie_metadata(self, title: str, year: int | None = None):
-        """Get movie metadata from TMDB
-        
+    def _find_best_movie_result(self, title: str, year: int | None) -> tuple | None:
+        """Two-pass TMDB movie search (with year → without year).
+
+        Returns (score, result_dict) for the best match, or None if no results found.
+        """
+        search = tmdb.Search()
+        response = None
+        if year:
+            response = search.movie(query=title, year=year)
+            try:
+                res = response.get('results') or []
+                self.logger.info(f"TMDB movie results (with year): count={len(res)} sample={[(r.get('title') or r.get('original_title')) for r in res[:5]]}")
+            except Exception:
+                pass
+            if not response.get('results'):
+                self.logger.info(f"TMDB movie lookup returned no results with year={year}; retrying without year")
+                response = search.movie(query=title)
+                try:
+                    res = response.get('results') or []
+                    self.logger.info(f"TMDB movie results (no year): count={len(res)} sample={[(r.get('title') or r.get('original_title')) for r in res[:5]]}")
+                except Exception:
+                    pass
+        else:
+            response = search.movie(query=title)
+            try:
+                res = response.get('results') or []
+                self.logger.info(f"TMDB movie results: count={len(res)} sample={[(r.get('title') or r.get('original_title')) for r in res[:5]]}")
+            except Exception:
+                pass
+
+        if not response or not response.get('results'):
+            return None
+
+        def norm(s: str) -> str:
+            return ''.join(ch for ch in s.lower() if ch.isalnum())
+
+        target = norm(title)
+        best = None
+        for item in response['results']:
+            item_title = item.get('title') or ''
+            item_original_title = item.get('original_title') or ''
+            n = norm(item_title)
+            n_orig = norm(item_original_title)
+
+            item_year = None
+            rd = item.get('release_date')
+            if rd and len(rd) >= 4 and rd[:4].isdigit():
+                item_year = int(rd[:4])
+
+            score = 0.0
+            if n == target or n_orig == target:
+                score += 100.0
+            elif target in n or n in target or target in n_orig or n_orig in target:
+                score += 50.0
+
+            if year and item_year:
+                if item_year == year:
+                    score += 50.0
+                else:
+                    year_diff = abs(item_year - year)
+                    score += max(0, 50.0 - (year_diff * 10.0))
+            elif not year:
+                score += 5.0
+
+            popularity = item.get('popularity', 0.0)
+            vote_count = item.get('vote_count', 0)
+            if popularity > 0:
+                score += min(20.0, popularity * 0.5)
+            if vote_count > 100:
+                score += min(10.0, vote_count / 100)
+
+            if best is None or score > best[0]:
+                best = (score, item)
+
+        return best
+
+    def _build_embed_from_movie_info(self, movie_info: dict) -> discord.Embed:
+        """Build a Discord embed from a TMDB movie info dict."""
+        embed = discord.Embed(
+            title=movie_info['title'],
+            description=movie_info['overview'],
+            color=discord.Color.blue(),
+            url=f"https://www.themoviedb.org/movie/{movie_info['id']}"
+        )
+        if movie_info.get('release_date'):
+            embed.add_field(name="Release Date", value=movie_info['release_date'], inline=True)
+        if movie_info.get('runtime'):
+            embed.add_field(name="Runtime", value=f"{movie_info['runtime']} minutes", inline=True)
+        if movie_info.get('vote_average'):
+            embed.add_field(name="Rating", value=f"⭐ {movie_info['vote_average']:.1f}/10", inline=True)
+        if movie_info.get('genres'):
+            embed.add_field(name="Genre", value=', '.join([g['name'] for g in movie_info['genres']]), inline=True)
+        if movie_info.get('poster_path'):
+            embed.set_thumbnail(url=f"https://image.tmdb.org/t/p/w500{movie_info['poster_path']}")
+        return embed
+
+    def get_movie_metadata(self, title: str, year: int | None = None, file_path: str | None = None):
+        """Get movie metadata from TMDB.
+
+        Falls back through multiple title candidates when the primary lookup fails:
+        1. Original parsed title (with year, then without)
+        2. Pre-AKA and post-AKA parts when 'AKA' is present in the title
+        3. Parent folder name derived from file_path (typically contains a clean title + year)
+
         Args:
             title: Clean movie title
             year: Optional release year to disambiguate results
+            file_path: Optional file URI or filesystem path; its parent directory name
+                       is used as a last-resort search term.
         """
         if not self.api_key:
             self.logger.warning("No TMDB API key found")
             return None
-        
+
         try:
             self.logger.info(f"TMDB movie lookup: title='{title}' year={year}")
-            search = tmdb.Search()
-            # First attempt: include year if provided; if empty, fallback without year
-            if year:
-                response = search.movie(query=title, year=year)
-                # Log raw result titles for diagnostics
+
+            # Build ordered list of (title, year) candidates to try
+            candidates: list[tuple[str, int | None]] = [(title, year)]
+
+            # AKA splitting: "Original Title AKA Alt Title" → try each part separately
+            aka_parts = re.split(r'\bAKA\b', title, flags=re.IGNORECASE)
+            if len(aka_parts) > 1:
+                for part in aka_parts:
+                    pt = part.strip()
+                    if pt and pt.lower() != title.lower():
+                        candidates.append((pt, year))
+
+            # Folder-name fallback: the parent directory usually has a clean title (+ year)
+            if file_path:
                 try:
-                    res = response.get('results') or []
-                    self.logger.info(f"TMDB movie results (with year): count={len(res)} sample={[ (r.get('title') or r.get('original_title')) for r in res[:5] ]}")
-                except Exception:
-                    pass
-                if not response.get('results'):
-                    self.logger.info(f"TMDB movie lookup returned no results with year={year}; retrying without year")
-                    response = search.movie(query=title)
-                    try:
-                        res = response.get('results') or []
-                        self.logger.info(f"TMDB movie results (no year): count={len(res)} sample={[ (r.get('title') or r.get('original_title')) for r in res[:5] ]}")
-                    except Exception:
-                        pass
-            else:
-                response = search.movie(query=title)
-                try:
-                    res = response.get('results') or []
-                    self.logger.info(f"TMDB movie results: count={len(res)} sample={[ (r.get('title') or r.get('original_title')) for r in res[:5] ]}")
-                except Exception:
-                    pass
+                    clean_path = unquote(str(file_path))
+                    # Strip file:// URI schemes to get a plain filesystem path
+                    if clean_path.startswith('file:///'):
+                        clean_path = clean_path[7:]
+                    elif clean_path.startswith('file://'):
+                        clean_path = clean_path[5:]
+                    folder = os.path.basename(os.path.dirname(clean_path))
+                    if folder and folder not in ('.', '..', ''):
+                        from ..utils.media_utils import MediaUtils
+                        folder_title, folder_year = MediaUtils.parse_movie_filename(folder)
+                        if folder_title and folder_title.lower() not in {c[0].lower() for c in candidates}:
+                            candidates.append((folder_title, folder_year))
+                except Exception as e:
+                    self.logger.debug(f"Folder fallback extraction failed for file_path={file_path!r}: {e}")
 
-            if not response.get('results'):
-                self.logger.info(f"TMDB movie lookup: no results for title='{title}' (year={year})")
-                return None
-            
-            # Choose best match with improved scoring algorithm
-            def norm(s: str) -> str:
-                return ''.join(ch for ch in s.lower() if ch.isalnum())
+            for candidate_title, candidate_year in candidates:
+                if candidate_title != title:
+                    self.logger.info(f"TMDB movie lookup fallback: title='{candidate_title}' year={candidate_year}")
+                result = self._find_best_movie_result(candidate_title, candidate_year)
+                if result is not None:
+                    best_score, movie = result
+                    self.logger.info(
+                        f"TMDB movie match: '{movie.get('title')}' "
+                        f"(orig: '{movie.get('original_title')}') "
+                        f"year={(movie.get('release_date') or '')[:4]} score={best_score:.1f}"
+                    )
+                    self._last_match_score = best_score
+                    movie_info = tmdb.Movies(movie['id']).info()
+                    return self._build_embed_from_movie_info(movie_info)
 
-            target = norm(title)
-            best = None
-            for item in response['results']:
-                item_title = item.get('title') or ''
-                item_original_title = item.get('original_title') or ''
-                n = norm(item_title)
-                n_orig = norm(item_original_title)
-                
-                item_year = None
-                rd = item.get('release_date')
-                if rd and len(rd) >= 4 and rd[:4].isdigit():
-                    item_year = int(rd[:4])
-
-                # Compute score (higher is better)
-                score = 0.0
-                
-                # Title matching: exact match is best, then check original_title (for anime/foreign films)
-                if n == target or n_orig == target:
-                    score += 100.0  # Exact match bonus
-                elif target in n or n in target or target in n_orig or n_orig in target:
-                    score += 50.0  # Partial match bonus
-                else:
-                    score += 0.0  # No match
-                
-                # Year matching: exact year match, then proximity
-                if year and item_year:
-                    if item_year == year:
-                        score += 50.0  # Exact year match
-                    else:
-                        # Penalize by year distance (max penalty at 5+ years)
-                        year_diff = abs(item_year - year)
-                        score += max(0, 50.0 - (year_diff * 10.0))
-                elif not year:
-                    # No year provided, slight bonus for recent releases
-                    score += 5.0
-                
-                # Popularity/quality indicators (helps differentiate similar titles)
-                popularity = item.get('popularity', 0.0)
-                vote_count = item.get('vote_count', 0)
-                if popularity > 0:
-                    score += min(20.0, popularity * 0.5)  # Cap at 20 points
-                if vote_count > 100:
-                    score += min(10.0, vote_count / 100)  # Cap at 10 points
-                
-                if best is None or score > best[0]:
-                    best = (score, item)
-
-            movie = (best[1] if best else response['results'][0])
-            best_score = best[0] if best else 0.0
-            self.logger.info(f"TMDB movie match: '{movie.get('title')}' (orig: '{movie.get('original_title')}') year={(movie.get('release_date') or '')[:4]} score={best_score:.1f}")
-            
-            # Store score for comparison when deciding between movie/TV
-            self._last_match_score = best_score
-            
-            # Get more detailed movie info
-            movie_info = tmdb.Movies(movie['id']).info()
-            
-            # Create embed
-            embed = discord.Embed(
-                title=movie_info['title'],
-                description=movie_info['overview'],
-                color=discord.Color.blue(),
-                url=f"https://www.themoviedb.org/movie/{movie_info['id']}"
-            )
-            
-            # Add movie details
-            if movie_info['release_date']:
-                embed.add_field(name="Release Date", value=movie_info['release_date'], inline=True)
-            if movie_info['runtime']:
-                embed.add_field(name="Runtime", value=f"{movie_info['runtime']} minutes", inline=True)
-            if movie_info['vote_average']:
-                embed.add_field(name="Rating", value=f"⭐ {movie_info['vote_average']:.1f}/10", inline=True)
-            
-            # Add genres if available
-            if movie_info['genres']:
-                embed.add_field(name="Genre", value=', '.join([g['name'] for g in movie_info['genres']]), inline=True)
-            
-            # Add poster if available
-            if movie_info['poster_path']:
-                embed.set_thumbnail(url=f"https://image.tmdb.org/t/p/w500{movie_info['poster_path']}")
-                
-            return embed
+            self.logger.info(f"TMDB movie lookup: no results for title='{title}' (year={year}) after all fallbacks")
+            return None
         except Exception as e:
             self.logger.error(f"Error getting movie metadata for title='{title}' year={year}: {e}")
             return None

@@ -8,7 +8,7 @@ import xml.etree.ElementTree as ET
 from urllib.parse import unquote, urlparse
 from ..utils.media_utils import MediaUtils
 from ..config import Config
-from ..utils.command_utils import format_cmd, format_cmd_inline
+from ..utils.command_utils import format_cmd_inline
 
 # Set up logger for this module
 logger = logging.getLogger(__name__)
@@ -242,7 +242,7 @@ class PlaybackCommands(commands.Cog):
                     tv_score = 0.0
                     
                     if title:
-                        movie_embed = self.tmdb.get_movie_metadata(title, year)
+                        movie_embed = self.tmdb.get_movie_metadata(title, year, file_path=uri)
                         movie_score = getattr(self.tmdb, '_last_match_score', 0.0)
                     
                     if tv_title:
@@ -1402,7 +1402,7 @@ class PlaybackCommands(commands.Cog):
                     tv_score = 0.0
                     
                     if clean_title:
-                        movie_embed = self.tmdb.get_movie_metadata(clean_title, year)
+                        movie_embed = self.tmdb.get_movie_metadata(clean_title, year, file_path=item_uri)
                         movie_score = getattr(self.tmdb, '_last_match_score', 0.0)
                     
                     if tv_title:
@@ -1972,12 +1972,14 @@ class PlaybackCommands(commands.Cog):
 
             # Prefer playlist name for episode parsing when it contains SxxEyy/1x02
             playlist_name = None
+            current_item_uri = None
             try:
                 playlist = self.vlc.get_playlist()
                 if playlist is not None:
                     for item in playlist.findall('.//leaf'):
                         if item.get('current'):
                             playlist_name = item.get('name')
+                            current_item_uri = item.get('uri')
                             break
             except Exception:
                 playlist_name = None
@@ -2016,7 +2018,7 @@ class PlaybackCommands(commands.Cog):
                     tv_score = 0.0
                     
                     if search_title:
-                        movie_embed = self.tmdb.get_movie_metadata(search_title, search_year)
+                        movie_embed = self.tmdb.get_movie_metadata(search_title, search_year, file_path=current_item_uri)
                         movie_score = getattr(self.tmdb, '_last_match_score', 0.0)
                     
                     if tv_title:

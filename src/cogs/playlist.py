@@ -428,7 +428,7 @@ class PlaylistCommands(commands.Cog):
                 
                 # Get parsed title and optional year for metadata search
                 search_title, search_year = MediaUtils.parse_movie_filename(item.get('name'))
-                movie_embed = self.tmdb.get_movie_metadata(search_title, search_year)
+                movie_embed = self.tmdb.get_movie_metadata(search_title, search_year, file_path=item.get('uri'))
                 edition_tag = MediaUtils.extract_edition_tag(item.get('name'))
                 
                 if movie_embed:
