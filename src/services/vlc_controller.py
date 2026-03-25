@@ -3,9 +3,7 @@ import os
 import json
 import xml.etree.ElementTree as ET
 import requests
-import time
 import logging
-from urllib.parse import quote, urlencode
 
 class VLCError(Exception):
     """Base exception for VLC controller errors"""

@@ -1,7 +1,7 @@
 """Helper module to parse and format CHANGELOG.md for Discord display"""
 import os
 import re
-from typing import List, Dict, Tuple
+from typing import List, Dict
 
 
 def parse_changelog(max_versions: int = 2) -> List[Dict]:
