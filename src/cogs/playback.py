@@ -55,6 +55,8 @@ class PlaybackCommands(commands.Cog):
         
         # Track selected subtitle since VLC API doesn't expose it
         self.selected_subtitle_stream_index = None
+        # Track selected audio stream for consistent UI when VLC selection flags are missing
+        self.selected_audio_stream_index = None
         self._initial_scan_pending = True # Guard for startup presence
 
     def _filename_from_uri(self, uri: str | None) -> str | None:
@@ -1309,6 +1311,149 @@ class PlaybackCommands(commands.Cog):
         except Exception as e:
             logger.error(f"subtitle_set error: {e}")
             await ctx.send(f"Error setting subtitles: {e}")
+
+    @commands.command(name='audio_list', aliases=['audios','alist'])
+    @commands.has_any_role(*Config.ALLOWED_ROLES)
+    async def audio_list(self, ctx):
+        """List available audio tracks and indicate which is selected."""
+        try:
+            try:
+                await ctx.trigger_typing()
+            except Exception:
+                pass
+
+            tracks = self.vlc.get_audio_tracks()
+            if tracks is None:
+                await ctx.send("Couldn't retrieve audio tracks from VLC.")
+                return
+            if len(tracks) == 0:
+                embed = discord.Embed(
+                    title="🔊 Audio",
+                    description="No audio tracks reported by VLC for the current media.",
+                    color=discord.Color.orange()
+                )
+                await ctx.send(embed=embed)
+                return
+
+            selected_track = next((tr for tr in tracks if tr.get('selected')), None)
+            if not selected_track and self.selected_audio_stream_index is not None:
+                for tr in tracks:
+                    if tr.get('stream_index') == self.selected_audio_stream_index:
+                        tr['selected'] = True
+                        selected_track = tr
+                        break
+
+            lines = []
+            for i, tr in enumerate(tracks, start=1):
+                mark = "✅" if tr.get('selected') else "⚪"
+                ui_idx = tr.get('index') or i
+                name = tr.get('name') or f"Track {ui_idx}"
+                lines.append(f"{mark} **{ui_idx}.** {name}")
+            list_text = "\n".join(lines[:20]) + ("\n..." if len(lines) > 20 else "")
+            embed = discord.Embed(
+                title="🔊 Audio Tracks",
+                description=list_text,
+                color=discord.Color.blue()
+            )
+
+            if selected_track:
+                cur_idx = selected_track.get('index') or selected_track.get('id')
+                cur_name = selected_track.get('name') or (f"Track {cur_idx}" if cur_idx is not None else "Track")
+                embed.add_field(name="Current", value=f"✅ {cur_name} ({cur_idx})", inline=True)
+            else:
+                embed.add_field(name="Current", value="⚪ Unknown", inline=True)
+
+            embed.add_field(
+                name="Usage",
+                value=(
+                    f"Use {format_cmd_inline('audio_set <number>')} to select by position."
+                ),
+                inline=False
+            )
+            await ctx.send(embed=embed)
+        except Exception as e:
+            logger.error(f"audio_list error: {e}")
+            await ctx.send(f"Error listing audio tracks: {e}")
+
+    @commands.command(name='audio_set', aliases=['audioset','audioid'])
+    @commands.has_any_role(*Config.ALLOWED_ROLES)
+    async def audio_set(self, ctx, track_id: str):
+        """Select a specific audio track by position (from audio_list)."""
+        try:
+            if not track_id:
+                await ctx.send(f"Usage: {format_cmd_inline('audio_set <number>')}")
+                return
+
+            tracks = self.vlc.get_audio_tracks() or []
+            if not tracks:
+                await ctx.send(f"No audio tracks found. Use {format_cmd_inline('audio_list')} to check availability.")
+                return
+
+            try:
+                pos_index = int(track_id)
+            except Exception:
+                await ctx.send(f"Please provide a numeric position. Use {format_cmd_inline('audio_list')} to see available tracks.")
+                return
+
+            if pos_index < 1 or pos_index > len(tracks):
+                await ctx.send(f"Position out of range. There are {len(tracks)} audio tracks. Use {format_cmd_inline('audio_list')} to see them.")
+                return
+
+            tid = None
+            stream_idx = None
+            selected_track = None
+            for tr in tracks:
+                if tr.get('index') == pos_index:
+                    tid = tr.get('id')
+                    stream_idx = tr.get('stream_index')
+                    selected_track = tr
+                    break
+
+            if tid is None:
+                selected_track = tracks[pos_index - 1]
+                tid = selected_track.get('id')
+                stream_idx = selected_track.get('stream_index')
+
+            ok = False
+            if stream_idx is not None:
+                ok = self.vlc.set_audio_track(stream_idx)
+                if ok:
+                    self.selected_audio_stream_index = stream_idx
+
+            if not ok and tid is not None:
+                ok = self.vlc.set_audio_track(tid)
+                if ok:
+                    self.selected_audio_stream_index = stream_idx if stream_idx is not None else tid
+
+            if not ok:
+                ok = self.vlc.set_audio_track(pos_index - 1)
+                if ok:
+                    self.selected_audio_stream_index = stream_idx if stream_idx is not None else (pos_index - 1)
+                else:
+                    ok = self.vlc.set_audio_track(pos_index)
+                    if ok:
+                        self.selected_audio_stream_index = stream_idx if stream_idx is not None else pos_index
+
+            if not ok:
+                embed = discord.Embed(
+                    title="🔊 Audio",
+                    description=f"Failed to set audio track {pos_index}. Use {format_cmd_inline('audio_list')} to verify available tracks.",
+                    color=discord.Color.orange()
+                )
+                await ctx.send(embed=embed)
+                return
+
+            fallback_name = selected_track.get('name') if selected_track else None
+            fallback_pos = selected_track.get('index') if selected_track else pos_index
+            embed = discord.Embed(
+                title="🔊 Audio",
+                description=f"Selected audio {fallback_pos}: {fallback_name or 'Unknown'}",
+                color=discord.Color.green()
+            )
+            await ctx.send(embed=embed)
+        except Exception as e:
+            logger.error(f"audio_set error: {e}")
+            await ctx.send(f"Error setting audio track: {e}")
 
     @commands.command(name='status', aliases=['np', 'nowplaying'])
     @commands.has_any_role(*Config.ALLOWED_ROLES)

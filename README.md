@@ -285,6 +285,10 @@ python --version
    - `!sub_set <number|off>` - Select subtitles by position (e.g., `2` for 2nd subtitle), or disable with `off`
    - `!sub_next` / `!sub_prev` - Cycle to next/previous subtitle track (when supported by VLC)
 
+   **Audio Tracks:**
+   - `!audio_list` - List available audio tracks and show which one is selected
+   - `!audio_set <number>` - Select audio by position (e.g., `2` for 2nd audio stream)
+
    **Queue Management:**
    - `!queue_next <number>` - Queue a playlist item to play next (temporarily disables shuffle if needed)
    - `!queue_status` - Show current queue with item titles and playlist positions

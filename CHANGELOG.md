@@ -1,3 +1,11 @@
+## 1.9.14 - 2026-04-16
+
+### Added
+- **Audio Track Selection Commands**: Added `!audio_list` and `!audio_set <number>` to support selecting among multiple embedded audio streams (for example, English dub vs Japanese).
+
+### Changed
+- **Audio Command UX**: Updated controls/help text and README command reference to document audio track listing and direct selection.
+
 ## 1.9.13 - 2026-03-23
 
 ### Fixed

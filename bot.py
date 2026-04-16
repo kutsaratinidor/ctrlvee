@@ -1304,8 +1304,11 @@ async def controls(ctx):
 `{prefix}sub_list` - List available subtitle tracks and show which one is selected
 `{prefix}sub_set <number|off>` - Select subtitles by position (e.g., `2` for 2nd subtitle), or disable with `off`
 `{prefix}sub_next` / `{prefix}sub_prev` - Cycle to next/previous subtitle track (when supported by VLC)
+    `{prefix}audio_list` - List available audio tracks (e.g., English, Japanese)
+    `{prefix}audio_set <number>` - Select audio by position (e.g., `2` for 2nd audio track)
 
 Tip: Use `{prefix}sub_list` first, then `{prefix}sub_set 2` to select the 2nd subtitle, or `{prefix}sub_set off` to disable.
+    Tip: Use `{prefix}audio_list` first, then `{prefix}audio_set 2` to select the 2nd audio stream.
         """
         embed.add_field(name="💬 Subtitles", value=subtitles_commands, inline=False)
 

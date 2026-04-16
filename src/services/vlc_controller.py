@@ -575,6 +575,179 @@ class VLCController:
         """Cycle to previous subtitle track, if supported by VLC."""
         return self.set_subtitle_track("-1")
 
+    # =======================
+    # Audio track management
+    # =======================
+    def set_audio_track(self, value: int | str) -> bool:
+        """Set VLC audio track by absolute id/index or relative step.
+
+        Accepts an integer track value (e.g., 0, 1, 2, ...), or a relative
+        step string like "+1" or "-1" when supported by VLC.
+
+        Returns True if the command was acknowledged by VLC.
+        """
+        try:
+            self.logger.info(f"Attempting to set audio track to value={value}")
+            res = self.send_command('audio_track', {'val': str(value)})
+            ok = res is not None
+            if ok:
+                self.logger.info(f"Set VLC audio track val={value} - SUCCESS")
+            else:
+                self.logger.warning(f"VLC did not acknowledge audio_track val={value}")
+            return ok
+        except Exception as e:
+            self.logger.error(f"Error setting VLC audio track to {value}: {e}")
+            return False
+
+    def get_audio_tracks(self) -> Optional[list[dict]]:
+        """Return available audio tracks with selection and display info.
+
+        Parses VLC status.xml for stream information to build an audio track list.
+        Each track dict has: { 'id': int, 'name': str, 'selected': bool, 'index': int, 'stream_index': int }
+
+        Returns None if status cannot be fetched.
+        """
+        try:
+            status = self.get_status()
+            if status is None:
+                return None
+
+            node = status.find('audio')
+            tracks: list[dict] = []
+            if node is not None:
+                for t in node.findall('track'):
+                    raw_id = t.get('id')
+                    tid = None
+                    if raw_id is not None:
+                        try:
+                            tid = int(str(raw_id).strip())
+                        except Exception:
+                            tid = None
+                    name_attr = t.get('name')
+                    text_val = (t.text or '').strip()
+                    name = name_attr if name_attr else (text_val if text_val else f"Track {raw_id if raw_id is not None else ''}")
+                    selected = (str(t.get('selected', '')).strip().lower() in {'true', '1', 'yes'})
+                    tracks.append({'id': tid, 'name': name, 'selected': selected})
+                    self.logger.debug(f"Track from <audio>: id={tid}, name={name}, selected={selected}")
+
+            streams: list[Dict[str, Any]] = []
+            try:
+                info_root = status.find('information')
+                if info_root is not None:
+                    for category in info_root.findall('category'):
+                        cname = (category.get('name') or '')
+                        lcname = cname.lower()
+                        stream_index = None
+                        try:
+                            import re
+                            m = re.search(r'stream\s*(\d+)', lcname)
+                            if m:
+                                stream_index = int(m.group(1))
+                        except Exception:
+                            stream_index = None
+
+                        imap: Dict[str, str] = {}
+                        for info in category.findall('info'):
+                            k = (info.get('name') or '')
+                            v = (info.text or '')
+                            imap[k] = v
+
+                        type_val = (imap.get('Type') or imap.get('type') or '').strip().lower()
+                        if 'stream' in lcname and type_val in {'audio'}:
+                            raw_id = (
+                                imap.get('Track id') or imap.get('Track ID') or imap.get('track id') or
+                                imap.get('TrackID') or imap.get('trackid') or imap.get('ID') or imap.get('id')
+                            )
+                            tid = None
+                            if raw_id:
+                                try:
+                                    tid = int(str(raw_id).strip())
+                                except Exception:
+                                    tid = None
+
+                            lang = (imap.get('Language') or imap.get('language') or '').strip()
+                            desc = (imap.get('Description') or imap.get('description') or '').strip()
+                            codec = (imap.get('Codec') or imap.get('codec') or '').strip()
+                            channels = (
+                                imap.get('Channels') or imap.get('channels') or
+                                imap.get('Channel(s)') or imap.get('channel(s)') or ''
+                            ).strip()
+
+                            parts = [p for p in [lang, desc or None, codec or None, (f"{channels}ch" if channels else None)] if p]
+                            name = ' / '.join(parts) if parts else (cname or 'Audio Stream')
+                            streams.append({'id': tid, 'name': name, 'stream_index': stream_index})
+            except Exception as e:
+                self.logger.debug(f"Audio streams parse failed: {e}")
+
+            filtered_tracks = []
+            for tr in tracks:
+                tid = tr.get('id')
+                if tid is not None and tid < 0:
+                    continue
+                filtered_tracks.append(tr)
+            tracks = filtered_tracks
+
+            if streams:
+                try:
+                    streams.sort(key=lambda s: (s.get('stream_index') is None, s.get('stream_index')))
+                except Exception:
+                    pass
+
+                id_to_idx: Dict[int, int] = {}
+                name_to_idx: Dict[str, int] = {}
+                id_to_stream_idx: Dict[int, int] = {}
+                ui_counter = 1
+                for s in streams:
+                    sid = s.get('id')
+                    sindex = s.get('stream_index')
+                    if sid is not None and sid < 0:
+                        continue
+                    if sid is not None:
+                        id_to_idx[sid] = ui_counter
+                        if sindex is not None:
+                            id_to_stream_idx[sid] = sindex
+                    nm = (s.get('name') or '').strip().lower()
+                    if nm:
+                        name_to_idx[nm] = ui_counter
+                    ui_counter += 1
+
+                for tr in tracks:
+                    ui_idx = None
+                    stream_idx = None
+                    tid = tr.get('id')
+                    if tid is not None and tid in id_to_idx:
+                        ui_idx = id_to_idx[tid]
+                        stream_idx = id_to_stream_idx.get(tid)
+                    else:
+                        nm = (tr.get('name') or '').strip().lower()
+                        if nm and nm in name_to_idx:
+                            ui_idx = name_to_idx[nm]
+                    tr['index'] = ui_idx
+                    tr['stream_index'] = stream_idx
+
+                if not tracks:
+                    idx = 1
+                    for s in streams:
+                        if s.get('id') is not None and s.get('id') < 0:
+                            continue
+                        tracks.append({
+                            'id': s.get('id'),
+                            'name': s.get('name'),
+                            'selected': False,
+                            'index': idx,
+                            'stream_index': s.get('stream_index')
+                        })
+                        idx += 1
+            else:
+                for idx, tr in enumerate(tracks, start=1):
+                    tr['index'] = idx
+
+            self.logger.debug(f"get_audio_tracks returning {len(tracks)} tracks")
+            return tracks
+        except Exception as e:
+            self.logger.error(f"get_audio_tracks error: {e}")
+            return None
+
     def get_subtitle_tracks(self) -> Optional[list[dict]]:
         """Return available subtitle tracks with selection info.
 
