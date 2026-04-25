@@ -1,390 +1,238 @@
-# CtrlVee - a Discord VLC Bot
+# CtrlVee
 
-A Discord bot that controls VLC media player, manages playlists, provides movie metadata integration, and features an intelligent queue system on Windows, macOS, and Linux. This idea was due to a need for users on a discord server to be able to control the screen shared VLC setup I have even if I am away. It allows more options for them for viewing instead of just relying on the randomness of the playlist. It also allows me to not be around or remoting into that computer all the time. I have not seen this to be available and it makes sense because you need to have local access to the host where VLC is running. I used Github Copilot to build this and refine the bot. It used to be just one single python file, but after asking it to be refactored, it rebuilt and implemented it in a more proper way. 
+A Discord bot that controls a local VLC player and exposes playback controls, playlist search, queueing, scheduling, watch-folder ingestion, and metadata lookups.
 
+Current app version: `1.9.14`.
 
+## What It Does
 
-## Features
-- **VLC Playback Control**
-   ...existing code...
+- Controls VLC playback from Discord (`play`, `pause`, `next`, `rewind`, speed, shuffle, etc.)
+- Lets users browse/search the active VLC playlist with paginated embeds
+- Supports a soft queue system that works with VLC shuffle behavior
+- Schedules playlist items using Philippines time (`Asia/Manila`)
+- Watches folders for new media and enqueues files automatically
+- Enriches now-playing/status messages with TMDB movie/TV metadata
+- Optionally shows recent downloads from one or more Radarr instances
+- Optionally auto-joins a voice channel so the bot stays visibly present
 
-- **Scheduling Movies**
-   - Schedule a movie by playlist number and PH time with `!schedule <number> <YYYY-MM-DD> <HH:MM>`
-   - Prevents double-booking the same movie at the same time
-   - Shows movie duration in schedule and confirmation
-   - Schedules persist across bot restarts
-   - When a scheduled movie is played, the bot posts a TMDB metadata embed
-   - `!schedules` to list all upcoming scheduled movies
-   - `!unschedule <number>` to remove all schedules for a movie
+## Requirements
 
-- **VLC Playback Control**
-  - Basic controls (play, pause, stop, restart)
-  - Navigate playlist (next, previous)
-  - Jump to specific items using numbers
-  - Rewind playback with customizable seconds
-  - Shuffle mode control (enable, disable, toggle)
-  - Progress display with timestamps and enhanced status
+- Python `3.10+`
+- VLC Media Player with HTTP interface enabled
+- A Discord bot token
+- TMDB API key (recommended; required for full metadata features)
 
-- **Intelligent Queue System**
-  - Queue items to play next with automatic shuffle handling
-  - Soft queue implementation compatible with VLC 3.x
-  - Automatic shuffle restoration after queued items finish
-  - Queue persistence across bot restarts
-  - Real-time queue status with item titles and positions
+## Quick Setup
 
-- **Movie Information**
-  - Automatic movie metadata lookup via TMDB
-  - Movie posters, release dates, and ratings
-  - Direct links to TMDB movie pages
+1. Clone this repository.
+2. Create and activate a virtual environment.
+3. Install dependencies.
+4. Copy `template.env` to `.env` and configure values.
+5. Start the bot.
 
--- **Playlist Management**
-   - View and navigate existing VLC playlist with pagination
-   - List all items with interactive navigation buttons
-   - Quick replay of items using item numbers
-   - Search and filter playlist contents
-   - Play search results directly
-   - **Media Library Size**: See the total size of all watched folders in `!list` and `!status` commands
-  
-- **Enhanced State Monitoring**
-  - Track VLC state changes with cooldown protection
-  - Notify about manual interventions and queue transitions
-  - Configurable notification channel
-  - State change history and queue event tracking
-  - Automatic detection of media ending and queue handling
-  
-- **Watch Folders (Optional)**
-   - Polls configured folders for new media files
-   - Automatically enqueues discovered files into VLC
-   - Lightweight polling (no extra dependencies)
-   - **Hot reloading**: Add new folders to `.env` and they are picked up live, no restart needed
-   - **Discord command to add folders**: Use `!watch_add <path>` to validate and add a folder directly; updates `.env` automatically
-   - **Progress logging**: See N/total progress for each file enqueued in logs
-   - If exactly one item is added in a scan, the bot posts a TMDB metadata embed for it (when TMDB is configured)
+```bash
+# 1) create venv
+python3 -m venv .venv
 
-- **Playlist Autosave (Optional)**
-   - Periodically saves the current VLC playlist to a file
-   - If `PLAYLIST_AUTOSAVE_FILE` ends with `.xspf`, a valid XSPF playlist is written (directly loadable in VLC)
-   - Otherwise a JSON export is written with basic fields (id, name, current)
-   - Control frequency with `PLAYLIST_AUTOSAVE_INTERVAL` (seconds; minimum 10)
+# 2) activate
+# macOS/Linux
+source .venv/bin/activate
+# Windows PowerShell
+# .\.venv\Scripts\Activate.ps1
 
-## Screenshots
+# 3) install deps
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 
-### Bot Commands and Help
-<img src="screenshots/help-command.png" alt="Bot Help Command" width="400">
+# 4) configure env
+cp template.env .env
 
-
-
-## Prerequisites
-
-- Python 3.6 or higher (Windows, macOS, or Linux)
-- VLC media player installed (Windows, macOS, or Linux)
-- Discord bot token
-
-## Python Installation
-
-If you do not have Python 3 installed, follow these steps for your platform **before** continuing:
-
-### Linux (Ubuntu/Debian)
-```sh
-sudo apt update
-sudo apt install python3 python3-venv python3-pip
+# 5) run
+python bot.py
 ```
 
-### Linux (Fedora)
-```sh
-sudo dnf install python3 python3-venv python3-pip
+## VLC Setup
+
+Enable VLC's web interface before running the bot:
+
+1. Open VLC settings.
+2. Go to main interface options.
+3. Enable `Web` interface.
+4. Set password (if desired) and restart VLC.
+
+Use `.env` values for connection:
+- `VLC_HOST` (default `localhost`)
+- `VLC_PORT` (default `8080`)
+- `VLC_PASSWORD` (default `vlc`)
+
+## Discord Setup
+
+In Discord Developer Portal, ensure your bot has:
+
+- `MESSAGE CONTENT INTENT` enabled
+- Permissions to read/send messages and embeds in the channels you use
+
+## Configuration
+
+Edit `.env` (starting from `template.env`).
+
+### Required or Strongly Recommended
+
+- `DISCORD_TOKEN`: Discord bot token (required)
+- `ALLOWED_ROLES`: Roles that can run protected commands; supports role names, role IDs, and role mentions
+- `TMDB_API_KEY`: Recommended for metadata embeds and lookups
+
+### Core Behavior
+
+- `DISCORD_COMMAND_PREFIX` (default `!`)
+- `ITEMS_PER_PAGE` (default `20`)
+- `QUEUE_BACKUP_FILE` (default `queue_backup.json`)
+- `PLAYLIST_AUTOSAVE_FILE` + `PLAYLIST_AUTOSAVE_INTERVAL` (optional autosave)
+- `KOFI_URL` (optional support link in embeds)
+
+### Watch Folders
+
+- `WATCH_FOLDERS`: comma/semicolon-separated absolute paths
+- `WATCH_FOLDERS_FILE`: optional file containing one path per line (takes precedence over `WATCH_FOLDERS`)
+- `WATCH_SCAN_INTERVAL` (default `10`)
+- `WATCH_STABLE_AGE` (default `2`)
+- `WATCH_ENQUEUE_ON_START` (default `true`)
+- `WATCH_ANNOUNCE_CHANNEL_ID`: comma-separated channel IDs
+- `WATCH_ANNOUNCE_ROLE_ID`: optional role mention ID for schedule announcements
+- `WATCH_ANNOUNCE_MAX_ITEMS`
+- `WATCH_ANNOUNCE_THROTTLE_MS`
+- `SUPPRESS_SINGLE_TV`
+
+### Presence and Periodic Announcements
+
+- `ENABLE_PRESENCE`
+- `PRESENCE_UPDATE_THROTTLE`
+- `ENABLE_PRESENCE_PROGRESS`
+- `PRESENCE_PROGRESS_UPDATE_INTERVAL`
+- `PERIODIC_ANNOUNCE_ENABLED`
+- `PERIODIC_ANNOUNCE_INTERVAL`
+
+### Voice Auto-Join / Reconnect
+
+- `ENABLE_VOICE_JOIN`
+- `VOICE_JOIN_CHANNEL_ID`
+- `VOICE_AUTO_JOIN_ON_START`
+- `VOICE_MAX_RECONNECTS`
+- `VOICE_RECONNECT_WINDOW`
+- `VOICE_RECONNECT_COOLDOWN`
+- `VOICE_CONNECT_TIMEOUT`
+- `VOICE_CONNECT_RETRY_DELAY`
+- `VOICE_ERROR_RETRY_DELAY`
+- `VOICE_INITIAL_RETRIES`
+- `DISCORD_VOICE_LOG_LEVEL`
+- `VOICE_INITIAL_SETTLE_SECONDS`
+- `VOICE_DEBOUNCE_SECONDS`
+- `ENABLE_VOICE_GUARD`
+- `ENABLE_VOICE_EVENTS_RECONNECT`
+
+### Radarr (Optional)
+
+Single instance:
+
+```bash
+RADARR_HOST=localhost
+RADARR_PORT=7878
+RADARR_API_KEY=your_key
+RADARR_USE_SSL=false
 ```
 
-### macOS (with Homebrew)
-```sh
-brew install python
+Multi-instance:
+
+```bash
+RADARR_INSTANCES=main,anime
+
+RADARR_MAIN_HOST=localhost
+RADARR_MAIN_PORT=7878
+RADARR_MAIN_API_KEY=your_main_key
+RADARR_MAIN_USE_SSL=false
+RADARR_MAIN_DISPLAY_NAME=Main Movies
+
+RADARR_ANIME_HOST=radarr-anime.local
+RADARR_ANIME_PORT=7878
+RADARR_ANIME_API_KEY=your_anime_key
+RADARR_ANIME_USE_SSL=true
+RADARR_ANIME_DISPLAY_NAME=Anime
 ```
 
-### Windows
-1. Download Python from https://www.python.org/downloads/
-2. Run the installer and **check the box that says "Add Python to PATH"**
-3. Complete the installation
+## Commands
 
-After installing, verify with:
-```sh
-python3 --version
-# or on Windows
-python --version
-```
+Prefix shown as `!` below; replace with your configured `DISCORD_COMMAND_PREFIX`.
 
-### Discord Bot Setup
-1. Go to [Discord Developer Portal](https://discord.com/developers/applications)
-2. Create a new application or select your existing one
-3. Go to the "Bot" section
-4. Enable the following Privileged Intents:
-   - MESSAGE CONTENT INTENT
-5. Under "Bot Permissions", enable:
-   - Read Messages/View Channels
-   - Send Messages
-   - Embed Links
-   - Read Message History
+### Playback
 
-### VLC Setup
-1. Open VLC Media Player
-2. Go to Preferences (or Settings)
-3. Enable the Web Interface:
-   - On macOS: VLC > Preferences > Interface > Main Interfaces > check "Web"
-   - On Windows: Tools > Preferences > Interface > Main Interfaces > check "Web"
-4. Set a password (optional but recommended)
-5. Restart VLC after making these changes
+- `!play`, `!pause`, `!stop`, `!restart`
+- `!next`, `!previous`
+- `!rewind [seconds]`, `!forward [seconds]`
+- `!play_num <number>`
+- `!shuffle`, `!shuffle_on`, `!shuffle_off`
+- `!speed <rate|preset>`
+- `!speedstatus`
 
+### Playlist
 
-### macOS/Linux Specific Setup
-- On macOS: Install VLC from the official website or using Homebrew: `brew install --cask vlc`
-- On Linux: Install VLC using your package manager, e.g. `sudo apt install vlc` (Debian/Ubuntu) or `sudo dnf install vlc` (Fedora)
-- Make sure VLC is installed in your system PATH
+- `!list`
+- `!search <query>`
+- `!play_search <query>`
+- `!cleanup` (aliases: `plcleanup`, `cleanup_missing`) removes missing files from VLC playlist
 
-## Installation
+### Subtitles and Audio
 
-1. Clone this repository
+- `!sub_list`
+- `!sub_set <number|off>`
+- `!sub_next`, `!sub_prev`
+- `!audio_list`
+- `!audio_set <number>`
 
+### Queue
 
-2. Set up Python environment:
-   ```sh
-   # Create a virtual environment (recommended)
-   python3 -m venv venv
-   
-   # Activate the virtual environment
-   # On Windows:
-   .\venv\Scripts\activate
-   # On macOS/Linux:
-   source venv/bin/activate
-   ```
+- `!queue_next <number>`
+- `!queue_status`
+- `!clear_queue`
+- `!remove_queue <N|#N>`
 
-3. Install Python dependencies:
-   ```sh
-   # Make sure pip is up to date
-   python3 -m pip install --upgrade pip
+### Scheduling
 
-   # Install all required packages
-   python3 -m pip install -r requirements.txt
+- `!schedule <number> <YYYY-MM-DD> <HH:MM>`
+- `!schedules`
+- `!unschedule <number>`
 
-   # If you get "no module named audioop" error (rare, usually on Linux), run:
-   python3 -m pip install audioop-lts
-   ```
+### Info / Utility
 
-4. Set up your configuration:
-   ```bash
-   # Copy the template environment file
-   cp template.env .env
-   
-   # Edit the .env file with your settings
-   nano .env   # or use any text editor
-   ```
-   
-   Required Configuration:
-   - `DISCORD_TOKEN`: Your Discord bot token
-   - `TMDB_API_KEY`: Your TMDB API key (optional, but recommended for movie metadata)
-   
-   Optional Configuration:
-   - `ALLOWED_ROLES`: Comma-separated list of role names and/or role IDs that can control playback (default: "Theater Host"). Example: `ALLOWED_ROLES=Theater Host,123456789012345678`
-   - `VLC_HOST`: VLC HTTP interface host (default: localhost)
-   - `VLC_PORT`: VLC HTTP interface port (default: 8080)
-   - `VLC_PASSWORD`: VLC HTTP interface password (default: vlc)
-   - `QUEUE_BACKUP_FILE`: Path to queue backup file (default: queue_backup.json)
-   - `ITEMS_PER_PAGE`: Number of items per page in playlist view (default: 20)
-   - `WATCH_FOLDERS`: Comma- or semicolon-separated absolute paths to watch (optional). If a path contains a comma, wrap it in double quotes.
-   - `WATCH_FOLDERS_FILE`: Optional path to a file with one watch folder per line (useful for long lists or commas in names). If set, it overrides `WATCH_FOLDERS`.
-   - `WATCH_SCAN_INTERVAL`: Poll interval in seconds (default: 10)
-   - `WATCH_ENQUEUE_ON_START`: If true, enqueue files discovered on the first scan (default: true)
-   - `WATCH_ANNOUNCE_CHANNEL_ID`: Comma-separated list of Discord channel IDs for adding-file announcements (e.g. `123456789,987654321`). Set to 0 or leave empty to disable. **(v1.0.0: Now supports multiple channels!)**
-   - `WATCH_ANNOUNCE_MAX_ITEMS`: Max file paths to show per announcement (default: 10)
-   - `DISCORD_COMMAND_PREFIX`: The command prefix for bot commands (default: `!`). You can set this to any string, e.g. `!!` or `$`. Multi-character prefixes are supported.
-   - `PLAYLIST_AUTOSAVE_FILE`: Path (absolute or relative to project root) to save the current playlist. If it ends with `.xspf`, an XSPF playlist is written; otherwise JSON. Leave blank to disable.
-   - `PLAYLIST_AUTOSAVE_INTERVAL`: Interval in seconds between autosaves (min 10; default 300)
-   
-   **Radarr Integration (Optional):**
-   
-   Configure one or more Radarr instances to view recently downloaded movies. Supports both single-instance and multi-instance setups.
-   
-   *Single Instance:*
-   ```bash
-   RADARR_HOST=localhost
-   RADARR_PORT=7878
-   RADARR_API_KEY=your_api_key_here
-   RADARR_USE_SSL=false
-   ```
-   
-   *Multiple Instances:*
-   ```bash
-   # Define instance names (comma-separated)
-   RADARR_INSTANCES=main,asian,pinoy,anime
-   
-   # Configure each instance
-   RADARR_MAIN_HOST=localhost
-   RADARR_MAIN_PORT=7878
-   RADARR_MAIN_API_KEY=your_main_api_key
-   RADARR_MAIN_USE_SSL=false
-   RADARR_MAIN_DISPLAY_NAME=Mainstream Movies
-   
-   RADARR_ASIAN_HOST=radarr-asian.local
-   RADARR_ASIAN_PORT=7878
-   RADARR_ASIAN_API_KEY=your_asian_api_key
-   RADARR_ASIAN_USE_SSL=true
-   RADARR_ASIAN_DISPLAY_NAME=Asian Cinema
-   
-   RADARR_PINOY_HOST=radarr-pinoy.local
-   RADARR_PINOY_PORT=7878
-   RADARR_PINOY_API_KEY=your_pinoy_api_key
-   RADARR_PINOY_USE_SSL=false
-   RADARR_PINOY_DISPLAY_NAME=Pinoy Movies
-   
-   RADARR_ANIME_HOST=radarr-anime.local
-   RADARR_ANIME_PORT=7878
-   RADARR_ANIME_API_KEY=your_anime_api_key
-   RADARR_ANIME_USE_SSL=false
-   RADARR_ANIME_DISPLAY_NAME=Anime Movies
-   ```
+- `!status`
+- `!version`
+- `!changelog` (aliases: `changes`, `whatsnew`)
+- `!controls`
 
-      - `KOFI_URL`: (optional) A full https:// URL to your Ko‑fi or support page. When set, certain embeds (status and notification embeds) will display a "Support CtrlVee" field with a clickable link. Leave blank to disable.
+### Watch Folders
 
-         Example:
-         ```bash
-         KOFI_URL=https://ko-fi.com/yourpage
-         ```
+- `!watch_add <path>`
 
-## Usage
+### Radarr
 
-1. Start the bot:
-   ```
-   python bot.py
-   ```
-   The command prefix can be customized via the `DISCORD_COMMAND_PREFIX` variable in your `.env` file. For example, set `DISCORD_COMMAND_PREFIX=!!` to use `!!play`, `!!pause`, etc.
+- `!radarr_recent [instance|all] [days] [limit]`
 
+### Owner-Only
 
-2. Available commands in Discord:
-
-   **Playback Controls:**
-   - `!play` - Start/resume playback
-   - `!pause` - Pause playback
-   - `!stop` - Stop playback
-   - `!next` - Play next item
-   - `!previous` - Play previous item
-   - `!restart` - Restart current file from beginning
-   - `!rewind [seconds]` - Rewind by specified seconds (default: 10)
-   - `!forward [seconds]` - Fast forward by specified seconds (default: 10)
-   - `!play_num <number>` - Play specific item by number
-   - `!shuffle` - Toggle shuffle mode on/off
-   - `!shuffle_on` - Enable shuffle mode
-   - `!shuffle_off` - Disable shuffle mode
-      - `!speed <rate|preset>` - Set playback speed (examples: `1.5`, `1.25`, or presets like `normal`); aliases: `spd`, `speed15`, `speednorm`
-      - `!speedstatus` - Show current playback rate (alias: `spdstatus`)
-
-   **Playlist Management:**
-   - `!list` - Show playlist with interactive navigation (⏮️, ◀️, ▶️, ⏭️ buttons)
-   - `!search <query>` - Search playlist
-   - `!play_search <query>` - Search and play first match
-
-   **Subtitles:**
-   - `!sub_list` - List available subtitle tracks and show which one is selected
-   - `!sub_set <number|off>` - Select subtitles by position (e.g., `2` for 2nd subtitle), or disable with `off`
-   - `!sub_next` / `!sub_prev` - Cycle to next/previous subtitle track (when supported by VLC)
-
-   **Audio Tracks:**
-   - `!audio_list` - List available audio tracks and show which one is selected
-   - `!audio_set <number>` - Select audio by position (e.g., `2` for 2nd audio stream)
-
-   **Queue Management:**
-   - `!queue_next <number>` - Queue a playlist item to play next (temporarily disables shuffle if needed)
-   - `!queue_status` - Show current queue with item titles and playlist positions
-   - `!clear_queue` - Clear all queue tracking
-   - `!remove_queue <N|#N>` - Remove by queue order (N) or playlist number (#N)
-
-   **Scheduling:**
-   - `!schedule <number> <YYYY-MM-DD> <HH:MM>` - Schedule a movie by playlist number and PH time
-   - `!schedules` - List all upcoming scheduled movies
-   - `!unschedule <number>` - Remove all schedules for a movie
-
-   **Status & Information:**
-   - `!status` - Show current VLC status (state, volume, playing item)
-   - `!version` - Show bot version and key config info
-   - `!controls` - Show this help message
-
-   **Watch Folders:**
-   - `!watch_add <path>` - Add a new watch folder. Validates the directory exists and updates `.env` immediately.
-
-   **Radarr Integration:**
-   - `!radarr_recent [instance|all] [days] [limit]` - Show recently downloaded movies from configured Radarr instance(s)
-     - Examples: `!radarr_recent` (all instances, 7 days), `!radarr_recent asian 14 15` (asian instance, 14 days, max 15)
-
-   **Notification Settings:**
-   - `!set_notification_channel` - Set current channel for VLC state notifications
-   - `!unset_notification_channel` - Disable notifications
-   - `!show_notification_channel` - Show notification settings
-
-## Known Issues
-
-- **Metadata Matching**: Movie metadata from TMDB may not always match the actual media file. This occurs due to how media file names are parsed and handled by the system. File names with non-standard formatting, special characters, year mismatches, or quality indicators (like "1080p", "BluRay") can interfere with accurate metadata retrieval. This is a known limitation that we plan to improve in future versions by implementing better file name parsing and fuzzy matching algorithms.
-
-
-
-## Recent Improvements
-
-- **v1.9.5 (Breaking Change): WATCH_FOLDERS_FILE precedence**
-   - If `WATCH_FOLDERS_FILE` is set, the bot uses it exclusively and ignores `WATCH_FOLDERS`.
-   - If the file path is invalid or missing, no watch folders are loaded.
-   - Quote paths with commas in `WATCH_FOLDERS` using double quotes.
-
-- **v1.5.0: Playlist Autosave + Watch-Folder Robustness**
-   - New autosave feature: save to XSPF (preferred) or JSON periodically via `PLAYLIST_AUTOSAVE_FILE` and `PLAYLIST_AUTOSAVE_INTERVAL`
-   - Info-level logs indicate when and where the playlist is saved
-   - More robust watch-folder hot reload and prevention of duplicate enqueues when changing folder order
-
-- **v1.0.0 (Breaking Change): Multi-Channel Announcements & Config Refactor**
-   - Announcements can now be sent to multiple Discord channels. Set `WATCH_ANNOUNCE_CHANNEL_ID` in `.env` to a comma-separated list of channel IDs.
-   - The config variable for announce channels is now always loaded dynamically at runtime.
-   - The bot prints the resolved announce channel IDs as a list on startup for easier debugging.
-   - **Migration:** Update your `.env` to use `WATCH_ANNOUNCE_CHANNEL_ID=123,456,...` (comma-separated, no spaces). Update any custom code to use `Config.get_announce_channel_ids()`.
-   - **Breaking:** `Config.WATCH_ANNOUNCE_CHANNEL_ID` is no longer a static class variable; use the static method instead.
-
-- **Enhanced Queue System**: Implemented intelligent soft queue management with automatic shuffle handling and restoration
-- **Code Refactoring**: Major cleanup removed debug commands, simplified user messaging, and improved code organization
-- **Better Error Handling**: Consolidated HTTP request logic with consistent error handling across all VLC operations  
-- **UI Cleanup**: Streamlined queue status display to show only essential information without technical implementation details
-- **Improved Monitoring**: Enhanced state monitoring with cooldown protection and better queue transition detection
-- **Queue Persistence**: Queue state is now automatically saved and restored across bot restarts
-- **Filename Cleanup**: Strip HC/hardsub markers and additional torrent/scene noise from display and TMDB search inputs; preserves numeric title tokens (e.g., "2 Fast 2 Furious")
-- **Pagination Config**: `ITEMS_PER_PAGE` from `.env` now controls playlist page size (default remains 20)
-- **Media Size Caching**: Media library size is now cached and updated after each scan, making `!status` and `!list` instant even for large libraries
-- **Hot Watch Folder Reloading**: Add new folders to `.env` and they are picked up live, no restart needed
-- **Log Progress**: Each file enqueued from watch folders logs its progress (N/total)
-
-## Versioning and Releases
-
-- The project follows Semantic Versioning (MAJOR.MINOR.PATCH) stored in `src/version.py`.
-- Check the current version with the `!version` command in Discord.
-- Release workflow:
-   1. Update `src/version.py` with the new version.
-   2. Update `README.md` and `CHANGELOG.md` with notable changes.
-   3. Commit and push.
-   4. Create a Git tag, e.g., `git tag vX.Y.Z && git push origin vX.Y.Z`.
-   5. Optionally draft a GitHub Release pointing to the tag.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request. For major changes, please open an issue first to discuss what you would like to change.
+- `!list_guilds` (aliases: `guilds`, `servers`)
+- `!leave_server [guild_id]` (aliases: `leave_guild`, `leave`)
 
 ## Notes
 
-- The bot uses TMDB for movie metadata. You'll get better results if your media files are named accurately.
-- VLC's HTTP interface must be enabled for the bot to function.
-- The bot works with VLC's existing playlist - add your media files directly through VLC.
-- **Cross-platform**: CtrlVee works on Windows, macOS, and Linux. All setup and commands are supported on Linux as well.
-- **Queue System**: Uses a soft queue approach compatible with VLC 3.x that temporarily disables shuffle when needed and automatically restores it after queued items finish playing.
-- **State Monitoring**: Enhanced monitoring helps track manual changes made directly in VLC and automatically handles queue transitions.
-- **Role-Based Access**: Most commands require specific Discord roles, configurable via role name and/or role ID in `ALLOWED_ROLES` in `.env`.
-- **Queue Persistence**: Queue state is automatically saved to `queue_backup.json` and restored when the bot restarts.
-- **Watch Folders**: When `WATCH_FOLDERS` is set, the bot runs a lightweight watcher that scans every `WATCH_SCAN_INTERVAL` seconds. New media files are enqueued once they appear stable (size unchanged for ~2s). Hidden files and folders are ignored. Supported extensions include common video/audio types (mp4, mkv, avi, mov, mp3, flac, etc.). You can control whether the initial scan also enqueues existing files via `WATCH_ENQUEUE_ON_START`.
+- Most commands are role-gated via `ALLOWED_ROLES`.
+- Commands `set_notification_channel`, `unset_notification_channel`, and `show_notification_channel` are obsolete and not part of the current bot.
+- `WATCH_FOLDERS_FILE` overrides `WATCH_FOLDERS` when set.
+- Playlist autosave writes XSPF when the target filename ends with `.xspf`; otherwise JSON is written.
+
+## Changelog and Releases
+
+- Detailed history is in `CHANGELOG.md`.
+- Version is defined in `src/version.py` and shown with `!version`.
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Acknowledgments
-
-This bot was built with assistance from GitHub Copilot.
+MIT. See `LICENSE`.
