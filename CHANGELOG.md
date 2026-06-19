@@ -1,3 +1,21 @@
+## 1.9.15 - 2026-06-19
+
+### Added
+- **Built-in Privacy Command**: Added `!privacy` (aliases: `!policy`, `!data_policy`) to provide an in-bot privacy statement covering data processing, storage, and usage boundaries.
+- **Repository Privacy Document**: Added `PRIVACY.md` as the canonical privacy statement file for public reference.
+- **Privacy Config Fields**: Added optional `PRIVACY_POLICY_URL` and `PRIVACY_CONTACT` environment variables for linking a full policy and support contact.
+
+### Changed
+- **Help and Version UX**: Updated `!controls` to include `!privacy`, and updated `!version` to surface privacy-policy link information when configured.
+- **Discord Intent Transparency Docs**: Updated README and environment template guidance to clarify Message Content Intent usage and where users can view policy details.
+
+### Upgrade Notes
+- Add optional privacy metadata to your `.env` file:
+  - `PRIVACY_POLICY_URL=https://your-domain/privacy`
+  - `PRIVACY_CONTACT=your-email-or-support-link`
+- Run `!privacy` after deploy to verify the in-bot statement renders as expected.
+- Update your Discord Developer Portal app description/about text to include your privacy policy URL for easier reviewer/user access.
+
 ## 1.9.14 - 2026-04-16
 
 ### Added

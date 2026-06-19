@@ -52,6 +52,13 @@ class PlaybackCommands(commands.Cog):
             self._presence_throttle_seconds = int(getattr(Config, 'PRESENCE_UPDATE_THROTTLE', 5))
         except Exception:
             self._presence_throttle_seconds = 5
+        # Voice-channel name update throttling/state
+        self._voice_status_last_set = 0.0
+        self._voice_status_last_text = None
+        try:
+            self._voice_status_throttle_seconds = int(getattr(Config, 'VOICE_STATUS_UPDATE_THROTTLE', 15))
+        except Exception:
+            self._voice_status_throttle_seconds = 15
         
         # Track selected subtitle since VLC API doesn't expose it
         self.selected_subtitle_stream_index = None
@@ -189,11 +196,99 @@ class PlaybackCommands(commands.Cog):
             if name:
                 try:
                     await self._set_presence(name, reason="startup sync")
+                    await self._set_voice_channel_status(name, state=current_state, reason="startup sync")
                     self.logger.info(f"Startup presence set: {name}")
                 except Exception as e:
                     self.logger.debug(f"Failed to set startup presence: {e}")
         except Exception as e:
             self.logger.debug(f"Startup presence sync skipped: {e}")
+
+    def _format_voice_status_text(self, title: str | None, state: str | None = None) -> str | None:
+        """Build a voice channel status text from current media title and state."""
+        try:
+            if title:
+                clean = MediaUtils.clean_filename_for_display(title).strip()
+                if not clean:
+                    clean = str(title).strip()
+                if not clean:
+                    return None
+                prefix = str(getattr(Config, 'VOICE_STATUS_PREFIX', 'Now Playing: '))
+                if prefix and not prefix.endswith((' ', '-', '•', '|')):
+                    prefix = f"{prefix} "
+                label = f"{prefix}{clean}"
+                if state == 'paused' and bool(getattr(Config, 'VOICE_STATUS_SHOW_PAUSED', True)):
+                    label = f"{label} [Paused]"
+                return label[:120]
+
+            idle_name = str(getattr(Config, 'VOICE_STATUS_IDLE_NAME', '')).strip()
+            if idle_name:
+                return idle_name[:120]
+            return None
+        except Exception:
+            return None
+
+    async def _resolve_voice_status_channel(self) -> discord.VoiceChannel | None:
+        """Resolve the voice channel to rename for status updates."""
+        try:
+            if not bool(getattr(Config, 'ENABLE_VOICE_CHANNEL_STATUS', False)):
+                return None
+
+            channel_id = int(getattr(Config, 'VOICE_STATUS_CHANNEL_ID', 0) or 0)
+            if channel_id <= 0:
+                channel_id = int(getattr(Config, 'VOICE_JOIN_CHANNEL_ID', 0) or 0)
+            if channel_id <= 0:
+                return None
+
+            ch = self.bot.get_channel(channel_id)
+            if not ch:
+                try:
+                    ch = await self.bot.fetch_channel(channel_id)
+                except Exception:
+                    return None
+            if not isinstance(ch, discord.VoiceChannel):
+                return None
+            return ch
+        except Exception:
+            return None
+
+    async def _set_voice_channel_status(self, title: str | None, state: str | None = None, reason: str | None = None):
+        """Update voice channel status text to reflect currently playing media."""
+        try:
+            if not bool(getattr(Config, 'ENABLE_VOICE_CHANNEL_STATUS', False)):
+                return
+
+            channel = await self._resolve_voice_status_channel()
+            if not channel:
+                return
+
+            target_text = self._format_voice_status_text(title, state=state)
+            if target_text is not None and getattr(channel, 'status', None) == target_text:
+                self._voice_status_last_text = target_text
+                return
+            if target_text is None and getattr(channel, 'status', None) in (None, ''):
+                self._voice_status_last_text = None
+                return
+
+            now = asyncio.get_event_loop().time()
+            if (now - self._voice_status_last_set) < self._voice_status_throttle_seconds:
+                if self._voice_status_last_text == target_text:
+                    return
+
+            me = channel.guild.me
+            if me is None or not channel.permissions_for(me).manage_channels:
+                self.logger.debug("Skipping voice status update: missing Manage Channels permission")
+                return
+
+            await channel.edit(status=target_text, reason=(reason or "Update voice status"))
+            self._voice_status_last_set = now
+            self._voice_status_last_text = target_text
+            self.logger.info(f"Voice channel status updated to: {target_text if target_text else '<cleared>'}")
+        except TypeError as e:
+            self.logger.warning(f"Voice status update is not supported by this discord.py version: {e}")
+        except discord.Forbidden:
+            self.logger.warning("Cannot update voice channel status: missing permissions")
+        except Exception as e:
+            self.logger.debug(f"Voice channel status update failed: {e}")
 
     async def _announce_now_playing(self, origin: str, item: ET.Element | None, position: int | None):
         """Unified Now Playing announcer with cooldown and de-duplication.
@@ -300,6 +395,7 @@ class PlaybackCommands(commands.Cog):
             # Update presence
             try:
                 await self._set_presence(display_name, reason=f"now playing ({origin})")
+                await self._set_voice_channel_status(display_name, state='playing', reason=f"now playing ({origin})")
             except Exception:
                 pass
             # Send to announce channels
@@ -696,6 +792,7 @@ class PlaybackCommands(commands.Cog):
                         if current_state == 'stopped':
                             if not self._initial_scan_pending:
                                 await self._set_presence(None, reason="stopped")
+                                await self._set_voice_channel_status(None, state='stopped', reason="stopped")
                             # Signal that playback has stopped
                             if self.playback_started_event.is_set():
                                 self.logger.info("Playback stopped, deactivating periodic announcer.")
@@ -801,6 +898,7 @@ class PlaybackCommands(commands.Cog):
                                                 # Update presence to show the newly playing queued item
                                                 try:
                                                     await self._set_presence(play_result.get('item_name'), reason="auto-queue (end detection)")
+                                                    await self._set_voice_channel_status(play_result.get('item_name'), state='playing', reason="auto-queue (end detection)")
                                                 except Exception:
                                                     pass
                                             else:
@@ -866,6 +964,7 @@ class PlaybackCommands(commands.Cog):
                             try:
                                 if position_changed and item_name:
                                     await self._set_presence(item_name, reason="track change")
+                                    await self._set_voice_channel_status(item_name, state=current_state, reason="track change")
                             except Exception:
                                 pass
                             
@@ -962,6 +1061,7 @@ class PlaybackCommands(commands.Cog):
                                         # Update presence
                                         try:
                                             await self._set_presence(play_result.get('item_name'), reason="auto-queue (stopped)")
+                                            await self._set_voice_channel_status(play_result.get('item_name'), state='playing', reason="auto-queue (stopped)")
                                         except Exception:
                                             pass
                                     else:
@@ -982,6 +1082,7 @@ class PlaybackCommands(commands.Cog):
                                             logger.info(f"Periodic correction successful: {play_result.get('item_name', 'Unknown')}")
                                             try:
                                                 await self._set_presence(play_result.get('item_name'), reason="periodic correction (wrong item)")
+                                                await self._set_voice_channel_status(play_result.get('item_name'), state='playing', reason="periodic correction (wrong item)")
                                             except Exception:
                                                 pass
                                     except Exception as e:

@@ -121,6 +121,62 @@ def _format_allowed_roles_for_display() -> str:
     return ", ".join(parts)
 
 
+def _build_privacy_embed() -> discord.Embed:
+    """Build a user-facing privacy statement embed.
+
+    This is intended to satisfy Discord transparency requirements around
+    privileged intents (especially Message Content Intent) at larger scale.
+    """
+    prefix = Config.DISCORD_COMMAND_PREFIX
+    description = (
+        "CtrlVee uses Discord data only to run media-control features in your server. "
+        "It does not sell user data."
+    )
+    embed = discord.Embed(
+        title="CtrlVee Privacy Statement",
+        description=description,
+        color=discord.Color.blurple(),
+    )
+
+    embed.add_field(
+        name="What data is processed",
+        value=(
+            "• Message content (for command parsing only, via Message Content Intent)\n"
+            "• Basic Discord metadata needed to execute commands (user ID, guild ID, channel ID, role checks)\n"
+            "• Voice state and channel info if voice auto-join/reconnect features are enabled"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="What data may be stored",
+        value=(
+            "• Queue backup and schedule backup files (local bot storage)\n"
+            "• Optional playlist autosave output files\n"
+            "• Operational logs for troubleshooting"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="What data is NOT used for",
+        value=(
+            "• No selling of personal data\n"
+            "• No ad targeting\n"
+            "• No use beyond bot functionality and maintenance"
+        ),
+        inline=False,
+    )
+
+    privacy_url = getattr(Config, 'PRIVACY_POLICY_URL', '').strip()
+    contact = getattr(Config, 'PRIVACY_CONTACT', '').strip()
+    if privacy_url:
+        embed.add_field(name="Full policy", value=f"<{privacy_url}>", inline=False)
+    if contact:
+        embed.add_field(name="Privacy contact", value=contact, inline=False)
+
+    embed.set_footer(text=f"Use {prefix}privacy anytime to view this statement")
+    return embed
+
+
 def _warn_unknown_allowed_roles_on_startup() -> None:
     """Log startup warnings when configured ALLOWED_ROLES do not match guild roles."""
     try:
@@ -1296,6 +1352,7 @@ async def controls(ctx):
 `{prefix}schedule <number> <YYYY-MM-DD> <HH:MM>` - Schedule a movie by playlist number (Philippines time)
 `{prefix}schedules` - List all upcoming scheduled movies
 `{prefix}unschedule <number>` - Remove all schedules for a movie number
+    `{prefix}privacy` - Show data use and privacy statement
         """
         embed.add_field(name="ℹ️ Status & Scheduling", value=status_commands, inline=False)
 
@@ -1372,7 +1429,22 @@ async def version(ctx):
     embed.add_field(name="Version", value=__version__, inline=True)
     embed.add_field(name="Items Per Page", value=str(Config.ITEMS_PER_PAGE), inline=True)
     embed.add_field(name="TMDB", value=("Configured" if Config.TMDB_API_KEY else "Not Configured"), inline=True)
+    if getattr(Config, 'PRIVACY_POLICY_URL', '').strip():
+        embed.add_field(name="Privacy Policy", value=f"<{Config.PRIVACY_POLICY_URL}>", inline=False)
+    embed.set_footer(text=f"Use {Config.DISCORD_COMMAND_PREFIX}privacy for data handling details")
     await ctx.send(embed=embed)
+
+
+@bot.command(name="privacy", aliases=["policy", "data_policy"])
+async def privacy(ctx):
+    """Show the bot's privacy statement and data handling details."""
+    try:
+        await ctx.send(embed=_build_privacy_embed())
+    except discord.Forbidden:
+        await ctx.send("I need the 'Embed Links' permission to show the privacy statement.")
+    except Exception as e:
+        logger.error(f"privacy command error: {e}")
+        await ctx.send(f"Error showing privacy statement: {e}")
 
 @bot.command(name="changelog", aliases=['changes', 'whatsnew'])
 async def changelog(ctx):

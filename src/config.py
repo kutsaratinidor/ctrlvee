@@ -167,6 +167,10 @@ class Config:
     # Optional Ko-fi / support URL to show in embeds
     KOFI_URL: str = os.getenv('KOFI_URL', '').strip()
 
+    # Optional privacy policy metadata for transparency commands/embeds
+    PRIVACY_POLICY_URL: str = os.getenv('PRIVACY_POLICY_URL', '').strip()
+    PRIVACY_CONTACT: str = os.getenv('PRIVACY_CONTACT', '').strip()
+
     # Presence / Rich presence toggles
     # Enable or disable the bot updating its Discord presence/activity (default: true)
     ENABLE_PRESENCE: bool = os.getenv('ENABLE_PRESENCE', 'true').strip().lower() in {'1','true','yes','y'}
@@ -203,6 +207,18 @@ class Config:
     # Voice guard/event toggles
     ENABLE_VOICE_GUARD: bool = os.getenv('ENABLE_VOICE_GUARD', 'false').strip().lower() in {'1','true','yes','y'}
     ENABLE_VOICE_EVENTS_RECONNECT: bool = os.getenv('ENABLE_VOICE_EVENTS_RECONNECT', 'true').strip().lower() in {'1','true','yes','y'}
+    # Voice channel name status updates (currently playing title)
+    ENABLE_VOICE_CHANNEL_STATUS: bool = os.getenv('ENABLE_VOICE_CHANNEL_STATUS', 'false').strip().lower() in {'1','true','yes','y'}
+    # Optional explicit channel ID to rename for status. If 0, falls back to VOICE_JOIN_CHANNEL_ID.
+    VOICE_STATUS_CHANNEL_ID: int = int(os.getenv('VOICE_STATUS_CHANNEL_ID', '0'))
+    # Prefix used when composing the channel name.
+    VOICE_STATUS_PREFIX: str = os.getenv('VOICE_STATUS_PREFIX', 'Now Playing: ').strip()
+    # If true, append [Paused] when VLC is paused.
+    VOICE_STATUS_SHOW_PAUSED: bool = os.getenv('VOICE_STATUS_SHOW_PAUSED', 'true').strip().lower() in {'1','true','yes','y'}
+    # Optional idle name to use when playback is stopped. Leave empty to restore original channel name.
+    VOICE_STATUS_IDLE_NAME: str = os.getenv('VOICE_STATUS_IDLE_NAME', '').strip()
+    # Minimum seconds between channel rename attempts.
+    VOICE_STATUS_UPDATE_THROTTLE: int = int(os.getenv('VOICE_STATUS_UPDATE_THROTTLE', '15'))
 
     # Watch Folders
     # WATCH_FOLDERS supports commas/semicolons; quote paths with commas using double quotes.
@@ -369,6 +385,8 @@ class Config:
             ),
             f"Discord Token: {'Configured' if cls.DISCORD_TOKEN else 'Not Configured'}",
             f"Ko-fi URL: {cls.KOFI_URL if cls.KOFI_URL else 'Not Configured'}",
+            f"Privacy Policy URL: {cls.PRIVACY_POLICY_URL if cls.PRIVACY_POLICY_URL else 'Not Configured'}",
+            f"Privacy Contact: {cls.PRIVACY_CONTACT if cls.PRIVACY_CONTACT else 'Not Configured'}",
             f"Presence Updates Enabled: {cls.ENABLE_PRESENCE}",
             f"Presence Update Throttle: {cls.PRESENCE_UPDATE_THROTTLE}s",
             f"Presence Progress Enabled: {cls.ENABLE_PRESENCE_PROGRESS}",

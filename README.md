@@ -2,7 +2,7 @@
 
 A Discord bot that controls a local VLC player and exposes playback controls, playlist search, queueing, scheduling, watch-folder ingestion, and metadata lookups.
 
-Current app version: `1.9.14`.
+Current app version: `1.9.15`.
 
 ## What It Does
 
@@ -72,6 +72,9 @@ In Discord Developer Portal, ensure your bot has:
 - `MESSAGE CONTENT INTENT` enabled
 - Permissions to read/send messages and embeds in the channels you use
 
+For larger bots (including bots approaching or exceeding 10k servers), Discord may require stronger justification and transparency for privileged intents.
+CtrlVee requests Message Content Intent strictly for prefix command parsing, and includes an in-bot privacy statement via `!privacy`.
+
 ## Configuration
 
 Edit `.env` (starting from `template.env`).
@@ -89,6 +92,8 @@ Edit `.env` (starting from `template.env`).
 - `QUEUE_BACKUP_FILE` (default `queue_backup.json`)
 - `PLAYLIST_AUTOSAVE_FILE` + `PLAYLIST_AUTOSAVE_INTERVAL` (optional autosave)
 - `KOFI_URL` (optional support link in embeds)
+- `PRIVACY_POLICY_URL` (optional public privacy-policy URL shown by `!privacy` and `!version`)
+- `PRIVACY_CONTACT` (optional contact for privacy/data requests)
 
 ### Watch Folders
 
@@ -205,8 +210,32 @@ Prefix shown as `!` below; replace with your configured `DISCORD_COMMAND_PREFIX`
 
 - `!status`
 - `!version`
+- `!privacy` (aliases: `policy`, `data_policy`)
 - `!changelog` (aliases: `changes`, `whatsnew`)
 - `!controls`
+
+## Privacy Statement
+
+CtrlVee includes a built-in privacy statement command: `!privacy`.
+
+Canonical policy file in this repo: [PRIVACY.md](PRIVACY.md).
+
+The statement explains:
+- what Discord data is processed (including Message Content Intent for command parsing),
+- what data may be stored locally (queue/schedule backups, optional autosave, logs),
+- what data is not used for (no sale, no ad targeting).
+
+For public deployments, set these in `.env`:
+- `PRIVACY_POLICY_URL` (link to your full policy)
+- `PRIVACY_CONTACT` (email/support URL/server)
+
+### Upgrade Notes (1.9.15+)
+
+- Add optional privacy metadata to `.env`:
+	- `PRIVACY_POLICY_URL=https://your-domain/privacy`
+	- `PRIVACY_CONTACT=your-email-or-support-link`
+- Run `!privacy` after deploy to verify the in-bot statement renders as expected.
+- Update your Discord Developer Portal app description/about text to include your privacy policy URL for easier reviewer/user access.
 
 ### Watch Folders
 
