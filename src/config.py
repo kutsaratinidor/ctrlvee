@@ -141,6 +141,12 @@ class Config:
 
     # Discord Command Prefix
     DISCORD_COMMAND_PREFIX: str = os.getenv('DISCORD_COMMAND_PREFIX', '!')
+
+    # Optional dedicated channel for bot command responses.
+    # When set, all ctx.send() responses are redirected to this channel.
+    # Commands are still accepted from any channel (e.g. the voice channel text chat).
+    # Set to 0 or leave empty to disable.
+    COMMAND_CHANNEL_ID: int = int(os.getenv('COMMAND_CHANNEL_ID', '0'))
     
     # TMDB Settings
     TMDB_API_KEY: str = os.getenv('TMDB_API_KEY', '')
@@ -344,6 +350,7 @@ class Config:
         )
         config_lines = [
             f"Discord Command Prefix: {cls.DISCORD_COMMAND_PREFIX}",
+            f"Command Channel ID: {cls.COMMAND_CHANNEL_ID if cls.COMMAND_CHANNEL_ID else 'Not Configured (replies in-channel)'}",
             "Current Configuration:",
             "-" * 50,
             f"VLC Host: {cls.VLC_HOST}",

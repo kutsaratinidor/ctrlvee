@@ -1,3 +1,12 @@
+## 1.9.16 - 2026-07-08
+
+### Added
+- **Dedicated Command Channel**: Added optional `COMMAND_CHANNEL_ID` environment variable. When set to a text channel ID, all bot responses are redirected to that channel instead of the channel the command was typed in. Commands are still accepted from any channel (e.g. voice channel text chat), so the voice channel stays clean while responses appear in one central place. Falls back to the originating channel if the configured channel cannot be resolved.
+
+### Upgrade Notes
+- Add `COMMAND_CHANNEL_ID=<your_text_channel_id>` to your `.env` file to enable this feature.
+- Leave it at `0` or unset to keep the existing behavior (replies in-channel).
+
 ## 1.9.15 - 2026-06-19
 
 ### Added

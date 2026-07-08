@@ -1267,6 +1267,27 @@ async def on_ready():
     except Exception as e:
         logger.error(f"Failed to start WatchFolderService: {e}")
 
+class CommandChannelContext(commands.Context):
+    """Custom context that redirects bot responses to a dedicated command channel when configured.
+
+    Commands are still accepted from any channel. Only the response destination changes.
+    Falls back to the originating channel if the command channel cannot be resolved.
+    """
+
+    async def send(self, content=None, **kwargs):
+        cmd_channel_id = getattr(Config, 'COMMAND_CHANNEL_ID', 0)
+        if cmd_channel_id:
+            channel = self.bot.get_channel(cmd_channel_id)
+            if channel is None:
+                try:
+                    channel = await self.bot.fetch_channel(cmd_channel_id)
+                except Exception:
+                    channel = None
+            if channel is not None:
+                return await channel.send(content, **kwargs)
+        return await super().send(content, **kwargs)
+
+
 @bot.event
 async def on_message(message):
     if message.author == bot.user:
@@ -1283,8 +1304,9 @@ async def on_message(message):
             logger.debug('Message received in guild but author has no roles (User object)')
         else:
             logger.debug('Message received outside of a guild (DM or system message)')
-        
-    await bot.process_commands(message)
+
+    ctx = await bot.get_context(message, cls=CommandChannelContext)
+    await bot.invoke(ctx)
 
 @bot.event
 async def on_command_error(ctx, error):
