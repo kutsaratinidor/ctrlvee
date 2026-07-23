@@ -220,6 +220,12 @@ CtrlVee includes a built-in privacy statement command: `!privacy`.
 
 Canonical policy file in this repo: [PRIVACY.md](PRIVACY.md).
 
+## Terms of Service
+
+Canonical terms file in this repo: [TERMS.md](TERMS.md).
+
+Use this URL as your public terms link when submitting Discord verification details.
+
 The statement explains:
 - what Discord data is processed (including Message Content Intent for command parsing),
 - what data may be stored locally (queue/schedule backups, optional autosave, logs),
