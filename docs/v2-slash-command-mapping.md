@@ -1,6 +1,6 @@
 # CtrlVee V2 Slash Command Mapping Matrix
 
-Last updated: 2026-07-29 (implementation slice 4)
+Last updated: 2026-07-29 (implementation slice 5)
 Target branch: feature/v2-slash-commands
 
 ## Purpose
@@ -52,17 +52,17 @@ This document maps current CtrlVee prefix commands to proposed slash commands fo
 | queue_status, qstatus | /queue status | none | ALLOWED_ROLES | Implemented (hybrid) |
 | clear_queue, qclear | /queue clear | none | ALLOWED_ROLES | Implemented (hybrid) |
 | remove_queue, qremove, unqueue | /queue remove | ref: str | ALLOWED_ROLES | Implemented (hybrid) |
-| schedule | /schedule add | number: int, date: str, time: str | Open | Planned |
-| schedules | /schedule list | none | Open | Planned |
-| unschedule | /schedule remove | number: int | Open | Planned |
-| watch_add | /watch add | path: str (required) | ALLOWED_ROLES | Planned |
+| schedule | /schedule add | number: int, date: str, time: str | Open | Implemented (hybrid) |
+| schedules | /schedule list | none | Open | Implemented (hybrid) |
+| unschedule | /schedule remove | number: int | Open | Implemented (hybrid) |
+| watch_add | /watch add | path: str (required) | ALLOWED_ROLES | Implemented (hybrid) |
 | controls | /system help | none | Open | Implemented (hybrid) |
 | version | /system version | none | Open | Implemented (hybrid) |
 | privacy, policy, data_policy | /system privacy | none | Open | Implemented (hybrid) |
 | changelog, changes, whatsnew | /system changelog | none | Open | Implemented (hybrid) |
 | radarr_recent, recent_movies, recent_radarr | /system radarr-recent | instance: str = 'all', days: int = 7, limit: int = 10 | Open | Implemented (hybrid) |
-| leave_server, leave_guild, leave | /admin leave-server | guild_id: int \| None = None | Owner-only | Planned |
-| list_guilds, guilds, servers | /admin list-guilds | none | Owner-only | Planned |
+| leave_server, leave_guild, leave | /admin leave-server | guild_id: int \| None = None | Owner-only | Implemented (hybrid) |
+| list_guilds, guilds, servers | /admin list-guilds | none | Owner-only | Implemented (hybrid) |
 
 ## Optional Consolidation Decisions (Post-Parity)
 
@@ -111,4 +111,11 @@ This document maps current CtrlVee prefix commands to proposed slash commands fo
 - Added `/audio` group commands: `list`, `set`.
 - Added owner-only `/playback cleanup` slash command.
 - Updated prefix `cleanup` command to owner-only.
+- Preserved prefix commands in parallel (hybrid mode) for safe rollout.
+
+## Implemented in Slice 5
+
+- Added `/schedule` group commands: `add`, `list`, `remove`.
+- Added `/watch` group command: `add`.
+- Added `/admin` owner-only group commands: `list-guilds`, `leave-server`.
 - Preserved prefix commands in parallel (hybrid mode) for safe rollout.

@@ -1,3 +1,12 @@
+## 1.9.22 - 2026-07-29
+
+### Added
+- **Schedule, Watch, and Admin Slash Commands (Slice 5)**: Added `/schedule` slash group with `add`, `list`, and `remove`; `/watch add`; and owner-only `/admin list-guilds` plus `/admin leave-server`.
+
+### Changed
+- **Slash Help Coverage**: Updated `/system help` to include `/schedule`, `/watch`, and `/admin` command groups.
+- **Hybrid Migration Continuation**: Prefix and slash commands for schedule/watch/admin now run in parallel for staged rollout.
+
 ## 1.9.21 - 2026-07-29
 
 ### Added

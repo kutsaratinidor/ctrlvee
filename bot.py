@@ -5,6 +5,7 @@ import logging
 import threading
 import re
 import time
+from datetime import datetime
 from src.config import Config
 from discord.ext import commands
 import discord
@@ -261,10 +262,11 @@ _autosave_stop = threading.Event()
 # Import cogs
 from src.cogs.playback import PlaybackCommands
 from src.cogs.playlist import PlaylistCommands, PlaylistView, SearchResultsView
-from src.cogs.scheduler import Scheduler
-from src.cogs.watch import WatchCommands
+from src.cogs.scheduler import Scheduler, PH_TZ
+from src.cogs.watch import WatchCommands, _write_env_watch_folders
 from src.version import __version__
 from changelog_helper import parse_changelog
+from src.config import get_watch_folders_from_env
 
 # -------- Voice connection management --------
 # Reconnect guard variables (configurable)
@@ -1766,6 +1768,9 @@ playlist_group = app_commands.Group(name="playlist", description="CtrlVee playli
 queue_group = app_commands.Group(name="queue", description="CtrlVee queue management")
 subtitles_group = app_commands.Group(name="subtitles", description="CtrlVee subtitle track controls")
 audio_group = app_commands.Group(name="audio", description="CtrlVee audio track controls")
+schedule_group = app_commands.Group(name="schedule", description="CtrlVee scheduled playback")
+watch_group = app_commands.Group(name="watch", description="CtrlVee watch folder management")
+admin_group = app_commands.Group(name="admin", description="CtrlVee owner administration")
 
 
 async def _check_allowed_roles_for_interaction(interaction: discord.Interaction) -> bool:
@@ -1865,6 +1870,28 @@ def _build_system_help_embed() -> discord.Embed:
         value=(
             "• `/audio list`\n"
             "• `/audio set`"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Available /schedule commands",
+        value=(
+            "• `/schedule add`\n"
+            "• `/schedule list`\n"
+            "• `/schedule remove`"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Available /watch commands",
+        value="• `/watch add`",
+        inline=False,
+    )
+    embed.add_field(
+        name="Available /admin commands",
+        value=(
+            "• `/admin list-guilds`\n"
+            "• `/admin leave-server`"
         ),
         inline=False,
     )
@@ -2725,12 +2752,252 @@ async def audio_set(interaction: discord.Interaction, track: app_commands.Range[
     )
 
 
+@schedule_group.command(name="add", description="Schedule playlist item playback")
+@app_commands.describe(number="Playlist item number", date="YYYY-MM-DD", time_24h="HH:MM (24h)")
+async def schedule_add(
+    interaction: discord.Interaction,
+    number: app_commands.Range[int, 1, 99999],
+    date: str,
+    time_24h: str,
+):
+    scheduler_cog = bot.get_cog("Scheduler")
+    if not scheduler_cog:
+        await interaction.response.send_message("Scheduler is unavailable.", ephemeral=True)
+        return
+
+    try:
+        dt = datetime.strptime(f"{date} {time_24h}", "%Y-%m-%d %H:%M").replace(tzinfo=PH_TZ)
+    except Exception:
+        await interaction.response.send_message("Invalid date/time format. Use YYYY-MM-DD and HH:MM.", ephemeral=True)
+        return
+
+    now = datetime.now(PH_TZ)
+    if dt <= now:
+        await interaction.response.send_message("Scheduled time must be in the future (PH time).", ephemeral=True)
+        return
+
+    for s in scheduler_cog.scheduled:
+        if s["number"] == number and abs((s["dt"] - dt).total_seconds()) < 60:
+            await interaction.response.send_message(
+                f"Movie #{number} is already scheduled at {s['dt'].strftime('%Y-%m-%d %H:%M %Z')}.",
+                ephemeral=True,
+            )
+            return
+
+    playlist = vlc.get_playlist()
+    items = playlist.findall('.//leaf') if playlist is not None else []
+    idx = number - 1
+    if not (0 <= idx < len(items)):
+        await interaction.response.send_message(
+            f"Movie number {number} is out of bounds. Playlist has {len(items)} item(s).",
+            ephemeral=True,
+        )
+        return
+
+    filename = items[idx].get('name', 'Unknown')
+    title = MediaUtils.clean_movie_title(filename)
+    item_uri = items[idx].get('uri')
+    duration = MediaUtils.get_media_duration(items[idx])
+    entry = {
+        "number": number,
+        "title": title,
+        "uri": item_uri,
+        "dt": dt,
+        "user": interaction.user.id,
+        "channel": interaction.channel_id,
+        "duration": duration,
+    }
+    scheduler_cog.scheduled.append(entry)
+    scheduler_cog._save_schedule_backup()
+
+    if duration == 'Loading...':
+        dur_str = 'Loading...'
+    elif duration:
+        dur_str = MediaUtils.format_time(duration)
+    else:
+        dur_str = 'Unknown'
+
+    embed = discord.Embed(title="Movie Scheduled", color=discord.Color.green())
+    embed.add_field(name="Number", value=f"#{number}", inline=True)
+    embed.add_field(name="Title", value=title, inline=True)
+    embed.add_field(name="Scheduled For", value=dt.strftime('%Y-%m-%d %H:%M %Z'), inline=False)
+    embed.add_field(name="Duration", value=dur_str, inline=True)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@schedule_group.command(name="list", description="List upcoming scheduled movies")
+async def schedule_list(interaction: discord.Interaction):
+    scheduler_cog = bot.get_cog("Scheduler")
+    if not scheduler_cog:
+        await interaction.response.send_message("Scheduler is unavailable.", ephemeral=True)
+        return
+
+    if not scheduler_cog.scheduled:
+        await interaction.response.send_message("No movies scheduled.", ephemeral=True)
+        return
+
+    embed = discord.Embed(title="Upcoming Scheduled Movies", color=discord.Color.purple())
+    for s in sorted(scheduler_cog.scheduled, key=lambda x: x["dt"]):
+        dt_str = s["dt"].strftime('%Y-%m-%d %H:%M %Z') if isinstance(s["dt"], datetime) else str(s["dt"])
+        duration = s.get("duration")
+        if duration == 'Loading...' or duration == 0:
+            dur_str = 'Loading...'
+        elif duration:
+            dur_str = MediaUtils.format_time(duration)
+        else:
+            dur_str = "Unknown"
+        embed.add_field(
+            name=f"#{s['number']} — {s.get('title', 'Unknown')}",
+            value=f"Scheduled for {dt_str}\nDuration: {dur_str}",
+            inline=False,
+        )
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@schedule_group.command(name="remove", description="Remove all schedules for a playlist number")
+@app_commands.describe(number="Playlist item number")
+async def schedule_remove(interaction: discord.Interaction, number: app_commands.Range[int, 1, 99999]):
+    scheduler_cog = bot.get_cog("Scheduler")
+    if not scheduler_cog:
+        await interaction.response.send_message("Scheduler is unavailable.", ephemeral=True)
+        return
+
+    before = len(scheduler_cog.scheduled)
+    scheduler_cog.scheduled = [s for s in scheduler_cog.scheduled if s["number"] != number]
+    scheduler_cog._save_schedule_backup()
+    after = len(scheduler_cog.scheduled)
+
+    if before == after:
+        await interaction.response.send_message(f"No schedules found for movie #{number}.", ephemeral=True)
+    else:
+        await interaction.response.send_message(f"Removed all schedules for movie #{number}.", ephemeral=True)
+
+
+@watch_group.command(name="add", description="Add a watch folder")
+@app_commands.describe(path="Absolute or relative directory path")
+async def watch_add(interaction: discord.Interaction, path: str):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    raw = (path or '').strip()
+    norm = os.path.normpath(os.path.abspath(os.path.expanduser(raw)))
+    if not os.path.isdir(norm):
+        await interaction.response.send_message(f"Path not found or not a directory: {raw}", ephemeral=True)
+        return
+
+    current_list = get_watch_folders_from_env()
+    if norm in current_list:
+        await interaction.response.send_message(f"Folder already in watch list: {norm}", ephemeral=True)
+        return
+
+    updated = current_list + [norm]
+    if not _write_env_watch_folders(updated):
+        await interaction.response.send_message("Failed to update watch folders configuration.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="Watch Folder Added",
+        description=(
+            f"Added: {norm}\n\n"
+            f"Total folders: {len(updated)}\n"
+            "Changes take effect immediately; new files are discovered on the next scan."
+        ),
+        color=discord.Color.green(),
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@admin_group.command(name="list-guilds", description="Owner only: list joined guilds")
+async def admin_list_guilds(interaction: discord.Interaction):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("This command is owner-only.", ephemeral=True)
+        return
+
+    guilds = sorted(list(bot.guilds), key=lambda g: (g.name or "").lower())
+    if not guilds:
+        await interaction.response.send_message("I am not currently in any servers.", ephemeral=True)
+        return
+
+    lines = [f"{i}. {g.name} ({g.id})" for i, g in enumerate(guilds, start=1)]
+    max_chars = 1900
+    chunks = []
+    current = ""
+    for line in lines:
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > max_chars:
+            chunks.append(current)
+            current = line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+
+    first = True
+    for chunk in chunks:
+        if first:
+            await interaction.response.send_message(
+                f"I am in **{len(guilds)}** server(s):\n{chunk}",
+                ephemeral=True,
+            )
+            first = False
+        else:
+            await interaction.followup.send(f"(continued)\n{chunk}", ephemeral=True)
+
+
+@admin_group.command(name="leave-server", description="Owner only: leave current or specified guild")
+@app_commands.describe(guild_id="Guild ID (omit to leave current guild)")
+async def admin_leave_server(interaction: discord.Interaction, guild_id: str | None = None):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("This command is owner-only.", ephemeral=True)
+        return
+
+    target_guild = None
+    if guild_id:
+        if not guild_id.isdigit():
+            await interaction.response.send_message("Invalid guild ID.", ephemeral=True)
+            return
+        target_guild = bot.get_guild(int(guild_id))
+        if target_guild is None:
+            await interaction.response.send_message(f"I am not in a server with ID {guild_id}.", ephemeral=True)
+            return
+    else:
+        if interaction.guild is None:
+            await interaction.response.send_message("When used in DMs, provide a guild ID.", ephemeral=True)
+            return
+        target_guild = interaction.guild
+
+    guild_name = target_guild.name
+    guild_id_text = str(target_guild.id)
+    try:
+        if target_guild.system_channel and target_guild.system_channel.permissions_for(target_guild.me).send_messages:
+            await target_guild.system_channel.send("Leaving this server by owner request.")
+    except Exception:
+        pass
+
+    await interaction.response.send_message(
+        f"Leaving server: **{guild_name}** ({guild_id_text}).",
+        ephemeral=True,
+    )
+    logger.warning(
+        "admin leave-server invoked by %s (%s) for guild %s (%s)",
+        interaction.user,
+        interaction.user.id,
+        guild_name,
+        guild_id_text,
+    )
+    await target_guild.leave()
+
+
 bot.tree.add_command(system_group)
 bot.tree.add_command(playback_group)
 bot.tree.add_command(playlist_group)
 bot.tree.add_command(queue_group)
 bot.tree.add_command(subtitles_group)
 bot.tree.add_command(audio_group)
+bot.tree.add_command(schedule_group)
+bot.tree.add_command(watch_group)
+bot.tree.add_command(admin_group)
 
 def main():
     """Main entry point for the bot"""
