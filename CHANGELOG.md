@@ -1,3 +1,12 @@
+## 1.9.25 - 2026-07-29
+
+### Added
+- **Playback Advanced Slash Controls (Slice 6)**: Added `/playback speed`, `/playback speed-status`, `/playback shuffle-on`, `/playback shuffle-off`, and `/playback shuffle-toggle`.
+
+### Changed
+- **Slash Help Coverage**: Updated `/system help` to include the new playback advanced controls.
+- **Hybrid Migration Continuation**: Prefix and slash playback advanced controls now run in parallel for staged rollout.
+
 ## 1.9.24 - 2026-07-29
 
 ### Changed
