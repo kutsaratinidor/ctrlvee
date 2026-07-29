@@ -2209,17 +2209,17 @@ async def playback_status(interaction: discord.Interaction):
         try:
             embed = await playback_cog.get_status_embed()
             if embed:
-                await interaction.response.send_message(embed=embed, ephemeral=True)
+                await interaction.response.send_message(embed=embed)
                 return
         except Exception as e:
             logger.debug(f"Slash /playback status embed fallback: {e}")
 
     status = vlc.get_status()
     if not status:
-        await interaction.response.send_message("Could not read VLC status.", ephemeral=True)
+        await interaction.response.send_message("Could not read VLC status.")
         return
     state = status.find('state').text if status.find('state') is not None else 'unknown'
-    await interaction.response.send_message(f"Current VLC state: {state}", ephemeral=True)
+    await interaction.response.send_message(f"Current VLC state: {state}")
 
 
 @playback_group.command(name="cleanup", description="Owner only: remove missing files from VLC playlist")
