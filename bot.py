@@ -2877,7 +2877,8 @@ async def schedule_remove(interaction: discord.Interaction, number: app_commands
 @watch_group.command(name="add", description="Add a watch folder")
 @app_commands.describe(path="Absolute or relative directory path")
 async def watch_add(interaction: discord.Interaction, path: str):
-    if not await _check_allowed_roles_for_interaction(interaction):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("This command is owner-only.", ephemeral=True)
         return
 
     raw = (path or '').strip()

@@ -55,7 +55,7 @@ This document maps current CtrlVee prefix commands to proposed slash commands fo
 | schedule | /schedule add | number: int, date: str, time: str | Open | Implemented (hybrid) |
 | schedules | /schedule list | none | Open | Implemented (hybrid) |
 | unschedule | /schedule remove | number: int | Open | Implemented (hybrid) |
-| watch_add | /watch add | path: str (required) | ALLOWED_ROLES | Implemented (hybrid) |
+| watch_add | /watch add | path: str (required) | Owner-only | Implemented (hybrid) |
 | controls | /system help | none | Open | Implemented (hybrid) |
 | version | /system version | none | Open | Implemented (hybrid) |
 | privacy, policy, data_policy | /system privacy | none | Open | Implemented (hybrid) |

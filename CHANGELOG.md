@@ -1,3 +1,8 @@
+## 1.9.23 - 2026-07-29
+
+### Changed
+- **Watch Command Permission Tightening**: Updated watch-folder add command to owner-only for both prefix (`watch_add`) and slash (`/watch add`) usage.
+
 ## 1.9.22 - 2026-07-29
 
 ### Added
