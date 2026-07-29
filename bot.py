@@ -521,6 +521,29 @@ async def join_voice_channel() -> bool:
         return False
 
 
+def _format_synced_top_level_commands(commands_list) -> str:
+    """Return a stable comma-separated list of top-level slash command names."""
+    try:
+        names = sorted({c.name for c in commands_list if getattr(c, 'name', None)})
+        return ", ".join(names) if names else "(none)"
+    except Exception:
+        return "(unknown)"
+
+
+async def _sync_app_commands_now() -> tuple[list, list | None]:
+    """Sync slash commands and return (global_synced, guild_synced_or_none)."""
+    guild_id = int(getattr(Config, 'SLASH_COMMAND_GUILD_ID', 0) or 0)
+    if guild_id > 0:
+        dev_guild = discord.Object(id=guild_id)
+        bot.tree.copy_global_to(guild=dev_guild)
+        synced_guild = await bot.tree.sync(guild=dev_guild)
+        synced_global = await bot.tree.sync()
+        return synced_global, synced_guild
+
+    synced_global = await bot.tree.sync()
+    return synced_global, None
+
+
 @bot.event
 async def on_voice_state_update(member, before, after):
     """When the bot itself gets disconnected from voice, attempt a controlled reconnect."""
@@ -605,15 +628,19 @@ async def setup_hook():
 
         # Sync slash commands (global or development guild).
         if getattr(Config, 'ENABLE_SLASH_COMMANDS', True):
-            guild_id = int(getattr(Config, 'SLASH_COMMAND_GUILD_ID', 0) or 0)
-            if guild_id > 0:
-                dev_guild = discord.Object(id=guild_id)
-                bot.tree.copy_global_to(guild=dev_guild)
-                synced = await bot.tree.sync(guild=dev_guild)
-                logger.info(f"Slash commands synced to guild {guild_id}: {len(synced)} command(s)")
-            else:
-                synced = await bot.tree.sync()
-                logger.info(f"Slash commands synced globally: {len(synced)} command(s)")
+            synced_global, synced_guild = await _sync_app_commands_now()
+            if synced_guild is not None:
+                logger.info(
+                    "Slash commands synced to guild %s: %s command(s) [%s]",
+                    int(getattr(Config, 'SLASH_COMMAND_GUILD_ID', 0) or 0),
+                    len(synced_guild),
+                    _format_synced_top_level_commands(synced_guild),
+                )
+            logger.info(
+                "Slash commands synced globally: %s command(s) [%s]",
+                len(synced_global),
+                _format_synced_top_level_commands(synced_global),
+            )
         else:
             logger.info("Slash command sync skipped (ENABLE_SLASH_COMMANDS=false)")
     except Exception as e:
@@ -1708,7 +1735,62 @@ async def list_guilds(ctx):
         await ctx.send(f"Error listing servers: {e}")
 
 
+@bot.command(name="syncslash", aliases=["sync_slash", "slashsync"])
+@commands.is_owner()
+async def syncslash(ctx):
+    """Owner-only: force resync slash commands and print registered top-level names."""
+    if not getattr(Config, 'ENABLE_SLASH_COMMANDS', True):
+        await ctx.send("Slash commands are disabled (`ENABLE_SLASH_COMMANDS=false`).")
+        return
+
+    try:
+        synced_global, synced_guild = await _sync_app_commands_now()
+        lines = [
+            f"Global sync: {len(synced_global)} command(s) -> {_format_synced_top_level_commands(synced_global)}"
+        ]
+        if synced_guild is not None:
+            guild_id = int(getattr(Config, 'SLASH_COMMAND_GUILD_ID', 0) or 0)
+            lines.insert(
+                0,
+                f"Guild sync ({guild_id}): {len(synced_guild)} command(s) -> {_format_synced_top_level_commands(synced_guild)}",
+            )
+        await ctx.send("\n".join(lines))
+    except Exception as e:
+        logger.error(f"syncslash command error: {e}")
+        await ctx.send(f"Slash sync failed: {type(e).__name__}: {e}")
+
+
 system_group = app_commands.Group(name="system", description="CtrlVee system and information commands")
+playback_group = app_commands.Group(name="playback", description="CtrlVee playback controls")
+
+
+async def _check_allowed_roles_for_interaction(interaction: discord.Interaction) -> bool:
+    """Return True when the caller has one of ALLOWED_ROLES in guild context."""
+    # Role-gated slash commands are guild-only in this migration slice.
+    if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        return False
+
+    member: discord.Member = interaction.user
+    allowed = Config.ALLOWED_ROLES
+    if not allowed:
+        await interaction.response.send_message("Command permissions are not configured.", ephemeral=True)
+        return False
+
+    member_role_ids = {r.id for r in member.roles}
+    member_role_names = {r.name.lower() for r in member.roles}
+
+    for role in allowed:
+        if isinstance(role, int) and role in member_role_ids:
+            return True
+        if isinstance(role, str) and role.lower() in member_role_names:
+            return True
+
+    await interaction.response.send_message(
+        f"You need one of these roles to use this command: {_format_allowed_roles_for_display()}",
+        ephemeral=True,
+    )
+    return False
 
 
 def _build_system_help_embed() -> discord.Embed:
@@ -1726,6 +1808,22 @@ def _build_system_help_embed() -> discord.Embed:
             "• `/system privacy`\n"
             "• `/system changelog`\n"
             "• `/system radarr-recent`"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Available /playback commands",
+        value=(
+            "• `/playback play`\n"
+            "• `/playback pause`\n"
+            "• `/playback stop`\n"
+            "• `/playback restart`\n"
+            "• `/playback rewind`\n"
+            "• `/playback forward`\n"
+            "• `/playback next`\n"
+            "• `/playback previous`\n"
+            "• `/playback play-num`\n"
+            "• `/playback status`"
         ),
         inline=False,
     )
@@ -1874,7 +1972,185 @@ async def system_radarr_recent(
     await interaction.followup.send(embed=embed, ephemeral=True)
 
 
+@system_group.command(name="sync", description="Owner only: force resync slash commands")
+async def system_sync(interaction: discord.Interaction):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("This command is owner-only.", ephemeral=True)
+        return
+
+    if not getattr(Config, 'ENABLE_SLASH_COMMANDS', True):
+        await interaction.response.send_message(
+            "Slash commands are disabled (`ENABLE_SLASH_COMMANDS=false`).",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        synced_global, synced_guild = await _sync_app_commands_now()
+        lines = [
+            f"Global sync: {len(synced_global)} command(s) -> {_format_synced_top_level_commands(synced_global)}"
+        ]
+        if synced_guild is not None:
+            guild_id = int(getattr(Config, 'SLASH_COMMAND_GUILD_ID', 0) or 0)
+            lines.insert(
+                0,
+                f"Guild sync ({guild_id}): {len(synced_guild)} command(s) -> {_format_synced_top_level_commands(synced_guild)}",
+            )
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
+    except Exception as e:
+        logger.error(f"/system sync command error: {e}")
+        await interaction.followup.send(f"Slash sync failed: {type(e).__name__}: {e}", ephemeral=True)
+
+
+@playback_group.command(name="play", description="Start or resume playback")
+async def playback_play(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    if vlc.play():
+        await interaction.response.send_message("Playback resumed.", ephemeral=True)
+    else:
+        await interaction.response.send_message("Could not start playback.", ephemeral=True)
+
+
+@playback_group.command(name="pause", description="Pause playback")
+async def playback_pause(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    if vlc.pause():
+        await interaction.response.send_message("Playback paused.", ephemeral=True)
+    else:
+        await interaction.response.send_message("Could not pause playback.", ephemeral=True)
+
+
+@playback_group.command(name="stop", description="Stop playback")
+async def playback_stop(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    if vlc.stop():
+        await interaction.response.send_message("Playback stopped.", ephemeral=True)
+    else:
+        await interaction.response.send_message("Could not stop playback.", ephemeral=True)
+
+
+@playback_group.command(name="restart", description="Restart current item from beginning")
+async def playback_restart(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    if vlc.seek("0"):
+        await interaction.response.send_message("Restarted current item.", ephemeral=True)
+    else:
+        await interaction.response.send_message("Could not restart current item.", ephemeral=True)
+
+
+@playback_group.command(name="rewind", description="Rewind playback")
+@app_commands.describe(seconds="Number of seconds to rewind")
+async def playback_rewind(interaction: discord.Interaction, seconds: app_commands.Range[int, 1, 3600] = 10):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    if vlc.seek(f"-{seconds}"):
+        await interaction.response.send_message(f"Rewound {seconds} seconds.", ephemeral=True)
+    else:
+        await interaction.response.send_message("Could not rewind playback.", ephemeral=True)
+
+
+@playback_group.command(name="forward", description="Fast forward playback")
+@app_commands.describe(seconds="Number of seconds to fast forward")
+async def playback_forward(interaction: discord.Interaction, seconds: app_commands.Range[int, 1, 3600] = 10):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    if vlc.seek(f"+{seconds}"):
+        await interaction.response.send_message(f"Fast forwarded {seconds} seconds.", ephemeral=True)
+    else:
+        await interaction.response.send_message("Could not fast forward playback.", ephemeral=True)
+
+
+@playback_group.command(name="next", description="Play next track")
+async def playback_next(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    if vlc.next():
+        await interaction.response.send_message("Skipped to next track.", ephemeral=True)
+    else:
+        await interaction.response.send_message("Could not skip to next track.", ephemeral=True)
+
+
+@playback_group.command(name="previous", description="Play previous track")
+async def playback_previous(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    if vlc.previous():
+        await interaction.response.send_message("Jumped to previous track.", ephemeral=True)
+    else:
+        await interaction.response.send_message("Could not jump to previous track.", ephemeral=True)
+
+
+@playback_group.command(name="play-num", description="Play an item by playlist number")
+@app_commands.describe(number="1-based playlist item number")
+async def playback_play_num(interaction: discord.Interaction, number: app_commands.Range[int, 1, 99999]):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    playlist = vlc.get_playlist()
+    if not playlist:
+        await interaction.response.send_message("Could not access VLC playlist.", ephemeral=True)
+        return
+
+    items = playlist.findall('.//leaf')
+    if not items:
+        await interaction.response.send_message("Playlist is empty.", ephemeral=True)
+        return
+
+    if number > len(items):
+        await interaction.response.send_message(
+            f"Invalid playlist number. Playlist has {len(items)} item(s).",
+            ephemeral=True,
+        )
+        return
+
+    item = items[number - 1]
+    item_id = item.get('id')
+    if not item_id or not vlc.play_item(item_id):
+        await interaction.response.send_message("Could not start playback for that item.", ephemeral=True)
+        return
+
+    pretty = MediaUtils.clean_filename_for_display(item.get('name', ''), max_length=120)
+    await interaction.response.send_message(f"Loading item #{number}: {pretty}", ephemeral=True)
+
+
+@playback_group.command(name="status", description="Show current playback status")
+async def playback_status(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    playback_cog = bot.get_cog("PlaybackCommands")
+    if playback_cog and hasattr(playback_cog, 'get_status_embed'):
+        try:
+            embed = await playback_cog.get_status_embed()
+            if embed:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return
+        except Exception as e:
+            logger.debug(f"Slash /playback status embed fallback: {e}")
+
+    status = vlc.get_status()
+    if not status:
+        await interaction.response.send_message("Could not read VLC status.", ephemeral=True)
+        return
+    state = status.find('state').text if status.find('state') is not None else 'unknown'
+    await interaction.response.send_message(f"Current VLC state: {state}", ephemeral=True)
+
+
 bot.tree.add_command(system_group)
+bot.tree.add_command(playback_group)
 
 def main():
     """Main entry point for the bot"""

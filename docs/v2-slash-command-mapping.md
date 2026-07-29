@@ -1,6 +1,6 @@
 # CtrlVee V2 Slash Command Mapping Matrix
 
-Last updated: 2026-07-29 (implementation slice 1)
+Last updated: 2026-07-29 (implementation slice 2)
 Target branch: feature/v2-slash-commands
 
 ## Purpose
@@ -23,16 +23,16 @@ This document maps current CtrlVee prefix commands to proposed slash commands fo
 
 | V1 command(s) | Proposed v2 slash | Options (current signature) | Current permission | Status |
 |---|---|---|---|---|
-| play, start, resume | /playback play | none | ALLOWED_ROLES | Planned |
-| pause | /playback pause | none | ALLOWED_ROLES | Planned |
-| stop | /playback stop | none | ALLOWED_ROLES | Planned |
-| restart | /playback restart | none | ALLOWED_ROLES | Planned |
-| next | /playback next | none | ALLOWED_ROLES | Planned |
-| previous | /playback previous | none | ALLOWED_ROLES | Planned |
-| rewind, rw | /playback rewind | seconds: int = 10 | ALLOWED_ROLES | Planned |
-| forward, ff, skip | /playback forward | seconds: int = 10 | ALLOWED_ROLES | Planned |
-| play_num | /playback play-num | number: int | ALLOWED_ROLES | Planned |
-| status, np, nowplaying | /playback status | none | ALLOWED_ROLES | Planned |
+| play, start, resume | /playback play | none | ALLOWED_ROLES | Implemented (hybrid) |
+| pause | /playback pause | none | ALLOWED_ROLES | Implemented (hybrid) |
+| stop | /playback stop | none | ALLOWED_ROLES | Implemented (hybrid) |
+| restart | /playback restart | none | ALLOWED_ROLES | Implemented (hybrid) |
+| next | /playback next | none | ALLOWED_ROLES | Implemented (hybrid) |
+| previous | /playback previous | none | ALLOWED_ROLES | Implemented (hybrid) |
+| rewind, rw | /playback rewind | seconds: int = 10 | ALLOWED_ROLES | Implemented (hybrid) |
+| forward, ff, skip | /playback forward | seconds: int = 10 | ALLOWED_ROLES | Implemented (hybrid) |
+| play_num | /playback play-num | number: int | ALLOWED_ROLES | Implemented (hybrid) |
+| status, np, nowplaying | /playback status | none | ALLOWED_ROLES | Implemented (hybrid) |
 | speed, spd, speed15, speednorm | /playback speed | target: str = None | ALLOWED_ROLES | Planned |
 | speedstatus, spdstatus, sr | /playback speed-status | none | ALLOWED_ROLES | Planned |
 | cleanup, plcleanup, cleanup_missing | /playback cleanup | none | Open | Planned |
@@ -91,3 +91,9 @@ This document maps current CtrlVee prefix commands to proposed slash commands fo
   - `ENABLE_PREFIX_COMMANDS`
   - `ENABLE_SLASH_COMMANDS`
   - `SLASH_COMMAND_GUILD_ID`
+
+## Implemented in Slice 2
+
+- Added `/playback` group commands: `play`, `pause`, `stop`, `restart`, `rewind`, `forward`, `next`, `previous`, `play-num`, `status`.
+- Added slash-side role checks that respect `ALLOWED_ROLES` (role names and role IDs).
+- Preserved prefix commands in parallel (hybrid mode) for safe rollout.

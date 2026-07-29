@@ -1,3 +1,12 @@
+## 1.9.19 - 2026-07-29
+
+### Added
+- **Playback Slash Commands (Slice 2)**: Added `/playback` slash command group with `play`, `pause`, `stop`, `restart`, `rewind`, `forward`, `next`, `previous`, `play-num`, and `status`.
+
+### Changed
+- **Slash Role Permission Parity**: Added role-check logic for slash playback commands to mirror existing `ALLOWED_ROLES` behavior used by prefix commands.
+- **Hybrid Migration Path**: Prefix commands remain available while slash playback commands are introduced in parallel.
+
 ## 1.9.18 - 2026-07-29
 
 ### Added
