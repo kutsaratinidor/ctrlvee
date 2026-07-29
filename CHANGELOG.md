@@ -1,3 +1,12 @@
+## 1.9.17 - 2026-07-29
+
+### Added
+- **Repository Terms of Service Document**: Added `TERMS.md` as a public Terms of Service page suitable for Discord bot verification submissions.
+
+### Changed
+- **Search Result Title Truncation UX**: Long `!search` results now use middle truncation so filename suffix details (such as `SxxEyy`) remain visible instead of being cut off at the end.
+- **Command Input Error Messages**: Improved command error handling to show command-specific, example-based guidance for invalid or missing arguments (for example `play_num`, `queue_next`, `schedule`, `unschedule`, `rewind`, `forward`, `remove_queue`, and others).
+
 ## 1.9.16 - 2026-07-08
 
 ### Added

@@ -1310,12 +1310,52 @@ async def on_message(message):
 
 @bot.event
 async def on_command_error(ctx, error):
+    prefix = Config.DISCORD_COMMAND_PREFIX
+    cmd_name = getattr(getattr(ctx, 'command', None), 'name', None)
+
     if isinstance(error, commands.MissingAnyRole):
         allowed_roles = _format_allowed_roles_for_display()
         logger.warning(f"Role check failed: required roles (any of): {allowed_roles}")
         await ctx.send(f"You need one of these roles to use this command: {allowed_roles}")
     elif isinstance(error, commands.CommandNotFound):
-        await ctx.send(f"Command not found. Use `{Config.DISCORD_COMMAND_PREFIX}controls` to see available commands.")
+        await ctx.send(f"Command not found. Use `{prefix}controls` to see available commands.")
+    elif isinstance(error, commands.MissingRequiredArgument):
+        missing_examples = {
+            'play_num': f"Missing playlist number. Example: `{prefix}play_num 42`",
+            'queue_next': f"Missing playlist number. Example: `{prefix}queue_next 42`",
+            'rewind': f"Example: `{prefix}rewind 15`",
+            'forward': f"Example: `{prefix}forward 15`",
+            'schedule': f"Missing arguments. Example: `{prefix}schedule 42 2026-08-15 21:30`",
+            'unschedule': f"Missing movie number. Example: `{prefix}unschedule 42`",
+            'remove_queue': f"Missing queue reference. Examples: `{prefix}remove_queue 1` or `{prefix}remove_queue #42`",
+            'search': f"Missing search text. Example: `{prefix}search smoking supermarket`",
+            'play_search': f"Missing search text. Example: `{prefix}play_search smoking supermarket`",
+            'watch_add': f"Missing folder path. Example: `{prefix}watch_add /path/to/media`",
+            'leave_server': f"In DMs, provide a guild ID. Example: `{prefix}leave_server 123456789012345678`",
+        }
+        msg = missing_examples.get(cmd_name)
+        if msg:
+            await ctx.send(msg)
+        else:
+            await ctx.send(f"Missing required argument. Use `{prefix}controls` to see command usage.")
+    elif isinstance(error, (commands.BadArgument, commands.BadUnionArgument)):
+        bad_arg_examples = {
+            'play_num': f"Invalid playlist number. Please use a whole number, for example: `{prefix}play_num 42`",
+            'queue_next': f"Invalid playlist number. Please use a whole number, for example: `{prefix}queue_next 42`",
+            'rewind': f"Invalid seconds value. Example: `{prefix}rewind 15`",
+            'forward': f"Invalid seconds value. Example: `{prefix}forward 15`",
+            'schedule': f"Invalid movie number. Example: `{prefix}schedule 42 2026-08-15 21:30`",
+            'unschedule': f"Invalid movie number. Example: `{prefix}unschedule 42`",
+            'leave_server': f"Invalid guild ID. Example: `{prefix}leave_server 123456789012345678`",
+        }
+        msg = bad_arg_examples.get(cmd_name)
+        if msg:
+            await ctx.send(msg)
+        else:
+            # Keep this generic but user-friendly for other conversion errors.
+            await ctx.send(
+                f"Invalid command argument. Use `{prefix}controls` to check the correct command format."
+            )
     else:
         logger.error(f"Command error: {str(error)}")
         logger.error(f"Error type: {type(error)}")

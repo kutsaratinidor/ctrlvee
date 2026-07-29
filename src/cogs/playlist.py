@@ -237,6 +237,29 @@ class PlaylistCommands(commands.Cog):
         tokens = normalized.split() if normalized else []
         return normalized, compact, tokens
 
+    def _truncate_middle(self, text: str, max_len: int, min_tail: int = 22) -> str:
+        """Truncate text from the middle while preserving the end details.
+
+        This helps keep suffix details like `S01E08` visible in long media titles.
+        """
+        if max_len <= 0:
+            return ""
+        if len(text) <= max_len:
+            return text
+        if max_len <= 3:
+            return "." * max_len
+
+        # Keep a meaningful suffix (episode/season tags are often near the end).
+        tail = min(min_tail, max_len - 3)
+        head = max_len - 3 - tail
+
+        # Ensure both sides remain visible even on tighter limits.
+        if head < 8:
+            head = min(8, max_len - 3)
+            tail = max(0, max_len - 3 - head)
+
+        return f"{text[:head]}...{text[-tail:]}"
+
     def _score_match(self, query_norm: str, query_compact: str, query_tokens: List[str], item_name: str) -> int:
         """Return a relevance score for query vs item name.
 
@@ -332,12 +355,10 @@ class PlaylistCommands(commands.Cog):
             name = item.get('name', '')
             icon = MediaUtils.get_media_icon(name)
             basename = MediaUtils.clean_filename_for_display(name)
-            line = f"{icon}`{playlist_num}` {basename}"
-
-            # Truncate very long single lines so one item can always fit a page.
-            if len(line) > max_chars_per_page:
-                keep = max(0, max_chars_per_page - len(f"{icon}`{playlist_num}` ..."))
-                line = f"{icon}`{playlist_num}` {basename[:keep]}..."
+            prefix = f"{icon}`{playlist_num}` "
+            max_basename_len = max(0, max_chars_per_page - len(prefix))
+            display_name = self._truncate_middle(basename, max_basename_len)
+            line = f"{prefix}{display_name}"
 
             projected = current_chars + len(line) + (1 if current_page else 0)
             would_overflow_chars = projected > max_chars_per_page
