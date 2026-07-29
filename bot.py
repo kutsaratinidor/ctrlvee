@@ -2268,7 +2268,7 @@ async def playlist_list(interaction: discord.Interaction):
     items = vlc.get_playlist()
     leaves = items.findall('.//leaf') if items is not None else []
     if not leaves:
-        await interaction.response.send_message("Playlist is empty.", ephemeral=True)
+        await interaction.response.send_message("Playlist is empty.")
         return
 
     view = PlaylistView(leaves, items_per_page=Config.ITEMS_PER_PAGE)
@@ -2276,7 +2276,7 @@ async def playlist_list(interaction: discord.Interaction):
     size_bytes = watch_service.get_total_media_size() if watch_service else 0
     footer = embed.footer.text or ""
     embed.set_footer(text=f"{footer} | Media Library Size: {_human_size(size_bytes)}")
-    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    await interaction.response.send_message(embed=embed, view=view)
 
 
 @playlist_group.command(name="search", description="Search for items in playlist")
@@ -2287,7 +2287,7 @@ async def playlist_search(interaction: discord.Interaction, query: str):
 
     playlist_cog = bot.get_cog("PlaylistCommands")
     if not playlist_cog or not hasattr(playlist_cog, '_search_items'):
-        await interaction.response.send_message("Playlist search is unavailable right now.", ephemeral=True)
+        await interaction.response.send_message("Playlist search is unavailable right now.")
         return
 
     results = playlist_cog._search_items(query)
@@ -2299,7 +2299,7 @@ async def playlist_search(interaction: discord.Interaction, query: str):
 
     if not results:
         embed.add_field(name="No Results", value="No matches found in the playlist", inline=False)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed)
         return
 
     pages = playlist_cog._build_search_pages(results)
@@ -2317,9 +2317,9 @@ async def playlist_search(interaction: discord.Interaction, query: str):
 
     if len(pages) > 1:
         view = SearchResultsView(query=query, pages=pages, total_matches=len(results))
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await interaction.response.send_message(embed=embed, view=view)
     else:
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed)
 
 
 @playlist_group.command(name="play-search", description="Search and play the top matching item")
@@ -2450,7 +2450,7 @@ async def queue_status(interaction: discord.Interaction):
         embed.add_field(name="Active Queue Items", value="No items currently queued", inline=False)
 
     embed.add_field(name="Usage", value="Use /queue add-next to queue a playlist item", inline=False)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.send_message(embed=embed)
 
 
 @queue_group.command(name="clear", description="Clear all queue tracking")
@@ -2829,11 +2829,11 @@ async def schedule_add(
 async def schedule_list(interaction: discord.Interaction):
     scheduler_cog = bot.get_cog("Scheduler")
     if not scheduler_cog:
-        await interaction.response.send_message("Scheduler is unavailable.", ephemeral=True)
+        await interaction.response.send_message("Scheduler is unavailable.")
         return
 
     if not scheduler_cog.scheduled:
-        await interaction.response.send_message("No movies scheduled.", ephemeral=True)
+        await interaction.response.send_message("No movies scheduled.")
         return
 
     embed = discord.Embed(title="Upcoming Scheduled Movies", color=discord.Color.purple())
@@ -2852,7 +2852,7 @@ async def schedule_list(interaction: discord.Interaction):
             inline=False,
         )
 
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.send_message(embed=embed)
 
 
 @schedule_group.command(name="remove", description="Remove all schedules for a playlist number")

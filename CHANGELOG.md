@@ -1,3 +1,8 @@
+## 1.9.24 - 2026-07-29
+
+### Changed
+- **Shared Query Visibility**: Updated read-only slash query outputs to be channel-visible (non-ephemeral) for `/playlist list`, `/playlist search`, `/queue status`, and `/schedule list` so non-issuers can view results.
+
 ## 1.9.23 - 2026-07-29
 
 ### Changed
