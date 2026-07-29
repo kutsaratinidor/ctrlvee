@@ -260,7 +260,7 @@ _autosave_stop = threading.Event()
 
 # Import cogs
 from src.cogs.playback import PlaybackCommands
-from src.cogs.playlist import PlaylistCommands
+from src.cogs.playlist import PlaylistCommands, PlaylistView, SearchResultsView
 from src.cogs.scheduler import Scheduler
 from src.cogs.watch import WatchCommands
 from src.version import __version__
@@ -1762,6 +1762,10 @@ async def syncslash(ctx):
 
 system_group = app_commands.Group(name="system", description="CtrlVee system and information commands")
 playback_group = app_commands.Group(name="playback", description="CtrlVee playback controls")
+playlist_group = app_commands.Group(name="playlist", description="CtrlVee playlist browsing and search")
+queue_group = app_commands.Group(name="queue", description="CtrlVee queue management")
+subtitles_group = app_commands.Group(name="subtitles", description="CtrlVee subtitle track controls")
+audio_group = app_commands.Group(name="audio", description="CtrlVee audio track controls")
 
 
 async def _check_allowed_roles_for_interaction(interaction: discord.Interaction) -> bool:
@@ -1824,6 +1828,43 @@ def _build_system_help_embed() -> discord.Embed:
             "• `/playback previous`\n"
             "• `/playback play-num`\n"
             "• `/playback status`"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Available /playlist commands",
+        value=(
+            "• `/playlist list`\n"
+            "• `/playlist search`\n"
+            "• `/playlist play-search`"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Available /queue commands",
+        value=(
+            "• `/queue add-next`\n"
+            "• `/queue status`\n"
+            "• `/queue clear`\n"
+            "• `/queue remove`"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Available /subtitles commands",
+        value=(
+            "• `/subtitles list`\n"
+            "• `/subtitles set`\n"
+            "• `/subtitles next`\n"
+            "• `/subtitles previous`"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Available /audio commands",
+        value=(
+            "• `/audio list`\n"
+            "• `/audio set`"
         ),
         inline=False,
     )
@@ -2149,8 +2190,547 @@ async def playback_status(interaction: discord.Interaction):
     await interaction.response.send_message(f"Current VLC state: {state}", ephemeral=True)
 
 
+@playback_group.command(name="cleanup", description="Owner only: remove missing files from VLC playlist")
+async def playback_cleanup(interaction: discord.Interaction):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("This command is owner-only.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        result = vlc.remove_missing_playlist_items()
+        removed = int(result.get('removed', 0))
+        items = result.get('items', []) or []
+        if removed == 0:
+            await interaction.followup.send("Playlist cleanup complete: no missing files detected.", ephemeral=True)
+            return
+
+        max_list = 10
+        listed = items[:max_list]
+        more = removed - len(listed)
+        lines = []
+        for it in listed:
+            nm = it.get('name') or '<unknown>'
+            lines.append(f"• {MediaUtils.clean_filename_for_display(nm)}")
+        if more > 0:
+            lines.append(f"… and {more} more")
+
+        embed = discord.Embed(
+            title="Playlist Cleanup",
+            description=f"Removed {removed} missing file(s) from the playlist:\n\n" + "\n".join(lines),
+            color=discord.Color.orange(),
+        )
+        embed.set_footer(text="Cleanup tool")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as e:
+        logger.error(f"/playback cleanup error: {e}")
+        await interaction.followup.send(f"Cleanup failed: {e}", ephemeral=True)
+
+
+def _human_size(num: int) -> str:
+    size = float(max(0, int(num)))
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
+        if size < 1024.0:
+            return f"{size:.2f} {unit}"
+        size /= 1024.0
+    return f"{size:.2f} PB"
+
+
+@playlist_group.command(name="list", description="Show playlist with interactive pagination")
+async def playlist_list(interaction: discord.Interaction):
+    items = vlc.get_playlist()
+    leaves = items.findall('.//leaf') if items is not None else []
+    if not leaves:
+        await interaction.response.send_message("Playlist is empty.", ephemeral=True)
+        return
+
+    view = PlaylistView(leaves, items_per_page=Config.ITEMS_PER_PAGE)
+    embed = view.build_embed()
+    size_bytes = watch_service.get_total_media_size() if watch_service else 0
+    footer = embed.footer.text or ""
+    embed.set_footer(text=f"{footer} | Media Library Size: {_human_size(size_bytes)}")
+    await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
+@playlist_group.command(name="search", description="Search for items in playlist")
+@app_commands.describe(query="Search text")
+async def playlist_search(interaction: discord.Interaction, query: str):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    playlist_cog = bot.get_cog("PlaylistCommands")
+    if not playlist_cog or not hasattr(playlist_cog, '_search_items'):
+        await interaction.response.send_message("Playlist search is unavailable right now.", ephemeral=True)
+        return
+
+    results = playlist_cog._search_items(query)
+    embed = discord.Embed(
+        title="Search Results",
+        description=f"Search query: '{query}'",
+        color=discord.Color.blue(),
+    )
+
+    if not results:
+        embed.add_field(name="No Results", value="No matches found in the playlist", inline=False)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
+    pages = playlist_cog._build_search_pages(results)
+    first_page = pages[0] if pages else []
+    embed.add_field(
+        name=f"Found {len(results)} matches • Page 1/{max(1, len(pages))}",
+        value="\n".join(first_page) if first_page else "No matches found in the playlist",
+        inline=False,
+    )
+    shown = len(first_page)
+    if shown:
+        embed.set_footer(text=f"Use /playback play-num to play an item • Showing 1-{shown} of {len(results)}")
+    else:
+        embed.set_footer(text="Use /playback play-num to play an item")
+
+    if len(pages) > 1:
+        view = SearchResultsView(query=query, pages=pages, total_matches=len(results))
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+    else:
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@playlist_group.command(name="play-search", description="Search and play the top matching item")
+@app_commands.describe(query="Search text")
+async def playlist_play_search(interaction: discord.Interaction, query: str):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    playlist_cog = bot.get_cog("PlaylistCommands")
+    if not playlist_cog or not hasattr(playlist_cog, '_search_items'):
+        await interaction.response.send_message("Playlist search is unavailable right now.", ephemeral=True)
+        return
+
+    results = playlist_cog._search_items(query)
+    if not results:
+        await interaction.response.send_message("No matches found in playlist.", ephemeral=True)
+        return
+
+    playlist_num, item = results[0]
+    item_id = item.get('id')
+    if not item_id or not vlc.play_item(item_id):
+        await interaction.response.send_message("Could not play the selected item.", ephemeral=True)
+        return
+
+    hint = f" Top match selected from {len(results)} results." if len(results) > 1 else ""
+    pretty = MediaUtils.clean_filename_for_display(item.get('name', ''), max_length=120)
+    await interaction.response.send_message(
+        f"Loading item #{playlist_num}: {pretty}.{hint}",
+        ephemeral=True,
+    )
+
+    playback_cog = bot.get_cog("PlaybackCommands")
+    if playback_cog and hasattr(playback_cog, '_announce_now_playing'):
+        try:
+            await playback_cog._announce_now_playing('command', item, playlist_num)
+        except Exception as e:
+            logger.debug(f"Slash /playlist play-search announcement fallback: {e}")
+
+
+@queue_group.command(name="add-next", description="Queue a playlist item to play next")
+@app_commands.describe(number="1-based playlist item number")
+async def queue_add_next(interaction: discord.Interaction, number: app_commands.Range[int, 1, 99999]):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    playlist = vlc.get_playlist()
+    if not playlist:
+        await interaction.response.send_message("Could not access VLC playlist.", ephemeral=True)
+        return
+
+    items = playlist.findall('.//leaf')
+    if not items:
+        await interaction.response.send_message("Playlist is empty.", ephemeral=True)
+        return
+
+    if number > len(items):
+        await interaction.response.send_message(
+            f"Invalid playlist number. Playlist has {len(items)} item(s).",
+            ephemeral=True,
+        )
+        return
+
+    item = items[number - 1]
+    item_id = item.get('id')
+    item_name = item.get('name', 'Unknown')
+    result = vlc.queue_item_next(item_id)
+    if not result.get("success"):
+        await interaction.response.send_message(
+            f"Error queuing item: {result.get('error', 'Unknown error')}",
+            ephemeral=True,
+        )
+        return
+
+    embed = discord.Embed(title="Item Queued", color=discord.Color.green())
+    embed.add_field(
+        name="Queued Item",
+        value=f"**{item_name}**\nPlaylist position: #{number}",
+        inline=False,
+    )
+    embed.add_field(
+        name="Queue Position",
+        value=f"#{result['queue_order']} of {result.get('total_queued', 1)} in queue",
+        inline=True,
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@queue_group.command(name="status", description="Show current queue status")
+async def queue_status(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    queue_state = vlc.get_queue_status()
+    queued_items = queue_state.get("queued_items", {})
+    embed = discord.Embed(
+        title=f"Queue Status ({len(queued_items)} item{'s' if len(queued_items) != 1 else ''})" if queued_items else "Queue Status",
+        color=discord.Color.blue(),
+    )
+
+    if queued_items:
+        playlist = vlc.get_playlist()
+        playlist_map = {}
+        if playlist:
+            for idx, item in enumerate(playlist.findall('.//leaf'), 1):
+                item_id = item.get('id')
+                if item_id:
+                    playlist_map[item_id] = {
+                        'name': item.get('name', 'Unknown'),
+                        'position': idx,
+                    }
+
+        queue_lines = []
+        for item_id, info in queued_items.items():
+            if item_id in playlist_map:
+                name = playlist_map[item_id]['name']
+                pos = playlist_map[item_id]['position']
+                queue_lines.append(f"• **{name}** (playlist #{pos}, queue #{info['queue_order']})")
+            else:
+                name = info.get('item_name', 'Unknown')
+                queue_lines.append(f"• **{name}** (queue #{info['queue_order']})")
+
+        embed.add_field(
+            name="Active Queue Items",
+            value="\n".join(queue_lines[:5]) + ("\n..." if len(queue_lines) > 5 else ""),
+            inline=False,
+        )
+    else:
+        embed.add_field(name="Active Queue Items", value="No items currently queued", inline=False)
+
+    embed.add_field(name="Usage", value="Use /queue add-next to queue a playlist item", inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@queue_group.command(name="clear", description="Clear all queue tracking")
+async def queue_clear(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    vlc.clear_queue_tracking()
+    embed = discord.Embed(
+        title="Queue Cleared",
+        description="All queue tracking has been cleared.",
+        color=discord.Color.orange(),
+    )
+    embed.add_field(
+        name="Note",
+        value="This clears tracking data only. Playlist item positions remain unchanged.",
+        inline=False,
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@queue_group.command(name="remove", description="Remove queued item by queue order or #playlist number")
+@app_commands.describe(ref="Queue order (e.g. 1) or playlist reference (e.g. #10)")
+async def queue_remove(interaction: discord.Interaction, ref: str):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    try:
+        if ref.startswith('#'):
+            num = int(ref[1:])
+            result = vlc.remove_from_queue_by_playlist_number(num)
+        else:
+            num = int(ref)
+            result = vlc.remove_from_queue_by_order(num)
+    except ValueError:
+        await interaction.response.send_message(
+            "Invalid reference. Use a number (queue order) or #<playlist number>.",
+            ephemeral=True,
+        )
+        return
+
+    if not result.get('success'):
+        await interaction.response.send_message(
+            result.get('error', 'Failed to remove from queue.'),
+            ephemeral=True,
+        )
+        return
+
+    name = result.get('item_name', 'Unknown')
+    embed = discord.Embed(
+        title="Removed from Queue",
+        description=f"{name} has been removed from the queue.",
+        color=discord.Color.red(),
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@subtitles_group.command(name="list", description="List subtitle tracks")
+async def subtitles_list(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    tracks = vlc.get_subtitle_tracks()
+    if tracks is None:
+        await interaction.response.send_message("Could not retrieve subtitle tracks from VLC.", ephemeral=True)
+        return
+    if len(tracks) == 0:
+        await interaction.response.send_message("No subtitle tracks reported for current media.", ephemeral=True)
+        return
+
+    playback_cog = bot.get_cog("PlaybackCommands")
+    selected_stream_index = getattr(playback_cog, 'selected_subtitle_stream_index', None) if playback_cog else None
+    if selected_stream_index is not None:
+        for tr in tracks:
+            if tr.get('stream_index') == selected_stream_index:
+                tr['selected'] = True
+                break
+
+    lines = []
+    for i, tr in enumerate(tracks, start=1):
+        mark = "✅" if tr.get('selected') else "⚪"
+        ui_idx = tr.get('index') or i
+        name = tr.get('name') or f"Track {ui_idx}"
+        lines.append(f"{mark} **{ui_idx}.** {name}")
+
+    embed = discord.Embed(
+        title="Subtitle Tracks",
+        description="\n".join(lines[:20]) + ("\n..." if len(lines) > 20 else ""),
+        color=discord.Color.blue(),
+    )
+    selected_track = next((tr for tr in tracks if tr.get('selected')), None)
+    if selected_track:
+        cur_idx = selected_track.get('index') or selected_track.get('id')
+        cur_name = selected_track.get('name') or f"Track {cur_idx}"
+        embed.add_field(name="Current", value=f"✅ {cur_name} ({cur_idx})", inline=True)
+    else:
+        embed.add_field(name="Current", value="⚪ Off", inline=True)
+    embed.add_field(name="Usage", value="Use /subtitles set <number|off>", inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@subtitles_group.command(name="set", description="Select subtitle track by position, or off")
+@app_commands.describe(track="Subtitle position from /subtitles list, or 'off'")
+async def subtitles_set(interaction: discord.Interaction, track: str):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    tracks = vlc.get_subtitle_tracks() or []
+    playback_cog = bot.get_cog("PlaybackCommands")
+
+    if track.lower() in {"off", "none", "disable", "disabled"}:
+        ok = vlc.set_subtitle_track(-1) or vlc.set_subtitle_track(0)
+        if not ok:
+            await interaction.response.send_message("Failed to disable subtitles.", ephemeral=True)
+            return
+        if playback_cog:
+            setattr(playback_cog, 'selected_subtitle_stream_index', None)
+        await interaction.response.send_message("Subtitles disabled.", ephemeral=True)
+        return
+
+    try:
+        pos_index = int(track)
+    except Exception:
+        await interaction.response.send_message("Please provide a number or 'off'.", ephemeral=True)
+        return
+
+    if pos_index < 1 or pos_index > len(tracks):
+        await interaction.response.send_message(
+            f"Position out of range. There are {len(tracks)} subtitle tracks.",
+            ephemeral=True,
+        )
+        return
+
+    tid = None
+    stream_idx = None
+    selected_track = None
+    for tr in tracks:
+        if tr.get('index') == pos_index:
+            tid = tr.get('id')
+            stream_idx = tr.get('stream_index')
+            selected_track = tr
+            break
+    if tid is None:
+        selected_track = tracks[pos_index - 1]
+        tid = selected_track.get('id')
+        stream_idx = selected_track.get('stream_index')
+
+    ok = False
+    if stream_idx is not None:
+        ok = vlc.set_subtitle_track(stream_idx)
+    if not ok and tid is not None:
+        ok = vlc.set_subtitle_track(tid)
+    if not ok:
+        ok = vlc.set_subtitle_track(pos_index - 1) or vlc.set_subtitle_track(pos_index)
+
+    if not ok:
+        await interaction.response.send_message("Failed to set subtitle track.", ephemeral=True)
+        return
+
+    if playback_cog:
+        setattr(
+            playback_cog,
+            'selected_subtitle_stream_index',
+            stream_idx if stream_idx is not None else tid,
+        )
+
+    fallback_name = selected_track.get('name') if selected_track else 'Unknown'
+    fallback_pos = selected_track.get('index') if selected_track else pos_index
+    await interaction.response.send_message(
+        f"Selected subtitle {fallback_pos}: {fallback_name}",
+        ephemeral=True,
+    )
+
+
+@subtitles_group.command(name="next", description="Switch to next subtitle track")
+async def subtitles_next(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    if vlc.subtitle_next():
+        await interaction.response.send_message("Switched to next subtitle track.", ephemeral=True)
+    else:
+        await interaction.response.send_message("Could not cycle subtitle track.", ephemeral=True)
+
+
+@subtitles_group.command(name="previous", description="Switch to previous subtitle track")
+async def subtitles_previous(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    if vlc.subtitle_prev():
+        await interaction.response.send_message("Switched to previous subtitle track.", ephemeral=True)
+    else:
+        await interaction.response.send_message("Could not cycle subtitle track.", ephemeral=True)
+
+
+@audio_group.command(name="list", description="List audio tracks")
+async def audio_list(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    tracks = vlc.get_audio_tracks()
+    if tracks is None:
+        await interaction.response.send_message("Could not retrieve audio tracks from VLC.", ephemeral=True)
+        return
+    if len(tracks) == 0:
+        await interaction.response.send_message("No audio tracks reported for current media.", ephemeral=True)
+        return
+
+    playback_cog = bot.get_cog("PlaybackCommands")
+    selected_stream_index = getattr(playback_cog, 'selected_audio_stream_index', None) if playback_cog else None
+    if selected_stream_index is not None:
+        for tr in tracks:
+            if tr.get('stream_index') == selected_stream_index:
+                tr['selected'] = True
+                break
+
+    lines = []
+    for i, tr in enumerate(tracks, start=1):
+        mark = "✅" if tr.get('selected') else "⚪"
+        ui_idx = tr.get('index') or i
+        name = tr.get('name') or f"Track {ui_idx}"
+        lines.append(f"{mark} **{ui_idx}.** {name}")
+
+    embed = discord.Embed(
+        title="Audio Tracks",
+        description="\n".join(lines[:20]) + ("\n..." if len(lines) > 20 else ""),
+        color=discord.Color.blue(),
+    )
+    selected_track = next((tr for tr in tracks if tr.get('selected')), None)
+    if selected_track:
+        cur_idx = selected_track.get('index') or selected_track.get('id')
+        cur_name = selected_track.get('name') or f"Track {cur_idx}"
+        embed.add_field(name="Current", value=f"✅ {cur_name} ({cur_idx})", inline=True)
+    else:
+        embed.add_field(name="Current", value="⚪ Unknown", inline=True)
+    embed.add_field(name="Usage", value="Use /audio set <number>", inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@audio_group.command(name="set", description="Select audio track by position")
+@app_commands.describe(track="Audio position from /audio list")
+async def audio_set(interaction: discord.Interaction, track: app_commands.Range[int, 1, 100]):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    tracks = vlc.get_audio_tracks() or []
+    if not tracks:
+        await interaction.response.send_message("No audio tracks found.", ephemeral=True)
+        return
+
+    pos_index = int(track)
+    if pos_index > len(tracks):
+        await interaction.response.send_message(
+            f"Position out of range. There are {len(tracks)} audio tracks.",
+            ephemeral=True,
+        )
+        return
+
+    tid = None
+    stream_idx = None
+    selected_track = None
+    for tr in tracks:
+        if tr.get('index') == pos_index:
+            tid = tr.get('id')
+            stream_idx = tr.get('stream_index')
+            selected_track = tr
+            break
+    if tid is None:
+        selected_track = tracks[pos_index - 1]
+        tid = selected_track.get('id')
+        stream_idx = selected_track.get('stream_index')
+
+    ok = False
+    if stream_idx is not None:
+        ok = vlc.set_audio_track(stream_idx)
+    if not ok and tid is not None:
+        ok = vlc.set_audio_track(tid)
+    if not ok:
+        ok = vlc.set_audio_track(pos_index - 1) or vlc.set_audio_track(pos_index)
+
+    if not ok:
+        await interaction.response.send_message("Failed to set audio track.", ephemeral=True)
+        return
+
+    playback_cog = bot.get_cog("PlaybackCommands")
+    if playback_cog:
+        setattr(
+            playback_cog,
+            'selected_audio_stream_index',
+            stream_idx if stream_idx is not None else tid,
+        )
+
+    fallback_name = selected_track.get('name') if selected_track else 'Unknown'
+    fallback_pos = selected_track.get('index') if selected_track else pos_index
+    await interaction.response.send_message(
+        f"Selected audio {fallback_pos}: {fallback_name}",
+        ephemeral=True,
+    )
+
+
 bot.tree.add_command(system_group)
 bot.tree.add_command(playback_group)
+bot.tree.add_command(playlist_group)
+bot.tree.add_command(queue_group)
+bot.tree.add_command(subtitles_group)
+bot.tree.add_command(audio_group)
 
 def main():
     """Main entry point for the bot"""

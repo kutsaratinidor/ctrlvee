@@ -1,6 +1,6 @@
 # CtrlVee V2 Slash Command Mapping Matrix
 
-Last updated: 2026-07-29 (implementation slice 2)
+Last updated: 2026-07-29 (implementation slice 4)
 Target branch: feature/v2-slash-commands
 
 ## Purpose
@@ -35,23 +35,23 @@ This document maps current CtrlVee prefix commands to proposed slash commands fo
 | status, np, nowplaying | /playback status | none | ALLOWED_ROLES | Implemented (hybrid) |
 | speed, spd, speed15, speednorm | /playback speed | target: str = None | ALLOWED_ROLES | Planned |
 | speedstatus, spdstatus, sr | /playback speed-status | none | ALLOWED_ROLES | Planned |
-| cleanup, plcleanup, cleanup_missing | /playback cleanup | none | Open | Planned |
+| cleanup, plcleanup, cleanup_missing | /playback cleanup | none | Owner-only | Implemented (hybrid) |
 | shuffle_on, shuffle_enable | /playback shuffle-on | none | ALLOWED_ROLES | Planned |
 | shuffle_off, shuffle_disable | /playback shuffle-off | none | ALLOWED_ROLES | Planned |
 | shuffle_toggle, shuffle | /playback shuffle-toggle | none | ALLOWED_ROLES | Planned |
-| sub_list, subs, slist | /subtitles list | none | ALLOWED_ROLES | Planned |
-| sub_set, subset, subid | /subtitles set | track_id: str | ALLOWED_ROLES | Planned |
-| sub_next, subn, sub+, subnext | /subtitles next | none | ALLOWED_ROLES | Planned |
-| sub_prev, subp, sub-, subprev | /subtitles previous | none | ALLOWED_ROLES | Planned |
-| audio_list, audios, alist | /audio list | none | ALLOWED_ROLES | Planned |
-| audio_set, audioset, audioid | /audio set | track_id: str | ALLOWED_ROLES | Planned |
-| list | /playlist list | none | Open | Planned |
-| search | /playlist search | query: str (required) | ALLOWED_ROLES | Planned |
-| play_search | /playlist play-search | query: str (required) | ALLOWED_ROLES | Planned |
-| queue_next, qnext | /queue add-next | number: int | ALLOWED_ROLES | Planned |
-| queue_status, qstatus | /queue status | none | ALLOWED_ROLES | Planned |
-| clear_queue, qclear | /queue clear | none | ALLOWED_ROLES | Planned |
-| remove_queue, qremove, unqueue | /queue remove | ref: str | ALLOWED_ROLES | Planned |
+| sub_list, subs, slist | /subtitles list | none | ALLOWED_ROLES | Implemented (hybrid) |
+| sub_set, subset, subid | /subtitles set | track_id: str | ALLOWED_ROLES | Implemented (hybrid) |
+| sub_next, subn, sub+, subnext | /subtitles next | none | ALLOWED_ROLES | Implemented (hybrid) |
+| sub_prev, subp, sub-, subprev | /subtitles previous | none | ALLOWED_ROLES | Implemented (hybrid) |
+| audio_list, audios, alist | /audio list | none | ALLOWED_ROLES | Implemented (hybrid) |
+| audio_set, audioset, audioid | /audio set | track_id: str | ALLOWED_ROLES | Implemented (hybrid) |
+| list | /playlist list | none | Open | Implemented (hybrid) |
+| search | /playlist search | query: str (required) | ALLOWED_ROLES | Implemented (hybrid) |
+| play_search | /playlist play-search | query: str (required) | ALLOWED_ROLES | Implemented (hybrid) |
+| queue_next, qnext | /queue add-next | number: int | ALLOWED_ROLES | Implemented (hybrid) |
+| queue_status, qstatus | /queue status | none | ALLOWED_ROLES | Implemented (hybrid) |
+| clear_queue, qclear | /queue clear | none | ALLOWED_ROLES | Implemented (hybrid) |
+| remove_queue, qremove, unqueue | /queue remove | ref: str | ALLOWED_ROLES | Implemented (hybrid) |
 | schedule | /schedule add | number: int, date: str, time: str | Open | Planned |
 | schedules | /schedule list | none | Open | Planned |
 | unschedule | /schedule remove | number: int | Open | Planned |
@@ -96,4 +96,19 @@ This document maps current CtrlVee prefix commands to proposed slash commands fo
 
 - Added `/playback` group commands: `play`, `pause`, `stop`, `restart`, `rewind`, `forward`, `next`, `previous`, `play-num`, `status`.
 - Added slash-side role checks that respect `ALLOWED_ROLES` (role names and role IDs).
+- Preserved prefix commands in parallel (hybrid mode) for safe rollout.
+
+## Implemented in Slice 3
+
+- Added `/playlist` group commands: `list`, `search`, `play-search`.
+- Added `/queue` group commands: `add-next`, `status`, `clear`, `remove`.
+- Reused existing playlist search and queue controller logic for behavior parity with prefix commands.
+- Preserved prefix commands in parallel (hybrid mode) for safe rollout.
+
+## Implemented in Slice 4
+
+- Added `/subtitles` group commands: `list`, `set`, `next`, `previous`.
+- Added `/audio` group commands: `list`, `set`.
+- Added owner-only `/playback cleanup` slash command.
+- Updated prefix `cleanup` command to owner-only.
 - Preserved prefix commands in parallel (hybrid mode) for safe rollout.

@@ -436,6 +436,7 @@ class PlaybackCommands(commands.Cog):
             self.logger.info("Periodic announcement task stopped")
 
     @commands.command(name='cleanup', aliases=['plcleanup','cleanup_missing'])
+    @commands.is_owner()
     async def cleanup_missing(self, ctx: commands.Context):
         """Remove missing/unavailable files from the VLC playlist.
 

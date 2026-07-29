@@ -1,3 +1,23 @@
+## 1.9.21 - 2026-07-29
+
+### Added
+- **Subtitles and Audio Slash Commands (Slice 4)**: Added `/subtitles` slash group with `list`, `set`, `next`, and `previous`, plus `/audio` slash group with `list` and `set`.
+- **Owner Cleanup Slash Command**: Added owner-only `/playback cleanup` command for removing missing files from VLC playlist.
+
+### Changed
+- **Cleanup Permission Tightening**: Updated prefix `cleanup` command to owner-only.
+- **Slash Help Coverage**: Updated `/system help` to include `/subtitles` and `/audio` command groups.
+- **Hybrid Migration Continuation**: Prefix and slash subtitle/audio commands now run in parallel for staged rollout.
+
+## 1.9.20 - 2026-07-29
+
+### Added
+- **Playlist and Queue Slash Commands (Slice 3)**: Added `/playlist` slash group with `list`, `search`, and `play-search`, plus `/queue` slash group with `add-next`, `status`, `clear`, and `remove`.
+
+### Changed
+- **Slash Help Coverage**: Updated `/system help` to include the new `/playlist` and `/queue` command groups.
+- **Hybrid Migration Continuation**: Prefix and slash commands for playlist and queue now run in parallel for staged rollout.
+
 ## 1.9.19 - 2026-07-29
 
 ### Added
