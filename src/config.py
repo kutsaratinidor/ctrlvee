@@ -141,6 +141,13 @@ class Config:
 
     # Discord Command Prefix
     DISCORD_COMMAND_PREFIX: str = os.getenv('DISCORD_COMMAND_PREFIX', '!')
+    # Slash/prefix migration toggles.
+    # Keep both enabled during migration; disable prefix to avoid Message Content Intent.
+    ENABLE_PREFIX_COMMANDS: bool = os.getenv('ENABLE_PREFIX_COMMANDS', 'true').strip().lower() in {'1','true','yes','y'}
+    ENABLE_SLASH_COMMANDS: bool = os.getenv('ENABLE_SLASH_COMMANDS', 'true').strip().lower() in {'1','true','yes','y'}
+    # Optional development guild ID for instant slash sync.
+    # If set to a non-zero guild ID, slash commands sync to that guild on startup.
+    SLASH_COMMAND_GUILD_ID: int = int(os.getenv('SLASH_COMMAND_GUILD_ID', '0'))
 
     # Optional dedicated channel for bot command responses.
     # When set, all ctx.send() responses are redirected to this channel.
@@ -263,6 +270,15 @@ class Config:
             
         if not cls.ALLOWED_ROLES:
             errors.append("ALLOWED_ROLES must contain at least one role")
+
+        if not cls.ENABLE_PREFIX_COMMANDS and not cls.ENABLE_SLASH_COMMANDS:
+            errors.append("At least one command mode must be enabled (ENABLE_PREFIX_COMMANDS and/or ENABLE_SLASH_COMMANDS)")
+
+        try:
+            if cls.SLASH_COMMAND_GUILD_ID < 0:
+                errors.append("SLASH_COMMAND_GUILD_ID must be 0 or a valid Discord guild ID")
+        except ValueError:
+            errors.append("SLASH_COMMAND_GUILD_ID must be a valid integer")
             
         try:
             if not (1 <= cls.VLC_PORT <= 65535):
@@ -350,6 +366,9 @@ class Config:
         )
         config_lines = [
             f"Discord Command Prefix: {cls.DISCORD_COMMAND_PREFIX}",
+            f"Prefix Commands Enabled: {cls.ENABLE_PREFIX_COMMANDS}",
+            f"Slash Commands Enabled: {cls.ENABLE_SLASH_COMMANDS}",
+            f"Slash Command Guild ID: {cls.SLASH_COMMAND_GUILD_ID if cls.SLASH_COMMAND_GUILD_ID else 'Global sync'}",
             f"Command Channel ID: {cls.COMMAND_CHANNEL_ID if cls.COMMAND_CHANNEL_ID else 'Not Configured (replies in-channel)'}",
             "Current Configuration:",
             "-" * 50,

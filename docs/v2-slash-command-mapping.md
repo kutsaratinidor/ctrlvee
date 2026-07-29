@@ -1,6 +1,6 @@
 # CtrlVee V2 Slash Command Mapping Matrix
 
-Last updated: 2026-07-29
+Last updated: 2026-07-29 (implementation slice 1)
 Target branch: feature/v2-slash-commands
 
 ## Purpose
@@ -56,11 +56,11 @@ This document maps current CtrlVee prefix commands to proposed slash commands fo
 | schedules | /schedule list | none | Open | Planned |
 | unschedule | /schedule remove | number: int | Open | Planned |
 | watch_add | /watch add | path: str (required) | ALLOWED_ROLES | Planned |
-| controls | /system help | none | Open | Planned |
-| version | /system version | none | Open | Planned |
-| privacy, policy, data_policy | /system privacy | none | Open | Planned |
-| changelog, changes, whatsnew | /system changelog | none | Open | Planned |
-| radarr_recent, recent_movies, recent_radarr | /system radarr-recent | instance: str = 'all', days: int = 7, limit: int = 10 | Open | Planned |
+| controls | /system help | none | Open | Implemented (hybrid) |
+| version | /system version | none | Open | Implemented (hybrid) |
+| privacy, policy, data_policy | /system privacy | none | Open | Implemented (hybrid) |
+| changelog, changes, whatsnew | /system changelog | none | Open | Implemented (hybrid) |
+| radarr_recent, recent_movies, recent_radarr | /system radarr-recent | instance: str = 'all', days: int = 7, limit: int = 10 | Open | Implemented (hybrid) |
 | leave_server, leave_guild, leave | /admin leave-server | guild_id: int \| None = None | Owner-only | Planned |
 | list_guilds, guilds, servers | /admin list-guilds | none | Owner-only | Planned |
 
@@ -82,3 +82,12 @@ This document maps current CtrlVee prefix commands to proposed slash commands fo
 5. /schedule and /watch
 6. /admin
 7. parity QA and staged prefix deprecation
+
+## Implemented in Slice 1
+
+- Added slash command sync on startup (`global` or `guild` via `SLASH_COMMAND_GUILD_ID`).
+- Added `/system` group commands: `help`, `version`, `privacy`, `changelog`, `radarr-recent`.
+- Added migration toggles to support slash-only deployments:
+  - `ENABLE_PREFIX_COMMANDS`
+  - `ENABLE_SLASH_COMMANDS`
+  - `SLASH_COMMAND_GUILD_ID`

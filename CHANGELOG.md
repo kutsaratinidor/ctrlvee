@@ -1,3 +1,13 @@
+## 1.9.18 - 2026-07-29
+
+### Added
+- **Slash Command Foundation**: Added initial `/system` slash command group with `help`, `version`, `privacy`, `changelog`, and `radarr-recent` commands.
+- **Slash Migration Config Toggles**: Added `ENABLE_PREFIX_COMMANDS`, `ENABLE_SLASH_COMMANDS`, and `SLASH_COMMAND_GUILD_ID` configuration values to support staged migration and faster development sync.
+
+### Changed
+- **Message Content Intent Dependency Control**: Bot now enables `message_content` intent only when prefix commands are enabled. This allows deployments to disable prefix commands and run slash-only mode without Message Content Intent.
+- **Startup Slash Sync Behavior**: Added startup command-tree sync logic for global or guild-scoped slash command registration depending on configuration.
+
 ## 1.9.17 - 2026-07-29
 
 ### Added

@@ -8,6 +8,7 @@ import time
 from src.config import Config
 from discord.ext import commands
 import discord
+from discord import app_commands
 
 # Get logger for this module
 logger = logging.getLogger(__name__)
@@ -53,10 +54,11 @@ Config.print_config()
 
 # Bot setup
 intents = discord.Intents.default()
-intents.message_content = True
+intents.message_content = bool(getattr(Config, 'ENABLE_PREFIX_COMMANDS', True))
 intents.voice_states = True  # Needed for voice events
 intents.guilds = True        # Needed for channel resolution
-bot = commands.Bot(command_prefix=Config.DISCORD_COMMAND_PREFIX, intents=intents)
+command_prefix = Config.DISCORD_COMMAND_PREFIX if getattr(Config, 'ENABLE_PREFIX_COMMANDS', True) else commands.when_mentioned
+bot = commands.Bot(command_prefix=command_prefix, intents=intents)
 
 # Initialize services
 from src.services.vlc_controller import VLCController
@@ -600,6 +602,20 @@ async def setup_hook():
         await bot.add_cog(Scheduler(bot, vlc))
         await bot.add_cog(WatchCommands(bot))
         logger.info("Cogs loaded successfully")
+
+        # Sync slash commands (global or development guild).
+        if getattr(Config, 'ENABLE_SLASH_COMMANDS', True):
+            guild_id = int(getattr(Config, 'SLASH_COMMAND_GUILD_ID', 0) or 0)
+            if guild_id > 0:
+                dev_guild = discord.Object(id=guild_id)
+                bot.tree.copy_global_to(guild=dev_guild)
+                synced = await bot.tree.sync(guild=dev_guild)
+                logger.info(f"Slash commands synced to guild {guild_id}: {len(synced)} command(s)")
+            else:
+                synced = await bot.tree.sync()
+                logger.info(f"Slash commands synced globally: {len(synced)} command(s)")
+        else:
+            logger.info("Slash command sync skipped (ENABLE_SLASH_COMMANDS=false)")
     except Exception as e:
         logger.error(f"Error loading cogs: {e}")
         sys.exit(1)
@@ -1290,6 +1306,9 @@ class CommandChannelContext(commands.Context):
 
 @bot.event
 async def on_message(message):
+    if not getattr(Config, 'ENABLE_PREFIX_COMMANDS', True):
+        return
+
     if message.author == bot.user:
         return
     
@@ -1687,6 +1706,175 @@ async def list_guilds(ctx):
     except Exception as e:
         logger.error(f"list_guilds command error: {e}")
         await ctx.send(f"Error listing servers: {e}")
+
+
+system_group = app_commands.Group(name="system", description="CtrlVee system and information commands")
+
+
+def _build_system_help_embed() -> discord.Embed:
+    prefix = Config.DISCORD_COMMAND_PREFIX
+    embed = discord.Embed(
+        title="CtrlVee Slash Commands",
+        description="V2 migration in progress. Use these slash commands now.",
+        color=discord.Color.blue(),
+    )
+    embed.add_field(
+        name="Available /system commands",
+        value=(
+            "• `/system help`\n"
+            "• `/system version`\n"
+            "• `/system privacy`\n"
+            "• `/system changelog`\n"
+            "• `/system radarr-recent`"
+        ),
+        inline=False,
+    )
+    if getattr(Config, 'ENABLE_PREFIX_COMMANDS', True):
+        embed.add_field(
+            name="Prefix mode",
+            value=f"Prefix commands are still enabled during migration (prefix: `{prefix}`).",
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="Prefix mode",
+            value="Prefix commands are disabled. Message Content Intent is not required.",
+            inline=False,
+        )
+    return embed
+
+
+@system_group.command(name="help", description="Show available CtrlVee slash system commands")
+async def system_help(interaction: discord.Interaction):
+    await interaction.response.send_message(embed=_build_system_help_embed(), ephemeral=True)
+
+
+@system_group.command(name="version", description="Show CtrlVee version and configuration summary")
+async def system_version(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="CtrlVee Version",
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="Version", value=__version__, inline=True)
+    embed.add_field(name="Items Per Page", value=str(Config.ITEMS_PER_PAGE), inline=True)
+    embed.add_field(name="TMDB", value=("Configured" if Config.TMDB_API_KEY else "Not Configured"), inline=True)
+    if getattr(Config, 'PRIVACY_POLICY_URL', '').strip():
+        embed.add_field(name="Privacy Policy", value=f"<{Config.PRIVACY_POLICY_URL}>", inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@system_group.command(name="privacy", description="Show privacy and data handling statement")
+async def system_privacy(interaction: discord.Interaction):
+    await interaction.response.send_message(embed=_build_privacy_embed(), ephemeral=True)
+
+
+@system_group.command(name="changelog", description="Show recent changelog entries")
+async def system_changelog(interaction: discord.Interaction):
+    entries = parse_changelog(max_versions=2)
+    if not entries:
+        await interaction.response.send_message("Changelog could not be loaded.", ephemeral=True)
+        return
+
+    first = True
+    for entry in entries:
+        embed = discord.Embed(
+            title=f"v{entry['version']}",
+            description=f"Released: {entry['date']}",
+            color=discord.Color.blurple()
+        )
+
+        for section in ['Changed', 'Added', 'Fixed']:
+            if section in entry['sections'] and entry['sections'][section]:
+                items = entry['sections'][section][:5]
+                value = '\n'.join([f"• {item}" for item in items])
+                if len(entry['sections'][section]) > 5:
+                    value += f"\n• ... and {len(entry['sections'][section]) - 5} more"
+                embed.add_field(name=section, value=value, inline=False)
+
+        if first:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            first = False
+        else:
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@system_group.command(name="radarr-recent", description="Show recently downloaded movies from Radarr")
+@app_commands.describe(
+    instance="Radarr instance name or 'all'",
+    days="Lookback window in days",
+    limit="Maximum items per instance",
+)
+async def system_radarr_recent(
+    interaction: discord.Interaction,
+    instance: str = 'all',
+    days: app_commands.Range[int, 1, 365] = 7,
+    limit: app_commands.Range[int, 1, 25] = 10,
+):
+    if not _radarr_services:
+        await interaction.response.send_message(
+            "Radarr is not configured. Please set RADARR_* environment variables.",
+            ephemeral=True,
+        )
+        return
+
+    target = instance.strip().lower() if isinstance(instance, str) else 'all'
+    selected = _radarr_services
+    if target != 'all':
+        selected = [i for i in _radarr_services if i['name'].lower() == target or i['display'].lower() == target]
+        if not selected:
+            names = ", ".join([i['name'] for i in _radarr_services])
+            disp = ", ".join([i['display'] for i in _radarr_services])
+            await interaction.response.send_message(
+                f"Unknown Radarr instance '{instance}'. Try one of: {names} (display: {disp}) or 'all'.",
+                ephemeral=True,
+            )
+            return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+
+    async def fetch_one(item):
+        name = item['display']
+        svc: RadarrService = item['service']
+        try:
+            return name, await svc.get_recent_downloads(days=days, limit=limit)
+        except Exception as e:
+            return name, {"success": False, "error": str(e)}
+
+    results = await asyncio.gather(*(fetch_one(i) for i in selected))
+
+    embed = discord.Embed(
+        title="Recently Added Movies",
+        description=f"Time window: last {days} day(s).",
+        color=discord.Color.purple()
+    )
+
+    any_success = False
+    for display_name, res in results:
+        if res.get("success"):
+            any_success = True
+            movies = res.get("movies", [])
+            if not movies:
+                value = "No recent items found."
+            else:
+                lines = []
+                for m in movies[:limit]:
+                    title = m.get('title') or 'Untitled'
+                    year = m.get('year') or '—'
+                    lines.append(f"• {title} ({year})")
+                value = "\n".join(lines)
+            embed.add_field(name=display_name, value=value, inline=False)
+        else:
+            err = res.get("error", "Unknown error")
+            embed.add_field(name=f"{display_name} (error)", value=f"❌ {err}", inline=False)
+
+    if not any_success:
+        await interaction.followup.send("Could not retrieve recent movies from any Radarr instance.", ephemeral=True)
+        return
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+bot.tree.add_command(system_group)
 
 def main():
     """Main entry point for the bot"""
