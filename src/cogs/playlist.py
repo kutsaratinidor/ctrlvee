@@ -354,7 +354,9 @@ class PlaylistCommands(commands.Cog):
         for playlist_num, item in results:
             name = item.get('name', '')
             icon = MediaUtils.get_media_icon(name)
-            basename = MediaUtils.clean_filename_for_display(name)
+            # Use a longer pre-clean limit for search results so episode suffixes
+            # (e.g. S01E08) are not lost before page-level truncation is applied.
+            basename = MediaUtils.clean_filename_for_display(name, max_length=240)
             prefix = f"{icon}`{playlist_num}` "
             max_basename_len = max(0, max_chars_per_page - len(prefix))
             display_name = self._truncate_middle(basename, max_basename_len)
