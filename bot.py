@@ -138,6 +138,20 @@ def _get_slash_allowed_channel_ids() -> tuple[list[int], str]:
     return announce_ids, "announce"
 
 
+def _filter_allowed_channel_ids_for_guild(allowed_ids: list[int], guild: discord.Guild) -> list[int]:
+    """Return only allowed channel IDs that belong to the provided guild."""
+    in_guild: list[int] = []
+    for cid in allowed_ids:
+        ch = guild.get_channel(cid)
+        if ch is None:
+            ch = bot.get_channel(cid)
+        if ch is None:
+            continue
+        if getattr(ch, 'guild', None) and ch.guild.id == guild.id:
+            in_guild.append(cid)
+    return in_guild
+
+
 async def _enforce_slash_channel_policy(interaction: discord.Interaction) -> bool:
     """Enforce configured slash-command channel policy for guild interactions."""
     # This policy is intended for server channels only.
@@ -159,24 +173,46 @@ async def _enforce_slash_channel_policy(interaction: discord.Interaction) -> boo
             logger.debug("Failed to send slash channel policy warning", exc_info=True)
         return False
 
+    allowed_ids_guild = _filter_allowed_channel_ids_for_guild(allowed_ids, interaction.guild)
+    if not allowed_ids_guild:
+        msg = (
+            "Slash commands are restricted, but no allowed command channels are configured for this server. "
+            "Ask the bot owner to configure a channel in this guild."
+        )
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except Exception:
+            logger.debug("Failed to send slash channel policy warning", exc_info=True)
+        logger.info(
+            "Slash channel policy deny (no in-guild channels): guild=%s source=%s configured=%s user=%s",
+            getattr(interaction.guild, 'id', None),
+            source,
+            allowed_ids,
+            getattr(interaction.user, 'id', None),
+        )
+        return False
+
     current_channel_id = int(interaction.channel_id or 0)
-    if current_channel_id in allowed_ids:
+    if current_channel_id in allowed_ids_guild:
         logger.debug(
             "Slash channel policy allow: guild=%s channel=%s source=%s allowed=%s",
             getattr(interaction.guild, 'id', None),
             current_channel_id,
             source,
-            allowed_ids,
+            allowed_ids_guild,
         )
         return True
 
-    if source == "command" and len(allowed_ids) == 1:
+    if source == "command" and len(allowed_ids_guild) == 1:
         msg = (
-            f"Slash commands are restricted to <#{allowed_ids[0]}>. "
+            f"Slash commands are restricted to <#{allowed_ids_guild[0]}>. "
             "Please run this command there."
         )
     else:
-        allowed_mentions = ", ".join(f"<#{cid}>" for cid in allowed_ids)
+        allowed_mentions = ", ".join(f"<#{cid}>" for cid in allowed_ids_guild)
         msg = (
             f"Slash commands are restricted to these channels: {allowed_mentions}. "
             "Please run this command there."
@@ -194,7 +230,7 @@ async def _enforce_slash_channel_policy(interaction: discord.Interaction) -> boo
         getattr(interaction.guild, 'id', None),
         current_channel_id,
         source,
-        allowed_ids,
+        allowed_ids_guild,
         getattr(interaction.user, 'id', None),
     )
     return False
