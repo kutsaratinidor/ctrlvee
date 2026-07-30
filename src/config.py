@@ -148,6 +148,9 @@ class Config:
     # Optional development guild ID for instant slash sync.
     # If set to a non-zero guild ID, slash commands sync to that guild on startup.
     SLASH_COMMAND_GUILD_ID: int = int(os.getenv('SLASH_COMMAND_GUILD_ID', '0'))
+    # When SLASH_COMMAND_GUILD_ID is set, keep global sync disabled by default to avoid
+    # duplicate guild+global command entries in Discord's command picker during development.
+    SYNC_GLOBAL_COMMANDS: bool = os.getenv('SYNC_GLOBAL_COMMANDS', 'false').strip().lower() in {'1','true','yes','y'}
 
     # Optional dedicated channel for bot command responses.
     # When set, all ctx.send() responses are redirected to this channel.
@@ -369,6 +372,7 @@ class Config:
             f"Prefix Commands Enabled: {cls.ENABLE_PREFIX_COMMANDS}",
             f"Slash Commands Enabled: {cls.ENABLE_SLASH_COMMANDS}",
             f"Slash Command Guild ID: {cls.SLASH_COMMAND_GUILD_ID if cls.SLASH_COMMAND_GUILD_ID else 'Global sync'}",
+            f"Slash Global Sync Enabled: {cls.SYNC_GLOBAL_COMMANDS}",
             f"Command Channel ID: {cls.COMMAND_CHANNEL_ID if cls.COMMAND_CHANNEL_ID else 'Not Configured (replies in-channel)'}",
             "Current Configuration:",
             "-" * 50,

@@ -1,3 +1,13 @@
+## 1.9.26 - 2026-07-29
+
+### Added
+- **Startup Sync Scope Warning**: Added a startup warning when both `SLASH_COMMAND_GUILD_ID` and `SYNC_GLOBAL_COMMANDS=true` are configured, to highlight potential duplicate slash command entries (guild + global) in the same server.
+
+### Changed
+- **Dev Slash Sync Scope Control**: In development guild mode (`SLASH_COMMAND_GUILD_ID>0`), slash sync is now guild-only by default and global sync runs only when `SYNC_GLOBAL_COMMANDS=true`.
+- **Sync Diagnostics Output**: Updated owner sync outputs (`!syncslash` and `/system sync`) to explicitly report when global sync is skipped.
+- **Configuration Surface**: Added and documented `SYNC_GLOBAL_COMMANDS` in config logging, template env, and README migration notes.
+
 ## 1.9.25 - 2026-07-29
 
 ### Added

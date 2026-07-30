@@ -532,14 +532,24 @@ def _format_synced_top_level_commands(commands_list) -> str:
         return "(unknown)"
 
 
-async def _sync_app_commands_now() -> tuple[list, list | None]:
-    """Sync slash commands and return (global_synced, guild_synced_or_none)."""
+async def _sync_app_commands_now() -> tuple[list | None, list | None]:
+    """Sync slash commands and return (global_synced_or_none, guild_synced_or_none)."""
     guild_id = int(getattr(Config, 'SLASH_COMMAND_GUILD_ID', 0) or 0)
+    global_sync_enabled = bool(getattr(Config, 'SYNC_GLOBAL_COMMANDS', False))
+
+    if guild_id > 0 and global_sync_enabled:
+        logger.warning(
+            "Both SLASH_COMMAND_GUILD_ID and SYNC_GLOBAL_COMMANDS are enabled; "
+            "Discord may show duplicate slash entries in that guild (guild + global)."
+        )
+
     if guild_id > 0:
         dev_guild = discord.Object(id=guild_id)
         bot.tree.copy_global_to(guild=dev_guild)
         synced_guild = await bot.tree.sync(guild=dev_guild)
-        synced_global = await bot.tree.sync()
+        synced_global = None
+        if global_sync_enabled:
+            synced_global = await bot.tree.sync()
         return synced_global, synced_guild
 
     synced_global = await bot.tree.sync()
@@ -638,11 +648,14 @@ async def setup_hook():
                     len(synced_guild),
                     _format_synced_top_level_commands(synced_guild),
                 )
-            logger.info(
-                "Slash commands synced globally: %s command(s) [%s]",
-                len(synced_global),
-                _format_synced_top_level_commands(synced_global),
-            )
+            if synced_global is not None:
+                logger.info(
+                    "Slash commands synced globally: %s command(s) [%s]",
+                    len(synced_global),
+                    _format_synced_top_level_commands(synced_global),
+                )
+            elif synced_guild is not None:
+                logger.info("Slash global sync skipped (SYNC_GLOBAL_COMMANDS=false with dev guild mode)")
         else:
             logger.info("Slash command sync skipped (ENABLE_SLASH_COMMANDS=false)")
     except Exception as e:
@@ -1747,15 +1760,19 @@ async def syncslash(ctx):
 
     try:
         synced_global, synced_guild = await _sync_app_commands_now()
-        lines = [
-            f"Global sync: {len(synced_global)} command(s) -> {_format_synced_top_level_commands(synced_global)}"
-        ]
+        lines = []
         if synced_guild is not None:
             guild_id = int(getattr(Config, 'SLASH_COMMAND_GUILD_ID', 0) or 0)
             lines.insert(
                 0,
                 f"Guild sync ({guild_id}): {len(synced_guild)} command(s) -> {_format_synced_top_level_commands(synced_guild)}",
             )
+        if synced_global is not None:
+            lines.append(
+                f"Global sync: {len(synced_global)} command(s) -> {_format_synced_top_level_commands(synced_global)}"
+            )
+        elif synced_guild is not None:
+            lines.append("Global sync skipped (SYNC_GLOBAL_COMMANDS=false).")
         await ctx.send("\n".join(lines))
     except Exception as e:
         logger.error(f"syncslash command error: {e}")
@@ -2061,15 +2078,19 @@ async def system_sync(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
         synced_global, synced_guild = await _sync_app_commands_now()
-        lines = [
-            f"Global sync: {len(synced_global)} command(s) -> {_format_synced_top_level_commands(synced_global)}"
-        ]
+        lines = []
         if synced_guild is not None:
             guild_id = int(getattr(Config, 'SLASH_COMMAND_GUILD_ID', 0) or 0)
             lines.insert(
                 0,
                 f"Guild sync ({guild_id}): {len(synced_guild)} command(s) -> {_format_synced_top_level_commands(synced_guild)}",
             )
+        if synced_global is not None:
+            lines.append(
+                f"Global sync: {len(synced_global)} command(s) -> {_format_synced_top_level_commands(synced_global)}"
+            )
+        elif synced_guild is not None:
+            lines.append("Global sync skipped (SYNC_GLOBAL_COMMANDS=false).")
         await interaction.followup.send("\n".join(lines), ephemeral=True)
     except Exception as e:
         logger.error(f"/system sync command error: {e}")
