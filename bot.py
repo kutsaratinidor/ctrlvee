@@ -161,6 +161,13 @@ async def _enforce_slash_channel_policy(interaction: discord.Interaction) -> boo
 
     current_channel_id = int(interaction.channel_id or 0)
     if current_channel_id in allowed_ids:
+        logger.debug(
+            "Slash channel policy allow: guild=%s channel=%s source=%s allowed=%s",
+            getattr(interaction.guild, 'id', None),
+            current_channel_id,
+            source,
+            allowed_ids,
+        )
         return True
 
     if source == "command" and len(allowed_ids) == 1:
@@ -182,9 +189,18 @@ async def _enforce_slash_channel_policy(interaction: discord.Interaction) -> boo
             await interaction.response.send_message(msg, ephemeral=True)
     except Exception:
         logger.debug("Failed to send slash channel policy warning", exc_info=True)
+    logger.info(
+        "Slash channel policy deny: guild=%s channel=%s source=%s allowed=%s user=%s",
+        getattr(interaction.guild, 'id', None),
+        current_channel_id,
+        source,
+        allowed_ids,
+        getattr(interaction.user, 'id', None),
+    )
     return False
 
-@bot.tree.interaction_check
+# Global CommandTree check for all slash commands.
+@bot.tree.check
 async def global_slash_channel_policy_check(interaction: discord.Interaction) -> bool:
     return await _enforce_slash_channel_policy(interaction)
 

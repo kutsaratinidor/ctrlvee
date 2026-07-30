@@ -1,3 +1,10 @@
+## 1.9.27 - 2026-07-29
+
+### Changed
+- **Slash Command Channel Policy Hardening (Tracking Checkpoint)**: Enforced channel restrictions for slash commands using a global CommandTree check so guild slash commands only execute in allowed channels derived from config.
+- **Point-In-Time Marker**: This release marks the enforcement checkpoint for channel-scoped slash execution policy rollout (2026-07-29), including deny-path logging for verification.
+- **Policy Behavior Clarification**: When `COMMAND_CHANNEL_ID>0`, slash commands are restricted to that channel; otherwise they are restricted to `WATCH_ANNOUNCE_CHANNEL_ID`. If both are unset/`0`, guild slash commands are blocked until one is configured.
+
 ## 1.9.26 - 2026-07-29
 
 ### Added
