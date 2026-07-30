@@ -122,6 +122,61 @@ def _format_allowed_roles_for_display() -> str:
         else:
             parts.append(f"'{role}'")
     return ", ".join(parts)
+    
+def _get_slash_allowed_channel_ids() -> tuple[list[int], str]:
+    """Return allowed channel IDs for slash commands and their policy source.
+
+    Policy:
+    1. If COMMAND_CHANNEL_ID is set (>0), only that channel is allowed.
+    2. Otherwise, allow only channels in WATCH_ANNOUNCE_CHANNEL_ID.
+    """
+    command_channel_id = int(getattr(Config, 'COMMAND_CHANNEL_ID', 0) or 0)
+    if command_channel_id > 0:
+        return [command_channel_id], "command"
+
+    announce_ids = [cid for cid in Config.get_announce_channel_ids() if int(cid) > 0]
+    return announce_ids, "announce"
+
+
+async def _enforce_slash_channel_policy(interaction: discord.Interaction) -> bool:
+    """Enforce configured slash-command channel policy for guild interactions."""
+    # This policy is intended for server channels only.
+    if interaction.guild is None:
+        return True
+
+    allowed_ids, source = _get_slash_allowed_channel_ids()
+    if not allowed_ids:
+        # No channel policy configured; keep behavior permissive.
+        return True
+
+    current_channel_id = int(interaction.channel_id or 0)
+    if current_channel_id in allowed_ids:
+        return True
+
+    if source == "command" and len(allowed_ids) == 1:
+        msg = (
+            f"Slash commands are restricted to <#{allowed_ids[0]}>. "
+            "Please run this command there."
+        )
+    else:
+        allowed_mentions = ", ".join(f"<#{cid}>" for cid in allowed_ids)
+        msg = (
+            f"Slash commands are restricted to these channels: {allowed_mentions}. "
+            "Please run this command there."
+        )
+
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+    except Exception:
+        logger.debug("Failed to send slash channel policy warning", exc_info=True)
+    return False
+
+@bot.tree.interaction_check
+async def global_slash_channel_policy_check(interaction: discord.Interaction) -> bool:
+    return await _enforce_slash_channel_policy(interaction)
 
 
 def _build_privacy_embed() -> discord.Embed:

@@ -116,6 +116,8 @@ Edit `.env` (starting from `template.env`).
 - `ENABLE_SLASH_COMMANDS` (default `true`)
 - `SLASH_COMMAND_GUILD_ID` (default `0`, global sync)
 - `SYNC_GLOBAL_COMMANDS` (default `false`; avoids duplicate guild+global entries in dev guild mode)
+- `COMMAND_CHANNEL_ID` (if set > 0, slash commands are restricted to this channel)
+- `WATCH_ANNOUNCE_CHANNEL_ID` (when `COMMAND_CHANNEL_ID=0`, slash commands are restricted to these channels if configured)
 - `ITEMS_PER_PAGE` (default `20`)
 - `QUEUE_BACKUP_FILE` (default `queue_backup.json`)
 - `PLAYLIST_AUTOSAVE_FILE` + `PLAYLIST_AUTOSAVE_INTERVAL` (optional autosave)
