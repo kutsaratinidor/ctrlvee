@@ -200,9 +200,13 @@ async def _enforce_slash_channel_policy(interaction: discord.Interaction) -> boo
     return False
 
 # Global CommandTree check for all slash commands.
-@bot.tree.check
 async def global_slash_channel_policy_check(interaction: discord.Interaction) -> bool:
     return await _enforce_slash_channel_policy(interaction)
+
+
+# Some discord.py versions do not expose CommandTree.check decorator.
+# Assigning interaction_check directly keeps this compatible.
+bot.tree.interaction_check = global_slash_channel_policy_check
 
 
 def _log_slash_channel_policy() -> None:
