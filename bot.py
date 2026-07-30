@@ -146,8 +146,18 @@ async def _enforce_slash_channel_policy(interaction: discord.Interaction) -> boo
 
     allowed_ids, source = _get_slash_allowed_channel_ids()
     if not allowed_ids:
-        # No channel policy configured; keep behavior permissive.
-        return True
+        msg = (
+            "Slash commands are currently restricted by configuration, but no allowed channels are set. "
+            "Set `COMMAND_CHANNEL_ID` or configure `WATCH_ANNOUNCE_CHANNEL_ID`."
+        )
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except Exception:
+            logger.debug("Failed to send slash channel policy warning", exc_info=True)
+        return False
 
     current_channel_id = int(interaction.channel_id or 0)
     if current_channel_id in allowed_ids:
@@ -177,6 +187,25 @@ async def _enforce_slash_channel_policy(interaction: discord.Interaction) -> boo
 @bot.tree.interaction_check
 async def global_slash_channel_policy_check(interaction: discord.Interaction) -> bool:
     return await _enforce_slash_channel_policy(interaction)
+
+
+def _log_slash_channel_policy() -> None:
+    """Log effective slash channel policy at startup for easier troubleshooting."""
+    command_channel_id = int(getattr(Config, 'COMMAND_CHANNEL_ID', 0) or 0)
+    announce_ids = [cid for cid in Config.get_announce_channel_ids() if int(cid) > 0]
+
+    if command_channel_id > 0:
+        logger.info("Slash channel policy: restricted to COMMAND_CHANNEL_ID=%s", command_channel_id)
+        return
+
+    if announce_ids:
+        logger.info("Slash channel policy: restricted to WATCH_ANNOUNCE_CHANNEL_ID=%s", announce_ids)
+        return
+
+    logger.warning(
+        "Slash channel policy: no allowed channels configured. "
+        "Guild slash commands will be blocked until COMMAND_CHANNEL_ID or WATCH_ANNOUNCE_CHANNEL_ID is set."
+    )
 
 
 def _build_privacy_embed() -> discord.Embed:
@@ -762,6 +791,7 @@ async def setup_hook():
 @bot.event
 async def on_ready():
     """Called when the bot is ready."""
+    _log_slash_channel_policy()
     # Log voice join/reconnect configuration to confirm loaded values
     try:
         logger.info(
