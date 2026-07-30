@@ -556,6 +556,48 @@ async def _sync_app_commands_now() -> tuple[list | None, list | None]:
     return synced_global, None
 
 
+def _register_app_command_groups() -> None:
+    """Register top-level slash command groups on the command tree."""
+    groups = [
+        system_group,
+        playback_group,
+        playlist_group,
+        queue_group,
+        subtitles_group,
+        audio_group,
+        schedule_group,
+        watch_group,
+        admin_group,
+    ]
+    for group in groups:
+        try:
+            bot.tree.add_command(group)
+        except app_commands.CommandAlreadyRegistered:
+            # Safe when called after a partial re-registration path.
+            continue
+
+
+async def _purge_global_commands_once() -> tuple[int, int, int | None]:
+    """Clear global command registrations once and resync guild scope.
+
+    Returns:
+        (global_before_count, global_after_count, guild_after_count_or_none)
+    """
+    global_before = await bot.tree.fetch_commands()
+
+    # Push an empty global command set to remove stale global registrations.
+    bot.tree.clear_commands(guild=None)
+    global_after = await bot.tree.sync()
+
+    # Restore local groups for ongoing runtime behavior and future sync operations.
+    _register_app_command_groups()
+
+    _, synced_guild = await _sync_app_commands_now()
+    guild_after_count = len(synced_guild) if synced_guild is not None else None
+
+    return len(global_before), len(global_after), guild_after_count
+
+
 @bot.event
 async def on_voice_state_update(member, before, after):
     """When the bot itself gets disconnected from voice, attempt a controlled reconnect."""
@@ -1779,6 +1821,38 @@ async def syncslash(ctx):
         await ctx.send(f"Slash sync failed: {type(e).__name__}: {e}")
 
 
+@bot.command(name="clearglobalslash", aliases=["clear_global_slash", "purgeglobalslash"])
+@commands.is_owner()
+async def clearglobalslash(ctx):
+    """Owner-only: one-time purge of global slash registrations in dev-guild mode."""
+    if not getattr(Config, 'ENABLE_SLASH_COMMANDS', True):
+        await ctx.send("Slash commands are disabled (`ENABLE_SLASH_COMMANDS=false`).")
+        return
+
+    guild_id = int(getattr(Config, 'SLASH_COMMAND_GUILD_ID', 0) or 0)
+    if guild_id <= 0:
+        await ctx.send("Set `SLASH_COMMAND_GUILD_ID` to your dev server first (must be > 0).")
+        return
+
+    if bool(getattr(Config, 'SYNC_GLOBAL_COMMANDS', False)):
+        await ctx.send("Set `SYNC_GLOBAL_COMMANDS=false` first, then rerun this command.")
+        return
+
+    try:
+        before_count, after_count, guild_after_count = await _purge_global_commands_once()
+        lines = [
+            f"Global slash commands before purge: {before_count}",
+            f"Global slash commands after purge: {after_count}",
+        ]
+        if guild_after_count is not None:
+            lines.append(f"Guild slash commands resynced: {guild_after_count}")
+        lines.append("If duplicates still appear, restart Discord once more to refresh local cache.")
+        await ctx.send("\n".join(lines))
+    except Exception as e:
+        logger.error(f"clearglobalslash command error: {e}")
+        await ctx.send(f"Global slash cleanup failed: {type(e).__name__}: {e}")
+
+
 system_group = app_commands.Group(name="system", description="CtrlVee system and information commands")
 playback_group = app_commands.Group(name="playback", description="CtrlVee playback controls")
 playlist_group = app_commands.Group(name="playlist", description="CtrlVee playlist browsing and search")
@@ -1833,7 +1907,9 @@ def _build_system_help_embed() -> discord.Embed:
             "• `/system version`\n"
             "• `/system privacy`\n"
             "• `/system changelog`\n"
-            "• `/system radarr-recent`"
+            "• `/system radarr-recent`\n"
+            "• `/system sync` (owner only)\n"
+            "• `/system clear-global-slash` (owner only)"
         ),
         inline=False,
     )
@@ -2095,6 +2171,50 @@ async def system_sync(interaction: discord.Interaction):
     except Exception as e:
         logger.error(f"/system sync command error: {e}")
         await interaction.followup.send(f"Slash sync failed: {type(e).__name__}: {e}", ephemeral=True)
+
+
+@system_group.command(name="clear-global-slash", description="Owner only: one-time purge of global slash registrations")
+async def system_clear_global_slash(interaction: discord.Interaction):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("This command is owner-only.", ephemeral=True)
+        return
+
+    if not getattr(Config, 'ENABLE_SLASH_COMMANDS', True):
+        await interaction.response.send_message(
+            "Slash commands are disabled (`ENABLE_SLASH_COMMANDS=false`).",
+            ephemeral=True,
+        )
+        return
+
+    guild_id = int(getattr(Config, 'SLASH_COMMAND_GUILD_ID', 0) or 0)
+    if guild_id <= 0:
+        await interaction.response.send_message(
+            "Set `SLASH_COMMAND_GUILD_ID` to your dev server first (must be > 0).",
+            ephemeral=True,
+        )
+        return
+
+    if bool(getattr(Config, 'SYNC_GLOBAL_COMMANDS', False)):
+        await interaction.response.send_message(
+            "Set `SYNC_GLOBAL_COMMANDS=false` first, then rerun this command.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        before_count, after_count, guild_after_count = await _purge_global_commands_once()
+        lines = [
+            f"Global slash commands before purge: {before_count}",
+            f"Global slash commands after purge: {after_count}",
+        ]
+        if guild_after_count is not None:
+            lines.append(f"Guild slash commands resynced: {guild_after_count}")
+        lines.append("If duplicates still appear, restart Discord once more to refresh local cache.")
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
+    except Exception as e:
+        logger.error(f"/system clear-global-slash command error: {e}")
+        await interaction.followup.send(f"Global slash cleanup failed: {type(e).__name__}: {e}", ephemeral=True)
 
 
 @playback_group.command(name="play", description="Start or resume playback")
@@ -3141,15 +3261,7 @@ async def admin_leave_server(interaction: discord.Interaction, guild_id: str | N
     await target_guild.leave()
 
 
-bot.tree.add_command(system_group)
-bot.tree.add_command(playback_group)
-bot.tree.add_command(playlist_group)
-bot.tree.add_command(queue_group)
-bot.tree.add_command(subtitles_group)
-bot.tree.add_command(audio_group)
-bot.tree.add_command(schedule_group)
-bot.tree.add_command(watch_group)
-bot.tree.add_command(admin_group)
+_register_app_command_groups()
 
 def main():
     """Main entry point for the bot"""
