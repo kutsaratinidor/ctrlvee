@@ -86,6 +86,19 @@ CtrlVee now supports hybrid prefix+slash operation during v2 migration.
 
 If you set `ENABLE_PREFIX_COMMANDS=false` and keep slash commands enabled, the bot can run without Message Content Intent dependency for command parsing.
 
+### Troubleshooting: Duplicate Slash Commands in Dev Guild
+
+If you see duplicate slash commands in a development server, it usually means both global and guild registrations exist for the same app.
+
+Use this one-time cleanup flow:
+
+1. Set `SLASH_COMMAND_GUILD_ID` to your test guild and `SYNC_GLOBAL_COMMANDS=false`.
+2. Restart the bot.
+3. Run owner cleanup command once: `/system clear-global-slash` (or `!clearglobalslash`).
+4. Restart Discord client once to refresh local command cache.
+
+You do not need to reinvite the bot for this issue.
+
 ## Configuration
 
 Edit `.env` (starting from `template.env`).

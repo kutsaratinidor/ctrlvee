@@ -2223,9 +2223,9 @@ async def playback_play(interaction: discord.Interaction):
         return
 
     if vlc.play():
-        await interaction.response.send_message("Playback resumed.", ephemeral=True)
+        await interaction.response.send_message("Playback resumed.")
     else:
-        await interaction.response.send_message("Could not start playback.", ephemeral=True)
+        await interaction.response.send_message("Could not start playback.")
 
 
 @playback_group.command(name="pause", description="Pause playback")
@@ -2234,9 +2234,9 @@ async def playback_pause(interaction: discord.Interaction):
         return
 
     if vlc.pause():
-        await interaction.response.send_message("Playback paused.", ephemeral=True)
+        await interaction.response.send_message("Playback paused.")
     else:
-        await interaction.response.send_message("Could not pause playback.", ephemeral=True)
+        await interaction.response.send_message("Could not pause playback.")
 
 
 @playback_group.command(name="stop", description="Stop playback")
@@ -2245,9 +2245,9 @@ async def playback_stop(interaction: discord.Interaction):
         return
 
     if vlc.stop():
-        await interaction.response.send_message("Playback stopped.", ephemeral=True)
+        await interaction.response.send_message("Playback stopped.")
     else:
-        await interaction.response.send_message("Could not stop playback.", ephemeral=True)
+        await interaction.response.send_message("Could not stop playback.")
 
 
 @playback_group.command(name="restart", description="Restart current item from beginning")
@@ -2256,9 +2256,9 @@ async def playback_restart(interaction: discord.Interaction):
         return
 
     if vlc.seek("0"):
-        await interaction.response.send_message("Restarted current item.", ephemeral=True)
+        await interaction.response.send_message("Restarted current item.")
     else:
-        await interaction.response.send_message("Could not restart current item.", ephemeral=True)
+        await interaction.response.send_message("Could not restart current item.")
 
 
 @playback_group.command(name="rewind", description="Rewind playback")
@@ -2268,9 +2268,9 @@ async def playback_rewind(interaction: discord.Interaction, seconds: app_command
         return
 
     if vlc.seek(f"-{seconds}"):
-        await interaction.response.send_message(f"Rewound {seconds} seconds.", ephemeral=True)
+        await interaction.response.send_message(f"Rewound {seconds} seconds.")
     else:
-        await interaction.response.send_message("Could not rewind playback.", ephemeral=True)
+        await interaction.response.send_message("Could not rewind playback.")
 
 
 @playback_group.command(name="forward", description="Fast forward playback")
@@ -2280,9 +2280,9 @@ async def playback_forward(interaction: discord.Interaction, seconds: app_comman
         return
 
     if vlc.seek(f"+{seconds}"):
-        await interaction.response.send_message(f"Fast forwarded {seconds} seconds.", ephemeral=True)
+        await interaction.response.send_message(f"Fast forwarded {seconds} seconds.")
     else:
-        await interaction.response.send_message("Could not fast forward playback.", ephemeral=True)
+        await interaction.response.send_message("Could not fast forward playback.")
 
 
 @playback_group.command(name="next", description="Play next track")
@@ -2291,9 +2291,9 @@ async def playback_next(interaction: discord.Interaction):
         return
 
     if vlc.next():
-        await interaction.response.send_message("Skipped to next track.", ephemeral=True)
+        await interaction.response.send_message("Skipped to next track.")
     else:
-        await interaction.response.send_message("Could not skip to next track.", ephemeral=True)
+        await interaction.response.send_message("Could not skip to next track.")
 
 
 @playback_group.command(name="previous", description="Play previous track")
@@ -2302,9 +2302,9 @@ async def playback_previous(interaction: discord.Interaction):
         return
 
     if vlc.previous():
-        await interaction.response.send_message("Jumped to previous track.", ephemeral=True)
+        await interaction.response.send_message("Jumped to previous track.")
     else:
-        await interaction.response.send_message("Could not jump to previous track.", ephemeral=True)
+        await interaction.response.send_message("Could not jump to previous track.")
 
 
 @playback_group.command(name="play-num", description="Play an item by playlist number")
@@ -2315,29 +2315,28 @@ async def playback_play_num(interaction: discord.Interaction, number: app_comman
 
     playlist = vlc.get_playlist()
     if not playlist:
-        await interaction.response.send_message("Could not access VLC playlist.", ephemeral=True)
+        await interaction.response.send_message("Could not access VLC playlist.")
         return
 
     items = playlist.findall('.//leaf')
     if not items:
-        await interaction.response.send_message("Playlist is empty.", ephemeral=True)
+        await interaction.response.send_message("Playlist is empty.")
         return
 
     if number > len(items):
         await interaction.response.send_message(
             f"Invalid playlist number. Playlist has {len(items)} item(s).",
-            ephemeral=True,
         )
         return
 
     item = items[number - 1]
     item_id = item.get('id')
     if not item_id or not vlc.play_item(item_id):
-        await interaction.response.send_message("Could not start playback for that item.", ephemeral=True)
+        await interaction.response.send_message("Could not start playback for that item.")
         return
 
     pretty = MediaUtils.clean_filename_for_display(item.get('name', ''), max_length=120)
-    await interaction.response.send_message(f"Loading item #{number}: {pretty}", ephemeral=True)
+    await interaction.response.send_message(f"Loading item #{number}: {pretty}")
 
 
 @playback_group.command(name="status", description="Show current playback status")
@@ -2427,25 +2426,24 @@ async def playback_speed(interaction: discord.Interaction, target: str | None = 
             color=discord.Color.blue(),
         )
         embed.add_field(name="Examples", value="/playback speed target:1.5\n/playback speed target:normal", inline=False)
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.response.send_message(embed=embed)
         return
 
     rate = _parse_speed_target(target)
     if rate is None:
         await interaction.response.send_message(
             "Invalid speed. Use a number like 1.5 or preset 'normal'.",
-            ephemeral=True,
         )
         return
 
     ok = vlc.set_rate(rate)
     if ok:
         if rate == 1.0:
-            await interaction.response.send_message("Playback speed reset to normal (1.0x).", ephemeral=True)
+            await interaction.response.send_message("Playback speed reset to normal (1.0x).")
         else:
-            await interaction.response.send_message(f"Playback speed set to {rate}x.", ephemeral=True)
+            await interaction.response.send_message(f"Playback speed set to {rate}x.")
     else:
-        await interaction.response.send_message(f"Failed to set playback speed to {rate}x.", ephemeral=True)
+        await interaction.response.send_message(f"Failed to set playback speed to {rate}x.")
 
 
 @playback_group.command(name="speed-status", description="Show current playback speed")
@@ -2455,7 +2453,7 @@ async def playback_speed_status(interaction: discord.Interaction):
 
     status = vlc.get_status()
     if not status:
-        await interaction.response.send_message("Could not access VLC status.", ephemeral=True)
+        await interaction.response.send_message("Could not access VLC status.")
         return
 
     rate_elem = status.find('rate')
@@ -2467,9 +2465,9 @@ async def playback_speed_status(interaction: discord.Interaction):
             rate_val = None
 
     if rate_val is not None:
-        await interaction.response.send_message(f"Current playback rate: {rate_val:.2f}x", ephemeral=True)
+        await interaction.response.send_message(f"Current playback rate: {rate_val:.2f}x")
     else:
-        await interaction.response.send_message("Current playback rate is unknown.", ephemeral=True)
+        await interaction.response.send_message("Current playback rate is unknown.")
 
 
 @playback_group.command(name="shuffle-on", description="Enable shuffle mode")
@@ -2478,14 +2476,14 @@ async def playback_shuffle_on(interaction: discord.Interaction):
         return
 
     if vlc.get_shuffle_state():
-        await interaction.response.send_message("Shuffle is already enabled.", ephemeral=True)
+        await interaction.response.send_message("Shuffle is already enabled.")
         return
 
     ok = vlc.toggle_shuffle() is not None
     if ok and vlc.get_shuffle_state():
-        await interaction.response.send_message("Shuffle enabled.", ephemeral=True)
+        await interaction.response.send_message("Shuffle enabled.")
     else:
-        await interaction.response.send_message("Could not enable shuffle.", ephemeral=True)
+        await interaction.response.send_message("Could not enable shuffle.")
 
 
 @playback_group.command(name="shuffle-off", description="Disable shuffle mode")
@@ -2494,14 +2492,14 @@ async def playback_shuffle_off(interaction: discord.Interaction):
         return
 
     if not vlc.get_shuffle_state():
-        await interaction.response.send_message("Shuffle is already disabled.", ephemeral=True)
+        await interaction.response.send_message("Shuffle is already disabled.")
         return
 
     ok = vlc.toggle_shuffle() is not None
     if ok and not vlc.get_shuffle_state():
-        await interaction.response.send_message("Shuffle disabled.", ephemeral=True)
+        await interaction.response.send_message("Shuffle disabled.")
     else:
-        await interaction.response.send_message("Could not disable shuffle.", ephemeral=True)
+        await interaction.response.send_message("Could not disable shuffle.")
 
 
 @playback_group.command(name="shuffle-toggle", description="Toggle shuffle mode")
@@ -2512,16 +2510,15 @@ async def playback_shuffle_toggle(interaction: discord.Interaction):
     current = vlc.get_shuffle_state()
     ok = vlc.toggle_shuffle() is not None
     if not ok:
-        await interaction.response.send_message("Could not toggle shuffle.", ephemeral=True)
+        await interaction.response.send_message("Could not toggle shuffle.")
         return
 
     new_state = vlc.get_shuffle_state()
     if new_state == current:
-        await interaction.response.send_message("Shuffle toggle command sent, but state did not change.", ephemeral=True)
+        await interaction.response.send_message("Shuffle toggle command sent, but state did not change.")
     else:
         await interaction.response.send_message(
             f"Shuffle {'enabled' if new_state else 'disabled'}.",
-            ephemeral=True,
         )
 
 
@@ -2638,18 +2635,17 @@ async def queue_add_next(interaction: discord.Interaction, number: app_commands.
 
     playlist = vlc.get_playlist()
     if not playlist:
-        await interaction.response.send_message("Could not access VLC playlist.", ephemeral=True)
+        await interaction.response.send_message("Could not access VLC playlist.")
         return
 
     items = playlist.findall('.//leaf')
     if not items:
-        await interaction.response.send_message("Playlist is empty.", ephemeral=True)
+        await interaction.response.send_message("Playlist is empty.")
         return
 
     if number > len(items):
         await interaction.response.send_message(
             f"Invalid playlist number. Playlist has {len(items)} item(s).",
-            ephemeral=True,
         )
         return
 
@@ -2660,7 +2656,6 @@ async def queue_add_next(interaction: discord.Interaction, number: app_commands.
     if not result.get("success"):
         await interaction.response.send_message(
             f"Error queuing item: {result.get('error', 'Unknown error')}",
-            ephemeral=True,
         )
         return
 
@@ -2675,7 +2670,7 @@ async def queue_add_next(interaction: discord.Interaction, number: app_commands.
         value=f"#{result['queue_order']} of {result.get('total_queued', 1)} in queue",
         inline=True,
     )
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.send_message(embed=embed)
 
 
 @queue_group.command(name="status", description="Show current queue status")
@@ -2740,7 +2735,7 @@ async def queue_clear(interaction: discord.Interaction):
         value="This clears tracking data only. Playlist item positions remain unchanged.",
         inline=False,
     )
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.send_message(embed=embed)
 
 
 @queue_group.command(name="remove", description="Remove queued item by queue order or #playlist number")
@@ -2759,14 +2754,12 @@ async def queue_remove(interaction: discord.Interaction, ref: str):
     except ValueError:
         await interaction.response.send_message(
             "Invalid reference. Use a number (queue order) or #<playlist number>.",
-            ephemeral=True,
         )
         return
 
     if not result.get('success'):
         await interaction.response.send_message(
             result.get('error', 'Failed to remove from queue.'),
-            ephemeral=True,
         )
         return
 
@@ -2776,7 +2769,7 @@ async def queue_remove(interaction: discord.Interaction, ref: str):
         description=f"{name} has been removed from the queue.",
         color=discord.Color.red(),
     )
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.send_message(embed=embed)
 
 
 @subtitles_group.command(name="list", description="List subtitle tracks")
@@ -3033,25 +3026,24 @@ async def schedule_add(
 ):
     scheduler_cog = bot.get_cog("Scheduler")
     if not scheduler_cog:
-        await interaction.response.send_message("Scheduler is unavailable.", ephemeral=True)
+        await interaction.response.send_message("Scheduler is unavailable.")
         return
 
     try:
         dt = datetime.strptime(f"{date} {time_24h}", "%Y-%m-%d %H:%M").replace(tzinfo=PH_TZ)
     except Exception:
-        await interaction.response.send_message("Invalid date/time format. Use YYYY-MM-DD and HH:MM.", ephemeral=True)
+        await interaction.response.send_message("Invalid date/time format. Use YYYY-MM-DD and HH:MM.")
         return
 
     now = datetime.now(PH_TZ)
     if dt <= now:
-        await interaction.response.send_message("Scheduled time must be in the future (PH time).", ephemeral=True)
+        await interaction.response.send_message("Scheduled time must be in the future (PH time).")
         return
 
     for s in scheduler_cog.scheduled:
         if s["number"] == number and abs((s["dt"] - dt).total_seconds()) < 60:
             await interaction.response.send_message(
                 f"Movie #{number} is already scheduled at {s['dt'].strftime('%Y-%m-%d %H:%M %Z')}.",
-                ephemeral=True,
             )
             return
 
@@ -3061,7 +3053,6 @@ async def schedule_add(
     if not (0 <= idx < len(items)):
         await interaction.response.send_message(
             f"Movie number {number} is out of bounds. Playlist has {len(items)} item(s).",
-            ephemeral=True,
         )
         return
 
@@ -3093,7 +3084,7 @@ async def schedule_add(
     embed.add_field(name="Title", value=title, inline=True)
     embed.add_field(name="Scheduled For", value=dt.strftime('%Y-%m-%d %H:%M %Z'), inline=False)
     embed.add_field(name="Duration", value=dur_str, inline=True)
-    await interaction.response.send_message(embed=embed, ephemeral=True)
+    await interaction.response.send_message(embed=embed)
 
 
 @schedule_group.command(name="list", description="List upcoming scheduled movies")
@@ -3131,7 +3122,7 @@ async def schedule_list(interaction: discord.Interaction):
 async def schedule_remove(interaction: discord.Interaction, number: app_commands.Range[int, 1, 99999]):
     scheduler_cog = bot.get_cog("Scheduler")
     if not scheduler_cog:
-        await interaction.response.send_message("Scheduler is unavailable.", ephemeral=True)
+        await interaction.response.send_message("Scheduler is unavailable.")
         return
 
     before = len(scheduler_cog.scheduled)
@@ -3140,9 +3131,9 @@ async def schedule_remove(interaction: discord.Interaction, number: app_commands
     after = len(scheduler_cog.scheduled)
 
     if before == after:
-        await interaction.response.send_message(f"No schedules found for movie #{number}.", ephemeral=True)
+        await interaction.response.send_message(f"No schedules found for movie #{number}.")
     else:
-        await interaction.response.send_message(f"Removed all schedules for movie #{number}.", ephemeral=True)
+        await interaction.response.send_message(f"Removed all schedules for movie #{number}.")
 
 
 @watch_group.command(name="add", description="Add a watch folder")
