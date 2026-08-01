@@ -2065,13 +2065,10 @@ def _build_system_help_embed() -> discord.Embed:
             "• `/playback forward`\n"
             "• `/playback next`\n"
             "• `/playback previous`\n"
-            "• `/playback play-num`\n"
+            "• `/playback play-item`\n"
             "• `/playback status`\n"
             "• `/playback speed`\n"
-            "• `/playback speed-status`\n"
-            "• `/playback shuffle-on`\n"
-            "• `/playback shuffle-off`\n"
-            "• `/playback shuffle-toggle`"
+            "• `/playback shuffle`"
         ),
         inline=False,
     )
@@ -2448,7 +2445,7 @@ async def playback_previous(interaction: discord.Interaction):
         await interaction.response.send_message("Could not jump to previous track.")
 
 
-@playback_group.command(name="play-num", description="Play an item by playlist number")
+@playback_group.command(name="play-item", description="Play an item by playlist number")
 @app_commands.describe(number="1-based playlist item number")
 async def playback_play_num(interaction: discord.Interaction, number: app_commands.Range[int, 1, 99999]):
     if not await _check_allowed_roles_for_interaction(interaction):
@@ -2544,6 +2541,8 @@ def _parse_speed_target(target: str | None) -> float | None:
     if target is None:
         return None
     t = target.strip().lower()
+    if t in ('status', 'show', 'current'):
+        return None
     if t in ('1.5', '1.5x', '15', 'fast', 'up'):
         return 1.5
     if t in ('1', '1.0', 'normal', 'default', 'reset', 'norm'):
@@ -2554,26 +2553,37 @@ def _parse_speed_target(target: str | None) -> float | None:
         return None
 
 
-@playback_group.command(name="speed", description="Set playback speed (for example: 1.5 or normal)")
-@app_commands.describe(target="Speed value (e.g. 1.5) or preset (normal)")
+@playback_group.command(name="speed", description="Show or set playback speed")
+@app_commands.describe(target="Leave blank or use status to show speed; set to 1.5 or normal to change it")
 async def playback_speed(interaction: discord.Interaction, target: str | None = None):
     if not await _check_allowed_roles_for_interaction(interaction):
         return
 
-    if target is None:
-        embed = discord.Embed(
-            title="Playback Speed Usage",
-            description="Set speed with a numeric value or use 'normal' to reset.",
-            color=discord.Color.blue(),
-        )
-        embed.add_field(name="Examples", value="/playback speed target:1.5\n/playback speed target:normal", inline=False)
-        await interaction.response.send_message(embed=embed)
+    target_text = target.strip().lower() if target is not None else None
+    if target_text is None or target_text in {"status", "show", "current"}:
+        status = vlc.get_status()
+        if not status:
+            await interaction.response.send_message("Could not access VLC status.")
+            return
+
+        rate_elem = status.find('rate')
+        rate_val = None
+        if rate_elem is not None and rate_elem.text:
+            try:
+                rate_val = float(rate_elem.text.strip())
+            except Exception:
+                rate_val = None
+
+        if rate_val is not None:
+            await interaction.response.send_message(f"Current playback rate: {rate_val:.2f}x")
+        else:
+            await interaction.response.send_message("Current playback rate is unknown.")
         return
 
     rate = _parse_speed_target(target)
     if rate is None:
         await interaction.response.send_message(
-            "Invalid speed. Use a number like 1.5 or preset 'normal'.",
+            "Invalid speed. Leave it blank or use status to check, or provide a number like 1.5 or preset normal.",
         )
         return
 
@@ -2587,68 +2597,51 @@ async def playback_speed(interaction: discord.Interaction, target: str | None = 
         await interaction.response.send_message(f"Failed to set playback speed to {rate}x.")
 
 
-@playback_group.command(name="speed-status", description="Show current playback speed")
-async def playback_speed_status(interaction: discord.Interaction):
-    if not await _check_allowed_roles_for_interaction(interaction):
-        return
-
-    status = vlc.get_status()
-    if not status:
-        await interaction.response.send_message("Could not access VLC status.")
-        return
-
-    rate_elem = status.find('rate')
-    rate_val = None
-    if rate_elem is not None and rate_elem.text:
-        try:
-            rate_val = float(rate_elem.text.strip())
-        except Exception:
-            rate_val = None
-
-    if rate_val is not None:
-        await interaction.response.send_message(f"Current playback rate: {rate_val:.2f}x")
-    else:
-        await interaction.response.send_message("Current playback rate is unknown.")
-
-
-@playback_group.command(name="shuffle-on", description="Enable shuffle mode")
-async def playback_shuffle_on(interaction: discord.Interaction):
-    if not await _check_allowed_roles_for_interaction(interaction):
-        return
-
-    if vlc.get_shuffle_state():
-        await interaction.response.send_message("Shuffle is already enabled.")
-        return
-
-    ok = vlc.toggle_shuffle() is not None
-    if ok and vlc.get_shuffle_state():
-        await interaction.response.send_message("Shuffle enabled.")
-    else:
-        await interaction.response.send_message("Could not enable shuffle.")
-
-
-@playback_group.command(name="shuffle-off", description="Disable shuffle mode")
-async def playback_shuffle_off(interaction: discord.Interaction):
-    if not await _check_allowed_roles_for_interaction(interaction):
-        return
-
-    if not vlc.get_shuffle_state():
-        await interaction.response.send_message("Shuffle is already disabled.")
-        return
-
-    ok = vlc.toggle_shuffle() is not None
-    if ok and not vlc.get_shuffle_state():
-        await interaction.response.send_message("Shuffle disabled.")
-    else:
-        await interaction.response.send_message("Could not disable shuffle.")
-
-
-@playback_group.command(name="shuffle-toggle", description="Toggle shuffle mode")
-async def playback_shuffle_toggle(interaction: discord.Interaction):
+@playback_group.command(name="shuffle", description="Manage shuffle mode")
+@app_commands.describe(action="Choose on, off, toggle, or status")
+@app_commands.choices(action=[
+    app_commands.Choice(name="status", value="status"),
+    app_commands.Choice(name="toggle", value="toggle"),
+    app_commands.Choice(name="on", value="on"),
+    app_commands.Choice(name="off", value="off"),
+])
+async def playback_shuffle(interaction: discord.Interaction, action: str = "status"):
     if not await _check_allowed_roles_for_interaction(interaction):
         return
 
     current = vlc.get_shuffle_state()
+    if action == "status":
+        await interaction.response.send_message(f"Shuffle is currently {'enabled' if current else 'disabled'}.")
+        return
+
+    if action == "on":
+        if current:
+            await interaction.response.send_message("Shuffle is already enabled.")
+            return
+
+        ok = vlc.toggle_shuffle() is not None
+        if ok and vlc.get_shuffle_state():
+            await interaction.response.send_message("Shuffle enabled.")
+        else:
+            await interaction.response.send_message("Could not enable shuffle.")
+        return
+
+    if action == "off":
+        if not current:
+            await interaction.response.send_message("Shuffle is already disabled.")
+            return
+
+        ok = vlc.toggle_shuffle() is not None
+        if ok and not vlc.get_shuffle_state():
+            await interaction.response.send_message("Shuffle disabled.")
+        else:
+            await interaction.response.send_message("Could not disable shuffle.")
+        return
+
+    if action != "toggle":
+        await interaction.response.send_message("Invalid shuffle action. Use status, toggle, on, or off.")
+        return
+
     ok = vlc.toggle_shuffle() is not None
     if not ok:
         await interaction.response.send_message("Could not toggle shuffle.")

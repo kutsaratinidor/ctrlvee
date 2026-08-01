@@ -1,3 +1,10 @@
+## 1.9.28 - 2026-08-01
+
+### Changed
+- **Slash Playback Command Cleanup**: Renamed `/playback play-num` to `/playback play-item` for clearer intent when selecting a playlist entry by number.
+- **Speed Command Consolidation**: Merged `/playback speed-status` into `/playback speed`, which now supports both status checks and rate changes from a single command.
+- **Shuffle Command Consolidation**: Replaced separate slash shuffle commands with a single `/playback shuffle` command that supports `status`, `toggle`, `on`, and `off` actions.
+
 ## 1.9.27 - 2026-07-29
 
 ### Changed
