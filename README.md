@@ -2,7 +2,7 @@
 
 A Discord bot that controls a local VLC player and exposes playback controls, playlist search, queueing, scheduling, watch-folder ingestion, and metadata lookups.
 
-Current app version: `1.9.28`.
+Current app version: `1.9.29`.
 
 ## What It Does
 
@@ -85,6 +85,11 @@ CtrlVee now supports hybrid prefix+slash operation during v2 migration.
 - `SYNC_GLOBAL_COMMANDS=true|false` (recommended `false` when `SLASH_COMMAND_GUILD_ID` is set)
 
 If you set `ENABLE_PREFIX_COMMANDS=false` and keep slash commands enabled, the bot can run without Message Content Intent dependency for command parsing.
+
+Owner slash maintenance commands:
+
+- `/admin cleanup-playlist` removes missing files from VLC playlist entries.
+- `/system clear-global-slash` performs one-time global slash cleanup in dev-guild mode.
 
 ### Troubleshooting: Duplicate Slash Commands in Dev Guild
 

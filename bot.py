@@ -2126,6 +2126,7 @@ def _build_system_help_embed() -> discord.Embed:
     embed.add_field(
         name="Available /admin commands",
         value=(
+            "• `/admin cleanup-playlist`\n"
             "• `/admin list-guilds`\n"
             "• `/admin leave-server`"
         ),
@@ -2500,8 +2501,8 @@ async def playback_status(interaction: discord.Interaction):
     await interaction.response.send_message(f"Current VLC state: {state}")
 
 
-@playback_group.command(name="cleanup", description="Owner only: remove missing files from VLC playlist")
-async def playback_cleanup(interaction: discord.Interaction):
+async def _run_playlist_cleanup(interaction: discord.Interaction, source: str) -> None:
+    """Shared owner-only playlist cleanup handler for slash commands."""
     if not await bot.is_owner(interaction.user):
         await interaction.response.send_message("This command is owner-only.", ephemeral=True)
         return
@@ -2533,7 +2534,7 @@ async def playback_cleanup(interaction: discord.Interaction):
         embed.set_footer(text="Cleanup tool")
         await interaction.followup.send(embed=embed, ephemeral=True)
     except Exception as e:
-        logger.error(f"/playback cleanup error: {e}")
+        logger.error(f"{source} error: {e}")
         await interaction.followup.send(f"Cleanup failed: {e}", ephemeral=True)
 
 
@@ -2713,9 +2714,9 @@ async def playlist_search(interaction: discord.Interaction, query: str):
     )
     shown = len(first_page)
     if shown:
-        embed.set_footer(text=f"Use /playback play-num to play an item • Showing 1-{shown} of {len(results)}")
+        embed.set_footer(text=f"Use /playback play-item to play an item • Showing 1-{shown} of {len(results)}")
     else:
-        embed.set_footer(text="Use /playback play-num to play an item")
+        embed.set_footer(text="Use /playback play-item to play an item")
 
     if len(pages) > 1:
         view = SearchResultsView(query=query, pages=pages, total_matches=len(results))
@@ -3384,6 +3385,11 @@ async def admin_leave_server(interaction: discord.Interaction, guild_id: str | N
         guild_id_text,
     )
     await target_guild.leave()
+
+
+@admin_group.command(name="cleanup-playlist", description="Owner only: remove missing files from VLC playlist")
+async def admin_cleanup_playlist(interaction: discord.Interaction):
+    await _run_playlist_cleanup(interaction, "/admin cleanup-playlist")
 
 
 _register_app_command_groups()

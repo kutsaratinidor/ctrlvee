@@ -1,3 +1,9 @@
+## 1.9.29 - 2026-08-05
+
+### Changed
+- **Slash Cleanup Command Placement**: Moved playlist-missing-file cleanup to owner admin scope via `/admin cleanup-playlist`.
+- **Legacy Alias Removal**: Removed the temporary `/playback cleanup` slash alias now that admin cleanup is established.
+
 ## 1.9.28 - 2026-08-01
 
 ### Changed
