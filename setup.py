@@ -11,8 +11,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-from scripts.configure_env import run_wizard
-
 REPO_ROOT = Path(__file__).resolve().parent
 MIN_PYTHON = (3, 10)
 VENV_DIR = REPO_ROOT / ".venv"
@@ -99,6 +97,7 @@ def main() -> None:
     if env_path.exists():
         print(f"\n{env_path} already exists, skipping configuration.")
     else:
+        from scripts.configure_env import run_wizard
         run_wizard(REPO_ROOT)
 
     print_next_steps(venv_python)
