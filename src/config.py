@@ -142,9 +142,10 @@ class Config:
     # Discord Command Prefix
     DISCORD_COMMAND_PREFIX: str = os.getenv('DISCORD_COMMAND_PREFIX', '!')
     # Slash/prefix migration toggles.
-    # Keep both enabled during migration; disable prefix to avoid Message Content Intent.
+    # Prefix-first default for backward compatibility with existing deployments.
+    # Enable slash explicitly when desired.
     ENABLE_PREFIX_COMMANDS: bool = os.getenv('ENABLE_PREFIX_COMMANDS', 'true').strip().lower() in {'1','true','yes','y'}
-    ENABLE_SLASH_COMMANDS: bool = os.getenv('ENABLE_SLASH_COMMANDS', 'true').strip().lower() in {'1','true','yes','y'}
+    ENABLE_SLASH_COMMANDS: bool = os.getenv('ENABLE_SLASH_COMMANDS', 'false').strip().lower() in {'1','true','yes','y'}
     # Optional development guild ID for instant slash sync.
     # If set to a non-zero guild ID, slash commands sync to that guild on startup.
     SLASH_COMMAND_GUILD_ID: int = int(os.getenv('SLASH_COMMAND_GUILD_ID', '0'))

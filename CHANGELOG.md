@@ -1,3 +1,9 @@
+## 1.9.30 - 2026-08-07
+
+### Changed
+- **Startup Command Mode Messaging**: Updated startup announcement text to show only the active command method(s) and a matching usage hint (prefix-only, slash-only, or hybrid).
+- **Prefix-First Defaults**: Switched default command mode behavior to prefix-first by making slash commands opt-in (`ENABLE_SLASH_COMMANDS=false` by default) for backward compatibility with existing deployments.
+
 ## 1.9.29 - 2026-08-05
 
 ### Changed

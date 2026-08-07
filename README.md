@@ -2,7 +2,7 @@
 
 A Discord bot that controls a local VLC player and exposes playback controls, playlist search, queueing, scheduling, watch-folder ingestion, and metadata lookups.
 
-Current app version: `1.9.29`.
+Current app version: `1.9.30`.
 
 ## What It Does
 
@@ -78,6 +78,8 @@ CtrlVee requests Message Content Intent strictly for prefix command parsing, and
 ### Slash Migration Note
 
 CtrlVee now supports hybrid prefix+slash operation during v2 migration.
+
+Default mode is prefix commands for backward compatibility. Slash commands are opt-in.
 
 - `ENABLE_PREFIX_COMMANDS=true|false`
 - `ENABLE_SLASH_COMMANDS=true|false`

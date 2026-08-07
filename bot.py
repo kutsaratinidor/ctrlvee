@@ -875,11 +875,26 @@ async def on_ready():
         announce_ids = Config.get_announce_channel_ids()
         if not announce_ids:
             return
+
+        prefix_enabled = bool(getattr(Config, 'ENABLE_PREFIX_COMMANDS', True))
+        slash_enabled = bool(getattr(Config, 'ENABLE_SLASH_COMMANDS', False))
+
+        if prefix_enabled and slash_enabled:
+            command_mode_line = "Command mode: Prefix + Slash"
+            command_hint_line = f"Prefix: `{Config.DISCORD_COMMAND_PREFIX}` • Try `{Config.DISCORD_COMMAND_PREFIX}controls` or `/system help`"
+        elif prefix_enabled:
+            command_mode_line = "Command mode: Prefix"
+            command_hint_line = f"Prefix: `{Config.DISCORD_COMMAND_PREFIX}` • Try `{Config.DISCORD_COMMAND_PREFIX}controls`"
+        else:
+            command_mode_line = "Command mode: Slash"
+            command_hint_line = "Try `/system help`"
+
         embed = discord.Embed(
             title="🤖 CtrlVee Bot is Online!",
             description=(
                 f"Version: {__version__}\n"
-                f"Command prefix: `{Config.DISCORD_COMMAND_PREFIX}`\n"
+                f"{command_mode_line}\n"
+                f"{command_hint_line}\n"
                 "Ready to receive commands."
             ),
             color=discord.Color.green()
