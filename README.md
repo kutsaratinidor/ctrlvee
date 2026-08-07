@@ -20,7 +20,7 @@ Current app version: `1.9.30`.
 - Python `3.10+`
 - VLC Media Player with HTTP interface enabled
 - A Discord bot token
-- TMDB API key (recommended; required for full metadata features)
+- TMDB API key (required — the bot won't start without one)
 
 ## Quick Setup
 
@@ -47,7 +47,7 @@ python bot.py
 
 Re-running `setup.py` is safe — it won't recreate an existing `.venv` or overwrite an existing `.env`.
 
-The setup script only configures the essentials needed to get online (Discord token, allowed roles, command mode, VLC connection, TMDB key). For watch folders, Radarr, voice auto-join, and other optional features, edit `.env` directly — see [Configuration](#configuration) below.
+The setup script only configures the essentials needed to get online (Discord token, allowed roles, command mode, VLC connection, TMDB key — required, not optional, since the bot won't start without it). It also disables voice auto-join by default, since no voice channel is collected. For watch folders, Radarr, voice auto-join, and other optional features, edit `.env` directly — see [Configuration](#configuration) below.
 
 ### Manual Setup
 

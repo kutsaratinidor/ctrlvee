@@ -81,6 +81,8 @@ def run_wizard(repo_root: Path) -> Path:
     print("\n--- CtrlVee setup: essential configuration ---")
     print("Press Enter to accept the default in [brackets] where shown.\n")
 
+    print("Get a Discord bot token at: https://discord.com/developers/applications")
+    print("(create an application, add a Bot, then copy the token from the Bot tab)")
     token = prompt_token()
     roles = prompt("Allowed roles (comma-separated names or IDs)", default="Theater Host")
 
@@ -97,6 +99,11 @@ def run_wizard(repo_root: Path) -> Path:
         "ALLOWED_ROLES": roles,
         "ENABLE_PREFIX_COMMANDS": "true" if enable_prefix else "false",
         "ENABLE_SLASH_COMMANDS": "true" if enable_slash else "false",
+        # The wizard doesn't collect a voice channel, and CtrlVee's config
+        # validation refuses to start with voice auto-join on but no channel
+        # configured — so turn it off here rather than hand back a .env the
+        # bot can't boot with. Users who want it can re-enable it in .env.
+        "ENABLE_VOICE_JOIN": "false",
     }
 
     if enable_prefix:
@@ -106,19 +113,20 @@ def run_wizard(repo_root: Path) -> Path:
     values["VLC_PORT"] = prompt_port("VLC port", default="8080")
     values["VLC_PASSWORD"] = prompt("VLC web interface password", default="vlc")
 
-    # Written even when left blank: without this, template.env's placeholder
-    # text ("your_tmdb_api_key_here") would otherwise be used verbatim as an
-    # invalid TMDB API key instead of the empty string Config.py expects.
-    values["TMDB_API_KEY"] = prompt(
-        "TMDB API key (recommended, optional — Enter to skip)", default=""
-    )
+    # Required, not optional: CtrlVee's config validation refuses to start
+    # without a TMDB_API_KEY, so a blank/placeholder value here would hand
+    # back a .env the bot can't boot with.
+    print("\nGet a free TMDB API key at: https://www.themoviedb.org/settings/api")
+    values["TMDB_API_KEY"] = prompt("TMDB API key (required)", default=None)
 
     patched_lines = patch_env_lines(template_lines, values)
     env_path = write_env_file(repo_root, patched_lines)
 
     print(f"\nWrote {env_path}")
-    print("Everything else (watch folders, Radarr, voice auto-join, presence, etc.)")
-    print("was left at template.env's defaults — see README.md to configure those.\n")
+    print("Voice auto-join was disabled (no channel configured) — to enable it,")
+    print("set ENABLE_VOICE_JOIN=true and VOICE_JOIN_CHANNEL_ID in .env.")
+    print("Everything else (watch folders, Radarr, presence, etc.) was left at")
+    print("template.env's defaults — see README.md to configure those.\n")
     return env_path
 
 
