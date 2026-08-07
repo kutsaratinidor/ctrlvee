@@ -46,6 +46,22 @@ def ensure_venv() -> Path:
     return python_path
 
 
+def install_dependencies(venv_python: Path) -> None:
+    print("Upgrading pip ...")
+    result = subprocess.run([str(venv_python), "-m", "pip", "install", "--upgrade", "pip"])
+    if result.returncode != 0:
+        print("Failed to upgrade pip (see output above).")
+        sys.exit(1)
+
+    print("Installing dependencies from requirements.txt ...")
+    result = subprocess.run(
+        [str(venv_python), "-m", "pip", "install", "-r", str(REPO_ROOT / "requirements.txt")]
+    )
+    if result.returncode != 0:
+        print("Failed to install dependencies (see output above).")
+        sys.exit(1)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="CtrlVee first-time setup")
     parser.add_argument(
@@ -59,6 +75,7 @@ def main() -> None:
 
     if not args.skip_venv:
         venv_python = ensure_venv()
+        install_dependencies(venv_python)
     else:
         venv_python = venv_python_path()
 
