@@ -24,6 +24,35 @@ Current app version: `1.9.30`.
 
 ## Quick Setup
 
+The fastest way to get running is the setup script, which creates the virtual environment, installs dependencies, and walks you through the essential `.env` settings:
+
+```bash
+# macOS/Linux
+python3 setup.py
+
+# Windows
+python setup.py
+```
+
+Then start the bot:
+
+```bash
+# macOS/Linux
+source .venv/bin/activate
+# Windows PowerShell
+# .\.venv\Scripts\Activate.ps1
+
+python bot.py
+```
+
+Re-running `setup.py` is safe — it won't recreate an existing `.venv` or overwrite an existing `.env`.
+
+The setup script only configures the essentials needed to get online (Discord token, allowed roles, command mode, VLC connection, TMDB key). For watch folders, Radarr, voice auto-join, and other optional features, edit `.env` directly — see [Configuration](#configuration) below.
+
+### Manual Setup
+
+If you'd rather do it by hand:
+
 1. Clone this repository.
 2. Create and activate a virtual environment.
 3. Install dependencies.
