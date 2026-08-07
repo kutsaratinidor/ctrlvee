@@ -2063,7 +2063,6 @@ def _build_system_help_embed() -> discord.Embed:
             "• `/system version`\n"
             "• `/system privacy`\n"
             "• `/system changelog`\n"
-            "• `/system radarr-recent`\n"
             "• `/system sync` (owner only)\n"
             "• `/system clear-global-slash` (owner only)"
         ),
@@ -2092,7 +2091,8 @@ def _build_system_help_embed() -> discord.Embed:
         value=(
             "• `/playlist list`\n"
             "• `/playlist search`\n"
-            "• `/playlist play-search`"
+            "• `/playlist play-search`\n"
+            "• `/playlist radarr-recent`"
         ),
         inline=False,
     )
@@ -2216,23 +2216,20 @@ async def system_changelog(interaction: discord.Interaction):
             await interaction.followup.send(embed=embed, ephemeral=True)
 
 
-@system_group.command(name="radarr-recent", description="Show recently downloaded movies from Radarr")
+@playlist_group.command(name="radarr-recent", description="Show recently downloaded movies from Radarr")
 @app_commands.describe(
     instance="Radarr instance name or 'all'",
     days="Lookback window in days",
     limit="Maximum items per instance",
 )
-async def system_radarr_recent(
+async def playlist_radarr_recent(
     interaction: discord.Interaction,
     instance: str = 'all',
     days: app_commands.Range[int, 1, 365] = 7,
     limit: app_commands.Range[int, 1, 25] = 10,
 ):
     if not _radarr_services:
-        await interaction.response.send_message(
-            "Radarr is not configured. Please set RADARR_* environment variables.",
-            ephemeral=True,
-        )
+        await interaction.response.send_message("Radarr is not configured. Please set RADARR_* environment variables.")
         return
 
     target = instance.strip().lower() if isinstance(instance, str) else 'all'
@@ -2242,13 +2239,10 @@ async def system_radarr_recent(
         if not selected:
             names = ", ".join([i['name'] for i in _radarr_services])
             disp = ", ".join([i['display'] for i in _radarr_services])
-            await interaction.response.send_message(
-                f"Unknown Radarr instance '{instance}'. Try one of: {names} (display: {disp}) or 'all'.",
-                ephemeral=True,
-            )
+            await interaction.response.send_message(f"Unknown Radarr instance '{instance}'. Try one of: {names} (display: {disp}) or 'all'.")
             return
 
-    await interaction.response.defer(ephemeral=True, thinking=True)
+    await interaction.response.defer(thinking=True)
 
     async def fetch_one(item):
         name = item['display']
@@ -2286,10 +2280,10 @@ async def system_radarr_recent(
             embed.add_field(name=f"{display_name} (error)", value=f"❌ {err}", inline=False)
 
     if not any_success:
-        await interaction.followup.send("Could not retrieve recent movies from any Radarr instance.", ephemeral=True)
+        await interaction.followup.send("Could not retrieve recent movies from any Radarr instance.")
         return
 
-    await interaction.followup.send(embed=embed, ephemeral=True)
+    await interaction.followup.send(embed=embed)
 
 
 @system_group.command(name="sync", description="Owner only: force resync slash commands")
