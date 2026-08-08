@@ -1,3 +1,8 @@
+## 1.9.31 - 2026-08-07
+
+### Added
+- **First-Time Setup Script**: Added `setup.py` and `scripts/configure_env.py`, a cross-platform one-command setup (`python3 setup.py` / `python setup.py`) that creates the virtual environment, installs dependencies, and walks through the essential `.env` settings (Discord token, allowed roles, command mode, VLC connection, TMDB key) — replacing five manual commands and a hand-edited 58-variable `template.env`.
+
 ## 1.9.30 - 2026-08-07
 
 ### Changed
