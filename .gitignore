@@ -51,5 +51,8 @@ schedule_backup.json
 # Repowise local index/cache
 .repowise/
 
+# Git worktrees for isolated feature work
+.worktrees/
+
 # Keep screenshots
 !screenshots/
