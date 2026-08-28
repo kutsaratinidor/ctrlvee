@@ -44,5 +44,12 @@ schedule_backup.json
 *.swo
 .DS_Store
 
+# Claude Code local settings/cache and MCP config (machine-specific)
+.claude/
+.mcp.json
+
+# Repowise local index/cache
+.repowise/
+
 # Keep screenshots
 !screenshots/
