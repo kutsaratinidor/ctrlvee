@@ -231,6 +231,21 @@ RADARR_ANIME_USE_SSL=true
 RADARR_ANIME_DISPLAY_NAME=Anime
 ```
 
+### Movie Requests (Overseerr/Jellyseerr, Optional)
+
+Lets allowed users request movies via `/request movie <title>` (slash-only), tracked
+locally and announced when available. Availability is checked by polling — no
+inbound webhook is needed.
+
+```bash
+OVERSEERR_URL=http://localhost:5055
+OVERSEERR_API_KEY=your_overseerr_or_jellyseerr_api_key
+REQUEST_CHANNEL_ID=123456789012345678
+REQUEST_ANNOUNCE_CHANNEL_ID=0
+REQUEST_POLL_INTERVAL=900
+REQUEST_STORE_FILE=movie_requests.json
+```
+
 ## Commands
 
 Prefix shown as `!` below; replace with your configured `DISCORD_COMMAND_PREFIX`.
@@ -280,6 +295,11 @@ Prefix shown as `!` below; replace with your configured `DISCORD_COMMAND_PREFIX`
 - `!privacy` (aliases: `policy`, `data_policy`)
 - `!changelog` (aliases: `changes`, `whatsnew`)
 - `!controls`
+
+### Movie Requests (Slash Only)
+
+- `/request movie <title>` — search and request a movie via Overseerr/Jellyseerr
+- `/request status` — check the status of your own requests
 
 ## Privacy Statement
 

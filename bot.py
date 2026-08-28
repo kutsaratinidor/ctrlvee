@@ -1441,6 +1441,57 @@ async def on_ready():
         else:
             logger.info("WatchFolderService not started (disabled or already running)")
 
+        def movie_request_notifier(record: dict) -> None:
+            async def _send_availability_announcement():
+                channel_id = Config.REQUEST_ANNOUNCE_CHANNEL_ID or Config.REQUEST_CHANNEL_ID
+                if not channel_id:
+                    return
+                channel = bot.get_channel(channel_id)
+                if channel is None:
+                    try:
+                        channel = await bot.fetch_channel(channel_id)
+                    except Exception as e:
+                        logger.error(f"Failed to fetch movie request announce channel {channel_id}: {e}")
+                        return
+                embed = discord.Embed(
+                    title="🎬 Now Available",
+                    description=f"**{record.get('title')}**" + (f" ({record.get('year')})" if record.get('year') else "") + " is now available to watch.",
+                    color=discord.Color.green(),
+                )
+                if record.get('overview'):
+                    embed.add_field(name="Overview", value=record['overview'][:1024], inline=False)
+                if record.get('poster_path'):
+                    embed.set_thumbnail(url=f"https://image.tmdb.org/t/p/w500{record['poster_path']}")
+                try:
+                    await channel.send(
+                        content=f"<@{record.get('requested_by_id')}> your requested movie is now available!",
+                        embed=embed,
+                    )
+                except discord.Forbidden:
+                    logger.warning(f"Missing permission to send movie request announcement in channel {channel_id}.")
+                except Exception as e:
+                    logger.error(f"Failed to send movie request announcement: {e}")
+
+            try:
+                future = asyncio.run_coroutine_threadsafe(_send_availability_announcement(), bot.loop)
+
+                def _log_result(fut):
+                    try:
+                        fut.result()
+                    except Exception as e:
+                        logger.error(f"Movie request announcement task failed: {e}", exc_info=True)
+
+                future.add_done_callback(_log_result)
+            except Exception as e:
+                logger.error(f"Failed to schedule movie request announcement: {e}", exc_info=True)
+
+        movie_request_tracker.set_notifier(movie_request_notifier)
+        request_tracker_started = movie_request_tracker.start()
+        if request_tracker_started:
+            logger.info("MovieRequestTracker started")
+        else:
+            logger.info("MovieRequestTracker not started (no REQUEST_STORE_FILE configured)")
+
         # Start autosave thread if configured
         if Config.PLAYLIST_AUTOSAVE_FILE:
             def _resolve_autosave_path(filename: str) -> str:
@@ -3529,6 +3580,43 @@ async def request_movie(interaction: discord.Interaction, title: str):
     )
     message = await interaction.followup.send(embed=embed, view=view)
     view.message = message
+
+
+@request_group.command(name="status", description="Check the status of your movie requests")
+async def request_status(interaction: discord.Interaction):
+    if not await _check_request_channel_for_interaction(interaction):
+        return
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    await interaction.response.defer(thinking=True, ephemeral=True)
+
+    records = movie_request_tracker.get_requests_for_user(interaction.user.id)
+    if not records:
+        await interaction.followup.send("You haven't requested anything yet.")
+        return
+
+    lines = []
+    for record in records:
+        if record.get("status") == "available":
+            label = STATUS_LABELS[5]
+        else:
+            result = await overseerr_service.get_movie_status(record["tmdb_id"])
+            if result.get("success"):
+                label = STATUS_LABELS.get(result.get("status"), "Unknown")
+            else:
+                # Live check failed (e.g. Seerr temporarily unreachable) — fall back
+                # to the last known local status rather than showing an error.
+                label = record.get("status", "pending").title()
+        year_text = f" ({record['year']})" if record.get('year') else ""
+        lines.append(f"**{record['title']}**{year_text} — {label}")
+
+    embed = discord.Embed(
+        title="Your Movie Requests",
+        description="\n".join(lines),
+        color=discord.Color.blue(),
+    )
+    await interaction.followup.send(embed=embed)
 
 
 _register_app_command_groups()
