@@ -13,6 +13,9 @@ class MovieRequestTracker:
     def __init__(self, overseerr_service, store_file: Optional[str] = None, poll_interval: Optional[int] = None):
         self.overseerr = overseerr_service
         self.store_file = store_file if store_file is not None else Config.REQUEST_STORE_FILE
+        if self.store_file and not os.path.isabs(self.store_file):
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            self.store_file = os.path.join(project_root, self.store_file)
         self.poll_interval = poll_interval if poll_interval is not None else Config.REQUEST_POLL_INTERVAL
         self.logger = logging.getLogger(__name__)
         self._lock = threading.Lock()

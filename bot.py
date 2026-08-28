@@ -163,6 +163,14 @@ async def _enforce_slash_channel_policy(interaction: discord.Interaction) -> boo
     if interaction.guild is None:
         return True
 
+    # /request commands enforce their own channel restriction against
+    # Config.REQUEST_CHANNEL_ID via _check_request_channel_for_interaction —
+    # skip the global gate entirely for this group so a dedicated request
+    # channel doesn't have to also be COMMAND_CHANNEL_ID.
+    command = interaction.command
+    if command is not None and getattr(command, 'root_parent', None) is request_group:
+        return True
+
     allowed_ids, source = _get_slash_allowed_channel_ids()
     if not allowed_ids:
         msg = (
@@ -299,6 +307,7 @@ def _build_privacy_embed() -> discord.Embed:
         name="What data may be stored",
         value=(
             "• Queue backup and schedule backup files (local bot storage)\n"
+            "• Movie request records (requester user ID/username, kept indefinitely to notify on availability)\n"
             "• Optional playlist autosave output files\n"
             "• Operational logs for troubleshooting"
         ),
@@ -2184,6 +2193,8 @@ class MovieRequestSelect(discord.ui.Select):
                 description=result.get("error", "Unknown error"),
             )
             await interaction.edit_original_response(embed=failed_embed)
+
+        self.view.stop()
 
 
 class MovieRequestSelectView(discord.ui.View):
