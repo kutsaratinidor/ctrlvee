@@ -101,8 +101,9 @@ class MovieRequestTracker:
                 continue
 
             if result.get("available"):
-                record["status"] = "available"
-                record["notified_at"] = datetime.now(timezone.utc).isoformat()
+                with self._lock:
+                    record["status"] = "available"
+                    record["notified_at"] = datetime.now(timezone.utc).isoformat()
                 changed = True
                 if self._notifier:
                     try:
