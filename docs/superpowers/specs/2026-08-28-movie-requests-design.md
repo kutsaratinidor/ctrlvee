@@ -20,6 +20,8 @@ mention of the requester) in a configurable channel once the movie is available.
   request becomes available on Seerr.
 - On availability, post an embed with the movie's metadata to a configurable
   announce channel and `@mention` the original requester.
+- `/request status` lets a user check the status of their own tracked requests
+  on demand, rather than waiting for the availability announcement.
 
 ## Non-goals
 
@@ -55,6 +57,10 @@ Thin HTTP API client, same shape as `RadarrService`:
   is `status == 5` (Seerr's `MediaStatus.AVAILABLE`). `{"success": False, "error": str}`
   on failure (network error, 404, etc.) — the poller treats this as "skip this cycle,"
   never as "not available yet" being persisted as a state change.
+- `STATUS_LABELS` — module-level `{1: "Unknown", 2: "Pending", 3: "Processing",
+  4: "Partially Available", 5: "Available"}` mapping Seerr's raw `mediaInfo.status`
+  int (already returned in `get_movie_status`'s `status` field) to a human label,
+  used by `/request status`.
 
 All HTTP calls use `requests` via `loop.run_in_executor`, matching `RadarrService`.
 
@@ -67,6 +73,8 @@ Owns local state and the poll loop, same shape as `WatchFolderService`:
   loaded on init, written after every mutation — same load/save-on-write approach as
   `vlc_controller`'s queue backup.
 - `add_request(record: dict)` — appends a new tracked record and persists.
+- `get_requests_for_user(user_id: int) -> list[dict]` — returns the user's tracked
+  records (read-only, no persistence side effect), most recent first.
 - `start()` / `stop()` — spawns/stops a daemon polling thread
   (`threading.Thread(..., daemon=True)`), same as `WatchFolderService.start()`.
 - `set_notifier(callback)` — callback invoked (from the polling thread) with the
@@ -109,6 +117,17 @@ change to existing methods/behavior.
        "requested_by_name": str(interaction.user), "status": "pending",
        "requested_at": <iso>})`, edit the message with the embed.
      - Failure: edit the message with Seerr's error text.
+- `/request status` handler (same channel/role gate as `/request movie`):
+  1. `movie_request_tracker.get_requests_for_user(interaction.user.id)`. Empty →
+     ephemeral reply "You haven't requested anything yet."
+  2. For each record with `status != "available"`, call
+     `overseerr_service.get_movie_status(tmdb_id)` live (read-only — does not
+     mutate the persisted record or fire the notifier; that stays the poller's
+     job) and resolve the label via `STATUS_LABELS`. If the live call fails, fall
+     back to showing the record's locally stored `status`. Already-`"available"`
+     records are shown straight from the local record, no extra API call.
+  3. Reply (ephemeral) with an embed listing each request as
+     `"{title} ({year}) — {status label}"`, sorted most recent first.
 - New notifier function wired at startup (mirroring `watch_service`'s notifier
   wiring): builds an embed from the record's stored metadata (poster/title/
   year/overview) and posts it to `Config.REQUEST_ANNOUNCE_CHANNEL_ID` (falls back
@@ -189,3 +208,6 @@ convention). Manual verification against a live Seerr instance:
    within one `REQUEST_POLL_INTERVAL`.
 6. Point `OVERSEERR_URL` at an unreachable host → verify the command fails
    gracefully and the poll loop keeps running without crashing.
+7. `/request status` with no prior requests → verify the "nothing yet" reply.
+   After submitting a request, verify it shows a `Pending`/`Processing` label; after
+   it becomes available, verify it shows `Available` without an extra Seerr call.
