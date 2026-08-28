@@ -171,7 +171,15 @@ class Config:
     # For each name N in RADARR_INSTANCES, configure:
     #   RADARR_<N>_HOST, RADARR_<N>_PORT, RADARR_<N>_API_KEY, RADARR_<N>_USE_SSL, RADARR_<N>_DISPLAY_NAME (optional)
     RADARR_INSTANCES: List[str] = [n.strip() for n in os.getenv('RADARR_INSTANCES', '').split(',') if n.strip()]
-    
+
+    # Movie Requests (Overseerr/Jellyseerr, optional)
+    OVERSEERR_URL: str = os.getenv('OVERSEERR_URL', '').strip()
+    OVERSEERR_API_KEY: str = os.getenv('OVERSEERR_API_KEY', '').strip()
+    REQUEST_CHANNEL_ID: int = int(os.getenv('REQUEST_CHANNEL_ID', '0'))
+    REQUEST_ANNOUNCE_CHANNEL_ID: int = int(os.getenv('REQUEST_ANNOUNCE_CHANNEL_ID', '0'))
+    REQUEST_POLL_INTERVAL: int = int(os.getenv('REQUEST_POLL_INTERVAL', '900'))
+    REQUEST_STORE_FILE: str = os.getenv('REQUEST_STORE_FILE', 'movie_requests.json').strip()
+
     # Queue Settings
     QUEUE_BACKUP_FILE: str = os.getenv('QUEUE_BACKUP_FILE', 'queue_backup.json')
     # Optional: periodically save current VLC playlist to a file (relative to bot dir if not absolute)
@@ -357,7 +365,19 @@ class Config:
             if any([cls.RADARR_HOST, cls.RADARR_API_KEY]):
                 if not (cls.RADARR_HOST and cls.RADARR_API_KEY):
                     errors.append("RADARR single-instance is partially configured; set both RADARR_HOST and RADARR_API_KEY or clear both")
-            
+
+        # Movie request (Overseerr/Jellyseerr) validation (optional feature)
+        if any([cls.OVERSEERR_URL, cls.OVERSEERR_API_KEY]):
+            if not (cls.OVERSEERR_URL and cls.OVERSEERR_API_KEY):
+                errors.append("Overseerr is partially configured; set both OVERSEERR_URL and OVERSEERR_API_KEY or clear both")
+            elif cls.REQUEST_CHANNEL_ID <= 0:
+                errors.append("REQUEST_CHANNEL_ID must be set to a valid Discord channel ID when Overseerr is configured")
+        try:
+            if cls.REQUEST_POLL_INTERVAL < 60:
+                errors.append("REQUEST_POLL_INTERVAL must be at least 60 seconds")
+        except ValueError:
+            errors.append("REQUEST_POLL_INTERVAL must be a valid integer")
+
         return errors
     
     @classmethod
@@ -414,6 +434,9 @@ class Config:
                     f"Radarr (single): {'Configured' if (cls.RADARR_HOST and cls.RADARR_API_KEY) else 'Not Configured'}"
                 )
             ),
+            f"Overseerr: {'Configured' if (cls.OVERSEERR_URL and cls.OVERSEERR_API_KEY) else 'Not Configured'}",
+            f"Request Channel: {cls.REQUEST_CHANNEL_ID if cls.REQUEST_CHANNEL_ID else 'Not Configured'}",
+            f"Request Announce Channel: {cls.REQUEST_ANNOUNCE_CHANNEL_ID if cls.REQUEST_ANNOUNCE_CHANNEL_ID else 'Falls back to Request Channel'}",
             f"Discord Token: {'Configured' if cls.DISCORD_TOKEN else 'Not Configured'}",
             f"Ko-fi URL: {cls.KOFI_URL if cls.KOFI_URL else 'Not Configured'}",
             f"Privacy Policy URL: {cls.PRIVACY_POLICY_URL if cls.PRIVACY_POLICY_URL else 'Not Configured'}",
