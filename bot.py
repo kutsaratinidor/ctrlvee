@@ -5,7 +5,8 @@ import logging
 import threading
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import Optional
 from src.config import Config
 from discord.ext import commands
 import discord
@@ -67,10 +68,14 @@ from src.services.tmdb_service import TMDBService
 from src.services.watch_folder_service import WatchFolderService
 from src.utils.media_utils import MediaUtils
 from src.services.radarr_service import RadarrService
+from src.services.overseerr_service import OverseerrService, STATUS_LABELS
+from src.services.movie_request_tracker import MovieRequestTracker
 
 vlc = VLCController(bot=bot)
 tmdb_service = TMDBService()
 watch_service = WatchFolderService(vlc)
+overseerr_service = OverseerrService()
+movie_request_tracker = MovieRequestTracker(overseerr_service)
 _radarr_services = []
 try:
     # Build Radarr service instances from config (multi or single)
@@ -708,6 +713,7 @@ def _register_app_command_groups() -> None:
         schedule_group,
         watch_group,
         admin_group,
+        request_group,
     ]
     for group in groups:
         try:
@@ -2018,6 +2024,7 @@ audio_group = app_commands.Group(name="audio", description="CtrlVee audio track 
 schedule_group = app_commands.Group(name="schedule", description="CtrlVee scheduled playback")
 watch_group = app_commands.Group(name="watch", description="CtrlVee watch folder management")
 admin_group = app_commands.Group(name="admin", description="CtrlVee owner administration")
+request_group = app_commands.Group(name="request", description="CtrlVee media requests")
 
 
 async def _check_allowed_roles_for_interaction(interaction: discord.Interaction) -> bool:
@@ -2047,6 +2054,102 @@ async def _check_allowed_roles_for_interaction(interaction: discord.Interaction)
         ephemeral=True,
     )
     return False
+
+
+async def _check_request_channel_for_interaction(interaction: discord.Interaction) -> bool:
+    """Return True when movie requests are configured and used in the right channel."""
+    if not Config.REQUEST_CHANNEL_ID or not overseerr_service.is_configured():
+        await interaction.response.send_message(
+            "Movie requests are not configured on this bot.", ephemeral=True
+        )
+        return False
+    if interaction.channel_id != Config.REQUEST_CHANNEL_ID:
+        await interaction.response.send_message(
+            f"Please use this command in <#{Config.REQUEST_CHANNEL_ID}>.", ephemeral=True
+        )
+        return False
+    return True
+
+
+def _build_movie_request_embed(candidate: dict, *, title_prefix: str = "", description: Optional[str] = None) -> discord.Embed:
+    year_text = f" ({candidate['year']})" if candidate.get('year') else ""
+    embed = discord.Embed(
+        title=f"{title_prefix}{candidate['title']}{year_text}",
+        description=description if description is not None else (candidate.get('overview') or "No overview available."),
+        color=discord.Color.purple(),
+    )
+    if candidate.get('poster_path'):
+        embed.set_thumbnail(url=f"https://image.tmdb.org/t/p/w500{candidate['poster_path']}")
+    return embed
+
+
+class MovieRequestSelect(discord.ui.Select):
+    def __init__(self, candidates: list[dict], requester: discord.abc.User):
+        self.candidates_by_value = {str(c['tmdb_id']): c for c in candidates}
+        self.requester = requester
+        options = [
+            discord.SelectOption(
+                label=f"{c['title']} ({c['year']})" if c.get('year') else c['title'],
+                value=str(c['tmdb_id']),
+                description=(c.get('overview') or "")[:100] or None,
+            )
+            for c in candidates
+        ]
+        super().__init__(placeholder="Select the correct movie...", options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.requester.id:
+            await interaction.response.send_message("Only the person who ran this command can pick a result.", ephemeral=True)
+            return
+
+        candidate = self.candidates_by_value[self.values[0]]
+        submitting_embed = _build_movie_request_embed(candidate, title_prefix="Submitting request: ")
+        await interaction.response.edit_message(embed=submitting_embed, view=None)
+
+        result = await overseerr_service.request_movie(candidate['tmdb_id'])
+        if result.get("success"):
+            movie_request_tracker.add_request({
+                "tmdb_id": candidate['tmdb_id'],
+                "title": candidate['title'],
+                "year": candidate.get('year'),
+                "overview": candidate.get('overview') or "",
+                "poster_path": candidate.get('poster_path'),
+                "overseerr_request_id": result.get("request_id"),
+                "overseerr_media_id": result.get("media_id"),
+                "requested_by_id": self.requester.id,
+                "requested_by_name": str(self.requester),
+                "requested_at": datetime.now(timezone.utc).isoformat(),
+                "status": "pending",
+                "notified_at": None,
+            })
+            confirmed_embed = _build_movie_request_embed(
+                candidate, title_prefix="✅ Requested: ",
+                description=f"Requested by {self.requester.mention}. You'll be notified here once it's available.\n\n{candidate.get('overview') or ''}",
+            )
+            await interaction.edit_original_response(embed=confirmed_embed)
+        else:
+            failed_embed = _build_movie_request_embed(
+                candidate, title_prefix="❌ Request failed: ",
+                description=result.get("error", "Unknown error"),
+            )
+            await interaction.edit_original_response(embed=failed_embed)
+
+
+class MovieRequestSelectView(discord.ui.View):
+    def __init__(self, candidates: list[dict], requester: discord.abc.User):
+        super().__init__(timeout=60)
+        self.message: Optional[discord.Message] = None
+        self.add_item(MovieRequestSelect(candidates, requester))
+
+    async def on_timeout(self) -> None:
+        if self.message is None:
+            return
+        for item in self.children:
+            item.disabled = True
+        try:
+            await self.message.edit(content="Selection timed out.", view=self)
+        except Exception:
+            pass
 
 
 def _build_system_help_embed() -> discord.Embed:
@@ -3399,6 +3502,33 @@ async def admin_leave_server(interaction: discord.Interaction, guild_id: str | N
 @admin_group.command(name="cleanup-playlist", description="Owner only: remove missing files from VLC playlist")
 async def admin_cleanup_playlist(interaction: discord.Interaction):
     await _run_playlist_cleanup(interaction, "/admin cleanup-playlist")
+
+
+@request_group.command(name="movie", description="Request a movie via Overseerr/Jellyseerr")
+@app_commands.describe(title="Movie title to search for")
+async def request_movie(interaction: discord.Interaction, title: str):
+    if not await _check_request_channel_for_interaction(interaction):
+        return
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    await interaction.response.defer(thinking=True)
+
+    candidates = tmdb_service.search_movies(title)
+    if not candidates:
+        await interaction.followup.send(f"No results found for '{title}'.")
+        return
+
+    view = MovieRequestSelectView(candidates, interaction.user)
+    embed = discord.Embed(
+        title="Which movie did you mean?",
+        description="\n".join(
+            f"**{c['title']}**" + (f" ({c['year']})" if c.get('year') else "") for c in candidates
+        ),
+        color=discord.Color.blue(),
+    )
+    message = await interaction.followup.send(embed=embed, view=view)
+    view.message = message
 
 
 _register_app_command_groups()
