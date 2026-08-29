@@ -2258,18 +2258,21 @@ class MovieRequestSelectView(discord.ui.View):
         if interaction.user.id != self.requester.id:
             await interaction.response.send_message("Only the person who ran this command can cancel it.", ephemeral=True)
             return
-        for item in self.children:
-            item.disabled = True
-        await interaction.response.edit_message(content="Request cancelled.", embed=None, view=self)
+        # Discord can't turn a public message ephemeral after the fact, so instead of
+        # leaving "Request cancelled." visible to everyone, remove the public message
+        # entirely and privately ack only the person who cancelled.
+        await interaction.response.send_message("Request cancelled.", ephemeral=True)
+        try:
+            await interaction.message.delete()
+        except Exception:
+            pass
         self.stop()
 
     async def on_timeout(self) -> None:
         if self.message is None:
             return
-        for item in self.children:
-            item.disabled = True
         try:
-            await self.message.edit(content="Selection timed out.", embed=None, view=self)
+            await self.message.delete()
         except Exception:
             pass
 
@@ -3644,11 +3647,11 @@ async def request_movie(interaction: discord.Interaction, title: str):
     if not await _check_allowed_roles_for_interaction(interaction):
         return
 
-    await interaction.response.defer(thinking=True, ephemeral=True)
+    await interaction.response.defer(thinking=True)
 
     candidates = tmdb_service.search_movies(title)
     if not candidates:
-        reply = await interaction.followup.send(f"No results found for '{title}'.", ephemeral=True)
+        reply = await interaction.followup.send(f"No results found for '{title}'.")
         await _log_no_results_search(interaction, "/request movie", title, message=reply)
         return
 
@@ -3660,7 +3663,7 @@ async def request_movie(interaction: discord.Interaction, title: str):
         ),
         color=discord.Color.blue(),
     )
-    message = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+    message = await interaction.followup.send(embed=embed, view=view)
     view.message = message
 
 
