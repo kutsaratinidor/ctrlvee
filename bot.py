@@ -2260,7 +2260,7 @@ class MovieRequestSelectView(discord.ui.View):
             return
         for item in self.children:
             item.disabled = True
-        await interaction.response.edit_message(content="Request cancelled.", view=self)
+        await interaction.response.edit_message(content="Request cancelled.", embed=None, view=self)
         self.stop()
 
     async def on_timeout(self) -> None:
@@ -2269,7 +2269,7 @@ class MovieRequestSelectView(discord.ui.View):
         for item in self.children:
             item.disabled = True
         try:
-            await self.message.edit(content="Selection timed out.", view=self)
+            await self.message.edit(content="Selection timed out.", embed=None, view=self)
         except Exception:
             pass
 
@@ -3644,11 +3644,11 @@ async def request_movie(interaction: discord.Interaction, title: str):
     if not await _check_allowed_roles_for_interaction(interaction):
         return
 
-    await interaction.response.defer(thinking=True)
+    await interaction.response.defer(thinking=True, ephemeral=True)
 
     candidates = tmdb_service.search_movies(title)
     if not candidates:
-        reply = await interaction.followup.send(f"No results found for '{title}'.")
+        reply = await interaction.followup.send(f"No results found for '{title}'.", ephemeral=True)
         await _log_no_results_search(interaction, "/request movie", title, message=reply)
         return
 
@@ -3660,7 +3660,7 @@ async def request_movie(interaction: discord.Interaction, title: str):
         ),
         color=discord.Color.blue(),
     )
-    message = await interaction.followup.send(embed=embed, view=view)
+    message = await interaction.followup.send(embed=embed, view=view, ephemeral=True)
     view.message = message
 
 
