@@ -116,12 +116,15 @@ class OverseerrService:
         """Look up a specific request's approval and media status on Overseerr/Jellyseerr.
 
         Returns:
-            Dict with 'success' boolean. On success: 'found' boolean (False if the
-            request itself no longer exists on Seerr, e.g. it was deleted); when
-            found, also 'request_status' (raw MediaRequestStatus int: 1=Pending,
-            2=Approved, 3=Declined, 4=Failed, 5=Completed), 'media_status' (raw
-            MediaStatus int for the request's media, or None), and 'available'
-            (media_status == 5). 'error' string on failure (network error, etc).
+            Dict with 'success' boolean. On success: 'found' boolean (False if there's
+            nothing left to track on Seerr — either the request itself was deleted, or
+            it survives as an orphan with no media attached, which happens when Seerr's
+            media entry was deleted directly instead of the request: that route doesn't
+            cascade-remove requests, so it needs the same treatment); when found, also
+            'request_status' (raw MediaRequestStatus int: 1=Pending, 2=Approved,
+            3=Declined, 4=Failed, 5=Completed), 'media_status' (raw MediaStatus int
+            for the request's media), and 'available' (media_status == 5). 'error'
+            string on failure (network error, etc).
         """
         if not self.is_configured():
             return {"success": False, "error": "Overseerr not configured (missing URL or API key)"}
@@ -136,7 +139,10 @@ class OverseerrService:
             if response.status_code != 200:
                 return {"success": False, "error": f"HTTP {response.status_code}: {response.text}"}
             data = response.json()
-            media_status = (data.get("media") or {}).get("status")
+            media = data.get("media")
+            if not media:
+                return {"success": True, "found": False}
+            media_status = media.get("status")
             return {
                 "success": True,
                 "found": True,
