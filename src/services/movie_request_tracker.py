@@ -54,6 +54,14 @@ class MovieRequestTracker:
             matches = [dict(r) for r in self._records if r.get("requested_by_id") == user_id]
         return sorted(matches, key=lambda r: r.get("requested_at") or "", reverse=True)
 
+    def find_request_by_tmdb_id(self, tmdb_id: int) -> Optional[dict]:
+        """Return the tracked record for this movie, if one already exists (any requester)."""
+        with self._lock:
+            for r in self._records:
+                if r.get("tmdb_id") == tmdb_id:
+                    return dict(r)
+        return None
+
     def set_notifier(self, notifier: Callable[[dict], None]) -> None:
         """Register a callback invoked (from the polling thread) with the record dict
         when a request transitions to available. Callback must be thread-safe."""

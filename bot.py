@@ -2163,6 +2163,18 @@ class MovieRequestSelect(discord.ui.Select):
             return
 
         candidate = self.candidates_by_value[self.values[0]]
+
+        existing = movie_request_tracker.find_request_by_tmdb_id(candidate['tmdb_id'])
+        if existing:
+            label = STATUS_LABELS[5] if existing.get("status") == "available" else existing.get("status", "pending").title()
+            duplicate_embed = _build_movie_request_embed(
+                candidate, title_prefix="ℹ️ Already requested: ",
+                description=f"Requested by {existing.get('requested_by_name', 'someone')} — status: {label}. Use `/request status` for the latest.\n\n{candidate.get('overview') or ''}",
+            )
+            await interaction.response.edit_message(embed=duplicate_embed, view=None)
+            self.view.stop()
+            return
+
         submitting_embed = _build_movie_request_embed(candidate, title_prefix="Submitting request: ")
         await interaction.response.edit_message(embed=submitting_embed, view=None)
 
