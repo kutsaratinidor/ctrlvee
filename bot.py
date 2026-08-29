@@ -68,8 +68,8 @@ from src.services.tmdb_service import TMDBService
 from src.services.watch_folder_service import WatchFolderService
 from src.utils.media_utils import MediaUtils
 from src.services.radarr_service import RadarrService
-from src.services.overseerr_service import OverseerrService, STATUS_LABELS
-from src.services.movie_request_tracker import MovieRequestTracker
+from src.services.overseerr_service import OverseerrService, STATUS_LABELS, REQUEST_STATUS_DECLINED, REQUEST_STATUS_FAILED
+from src.services.movie_request_tracker import MovieRequestTracker, RETRYABLE_STATUSES
 
 vlc = VLCController(bot=bot)
 tmdb_service = TMDBService()
@@ -2165,7 +2165,7 @@ class MovieRequestSelect(discord.ui.Select):
         candidate = self.candidates_by_value[self.values[0]]
 
         existing = movie_request_tracker.find_request_by_tmdb_id(candidate['tmdb_id'])
-        if existing:
+        if existing and existing.get("status") not in RETRYABLE_STATUSES:
             label = STATUS_LABELS[5] if existing.get("status") == "available" else existing.get("status", "pending").title()
             duplicate_embed = _build_movie_request_embed(
                 candidate, title_prefix="ℹ️ Already requested: ",
@@ -3621,16 +3621,26 @@ async def request_status(interaction: discord.Interaction):
 
     lines = []
     for record in records:
-        if record.get("status") == "available":
-            label = STATUS_LABELS[5]
+        status = record.get("status", "pending")
+        if status in ("available", "declined", "failed", "removed"):
+            label = STATUS_LABELS[5] if status == "available" else status.title()
         else:
-            result = await overseerr_service.get_movie_status(record["tmdb_id"])
-            if result.get("success"):
-                label = STATUS_LABELS.get(result.get("status"), "Unknown")
+            request_id = record.get("overseerr_request_id")
+            result = await overseerr_service.get_request_status(request_id) if request_id is not None else {"success": False}
+            if result.get("success") and result.get("found", True):
+                request_status = result.get("request_status")
+                if request_status == REQUEST_STATUS_DECLINED:
+                    label = "Declined"
+                elif request_status == REQUEST_STATUS_FAILED:
+                    label = "Failed"
+                else:
+                    label = STATUS_LABELS.get(result.get("media_status"), "Unknown")
+            elif result.get("success") and not result.get("found", True):
+                label = "Removed"
             else:
                 # Live check failed (e.g. Seerr temporarily unreachable) — fall back
                 # to the last known local status rather than showing an error.
-                label = record.get("status", "pending").title()
+                label = status.title()
         year_text = f" ({record['year']})" if record.get('year') else ""
         lines.append(f"**{record['title']}**{year_text} — {label}")
 

@@ -7,6 +7,13 @@ from datetime import datetime, timezone
 from typing import Callable, List, Optional
 
 from ..config import Config
+from .overseerr_service import REQUEST_STATUS_DECLINED, REQUEST_STATUS_FAILED
+
+# Statuses that mean polling has nothing left to check.
+TERMINAL_STATUSES = ("available", "declined", "failed", "removed")
+# Of those, the ones that should NOT block a fresh request for the same title
+# (declined/failed/removed all mean there's no live request on Seerr anymore).
+RETRYABLE_STATUSES = ("declined", "failed", "removed")
 
 
 class MovieRequestTracker:
@@ -92,23 +99,42 @@ class MovieRequestTracker:
             self._stop_event.wait(self.poll_interval)
 
     def poll_once(self) -> None:
-        """Check every un-notified record once against Overseerr. Synchronous
+        """Check every unresolved record once against Overseerr. Synchronous
         (bridges into a short-lived event loop per check) so it can be called
         directly from a plain thread or from a verification script."""
         with self._lock:
-            pending = [r for r in self._records if r.get("status") != "available"]
+            pending = [r for r in self._records if r.get("status") not in TERMINAL_STATUSES]
 
         changed = False
         for record in pending:
             tmdb_id = record.get("tmdb_id")
+            request_id = record.get("overseerr_request_id")
+            if request_id is None:
+                self.logger.warning(f"Record for tmdb_id={tmdb_id} has no overseerr_request_id; skipping status check")
+                continue
             try:
-                result = asyncio.run(self.overseerr.get_movie_status(tmdb_id))
+                result = asyncio.run(self.overseerr.get_request_status(request_id))
             except Exception as e:
-                self.logger.error(f"Status check failed for tmdb_id={tmdb_id}: {e}")
+                self.logger.error(f"Status check failed for request_id={request_id} (tmdb_id={tmdb_id}): {e}")
                 continue
 
             if not result.get("success"):
-                self.logger.warning(f"Status check error for tmdb_id={tmdb_id}: {result.get('error')}")
+                self.logger.warning(f"Status check error for request_id={request_id} (tmdb_id={tmdb_id}): {result.get('error')}")
+                continue
+
+            if not result.get("found", True):
+                # Request was deleted on the Seerr side. Quiet update: no notification,
+                # and this no longer blocks a future re-request for the same title.
+                with self._lock:
+                    record["status"] = "removed"
+                changed = True
+                continue
+
+            request_status = result.get("request_status")
+            if request_status in (REQUEST_STATUS_DECLINED, REQUEST_STATUS_FAILED):
+                with self._lock:
+                    record["status"] = "declined" if request_status == REQUEST_STATUS_DECLINED else "failed"
+                changed = True
                 continue
 
             if result.get("available"):

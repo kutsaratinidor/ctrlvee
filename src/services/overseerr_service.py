@@ -11,7 +11,13 @@ STATUS_LABELS = {
     3: "Processing",
     4: "Partially Available",
     5: "Available",
+    6: "Deleted",
 }
+
+# MediaRequestStatus (the individual request's own approval state, distinct from
+# the media-wide STATUS_LABELS above).
+REQUEST_STATUS_DECLINED = 3
+REQUEST_STATUS_FAILED = 4
 
 
 class OverseerrService:
@@ -106,13 +112,16 @@ class OverseerrService:
         except Exception as e:
             return {"success": False, "error": f"Unexpected error: {str(e)}"}
 
-    async def get_movie_status(self, tmdb_id: int) -> Dict:
-        """Look up a movie's current media status on Overseerr/Jellyseerr by TMDB ID.
+    async def get_request_status(self, request_id: int) -> Dict:
+        """Look up a specific request's approval and media status on Overseerr/Jellyseerr.
 
         Returns:
-            Dict with 'success' boolean, 'status' (raw Seerr mediaInfo.status int, or None
-            if the movie has never been requested/added), and 'available' (status == 5).
-            'error' string on failure (network error, non-200, etc).
+            Dict with 'success' boolean. On success: 'found' boolean (False if the
+            request itself no longer exists on Seerr, e.g. it was deleted); when
+            found, also 'request_status' (raw MediaRequestStatus int: 1=Pending,
+            2=Approved, 3=Declined, 4=Failed, 5=Completed), 'media_status' (raw
+            MediaStatus int for the request's media, or None), and 'available'
+            (media_status == 5). 'error' string on failure (network error, etc).
         """
         if not self.is_configured():
             return {"success": False, "error": "Overseerr not configured (missing URL or API key)"}
@@ -120,13 +129,21 @@ class OverseerrService:
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(
                 None,
-                lambda: requests.get(urljoin(self.base_url, f"movie/{tmdb_id}"), headers=self._headers(), timeout=10)
+                lambda: requests.get(urljoin(self.base_url, f"request/{request_id}"), headers=self._headers(), timeout=10)
             )
+            if response.status_code == 404:
+                return {"success": True, "found": False}
             if response.status_code != 200:
                 return {"success": False, "error": f"HTTP {response.status_code}: {response.text}"}
             data = response.json()
-            status = (data.get("mediaInfo") or {}).get("status")
-            return {"success": True, "status": status, "available": status == 5}
+            media_status = (data.get("media") or {}).get("status")
+            return {
+                "success": True,
+                "found": True,
+                "request_status": data.get("status"),
+                "media_status": media_status,
+                "available": media_status == 5,
+            }
         except requests.exceptions.RequestException as e:
             return {"success": False, "error": f"Connection error: {str(e)}"}
         except Exception as e:
