@@ -71,13 +71,21 @@ class OverseerrService:
         if not self.is_configured():
             return {"success": False, "error": "Overseerr not configured (missing URL or API key)"}
         try:
+            from ..config import Config
+        except Exception:
+            Config = None  # type: ignore
+        server_id = getattr(Config, 'OVERSEERR_RADARR_SERVER_ID', None) if Config else None
+        payload = {"mediaType": "movie", "mediaId": tmdb_id}
+        if server_id is not None:
+            payload["serverId"] = server_id
+        try:
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(
                 None,
                 lambda: requests.post(
                     urljoin(self.base_url, "request"),
                     headers=self._headers(),
-                    json={"mediaType": "movie", "mediaId": tmdb_id},
+                    json=payload,
                     timeout=15,
                 )
             )

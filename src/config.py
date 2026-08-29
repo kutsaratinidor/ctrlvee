@@ -1,4 +1,4 @@
-from typing import List, Union
+from typing import List, Optional, Union
 import os
 import logging
 from dotenv import load_dotenv
@@ -179,6 +179,15 @@ class Config:
     REQUEST_ANNOUNCE_CHANNEL_ID: int = int(os.getenv('REQUEST_ANNOUNCE_CHANNEL_ID', '0'))
     REQUEST_POLL_INTERVAL: int = int(os.getenv('REQUEST_POLL_INTERVAL', '900'))
     REQUEST_STORE_FILE: str = os.getenv('REQUEST_STORE_FILE', 'movie_requests.json').strip()
+    # Which Overseerr-configured Radarr instance (its Overseerr server id, not RADARR_INSTANCES)
+    # manages new requests. Blank lets Overseerr use its own default server.
+    _overseerr_radarr_server_id_raw: str = os.getenv('OVERSEERR_RADARR_SERVER_ID', '').strip()
+    try:
+        OVERSEERR_RADARR_SERVER_ID: Optional[int] = (
+            int(_overseerr_radarr_server_id_raw) if _overseerr_radarr_server_id_raw else None
+        )
+    except ValueError:
+        OVERSEERR_RADARR_SERVER_ID = None
 
     # Queue Settings
     QUEUE_BACKUP_FILE: str = os.getenv('QUEUE_BACKUP_FILE', 'queue_backup.json')
@@ -377,6 +386,8 @@ class Config:
                 errors.append("REQUEST_POLL_INTERVAL must be at least 60 seconds")
         except ValueError:
             errors.append("REQUEST_POLL_INTERVAL must be a valid integer")
+        if cls._overseerr_radarr_server_id_raw and cls.OVERSEERR_RADARR_SERVER_ID is None:
+            errors.append("OVERSEERR_RADARR_SERVER_ID must be a valid integer")
 
         return errors
     
@@ -437,6 +448,7 @@ class Config:
             f"Overseerr: {'Configured' if (cls.OVERSEERR_URL and cls.OVERSEERR_API_KEY) else 'Not Configured'}",
             f"Request Channel: {cls.REQUEST_CHANNEL_ID if cls.REQUEST_CHANNEL_ID else 'Not Configured'}",
             f"Request Announce Channel: {cls.REQUEST_ANNOUNCE_CHANNEL_ID if cls.REQUEST_ANNOUNCE_CHANNEL_ID else 'Falls back to Request Channel'}",
+            f"Overseerr Radarr Server ID: {cls.OVERSEERR_RADARR_SERVER_ID if cls.OVERSEERR_RADARR_SERVER_ID is not None else 'Overseerr default'}",
             f"Discord Token: {'Configured' if cls.DISCORD_TOKEN else 'Not Configured'}",
             f"Ko-fi URL: {cls.KOFI_URL if cls.KOFI_URL else 'Not Configured'}",
             f"Privacy Policy URL: {cls.PRIVACY_POLICY_URL if cls.PRIVACY_POLICY_URL else 'Not Configured'}",

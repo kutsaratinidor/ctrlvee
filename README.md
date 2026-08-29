@@ -244,6 +244,9 @@ REQUEST_CHANNEL_ID=123456789012345678
 REQUEST_ANNOUNCE_CHANNEL_ID=0
 REQUEST_POLL_INTERVAL=900
 REQUEST_STORE_FILE=movie_requests.json
+# Optional: route every request to a specific Radarr instance configured in Overseerr
+# (Settings > Services > find its server ID). Blank uses Overseerr's own default instance.
+OVERSEERR_RADARR_SERVER_ID=
 ```
 
 ## Commands
