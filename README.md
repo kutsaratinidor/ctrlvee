@@ -155,6 +155,7 @@ Edit `.env` (starting from `template.env`).
 - `COMMAND_CHANNEL_ID` (if set > 0, slash commands are restricted to this channel)
 - `WATCH_ANNOUNCE_CHANNEL_ID` (when `COMMAND_CHANNEL_ID=0`, slash commands are restricted to these channels)
 - If both are unset/0, guild slash commands are blocked until one is configured.
+- `SEARCH_LOG_CHANNEL_ID` (default `0`): channel to log searches that returned no results (movie requests, playlist search/play-search). Logs to the terminal instead when unset.
 - `ITEMS_PER_PAGE` (default `20`)
 - `QUEUE_BACKUP_FILE` (default `queue_backup.json`)
 - `PLAYLIST_AUTOSAVE_FILE` + `PLAYLIST_AUTOSAVE_INTERVAL` (optional autosave)

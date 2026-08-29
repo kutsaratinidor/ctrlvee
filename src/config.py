@@ -158,7 +158,11 @@ class Config:
     # Commands are still accepted from any channel (e.g. the voice channel text chat).
     # Set to 0 or leave empty to disable.
     COMMAND_CHANNEL_ID: int = int(os.getenv('COMMAND_CHANNEL_ID', '0'))
-    
+
+    # Optional channel to log searches that returned no results (movie requests,
+    # playlist search/play-search). Set to 0 to log to the terminal instead.
+    SEARCH_LOG_CHANNEL_ID: int = int(os.getenv('SEARCH_LOG_CHANNEL_ID', '0'))
+
     # TMDB Settings
     TMDB_API_KEY: str = os.getenv('TMDB_API_KEY', '')
     
@@ -406,6 +410,7 @@ class Config:
             f"Slash Command Guild ID: {cls.SLASH_COMMAND_GUILD_ID if cls.SLASH_COMMAND_GUILD_ID else 'Global sync'}",
             f"Slash Global Sync Enabled: {cls.SYNC_GLOBAL_COMMANDS}",
             f"Command Channel ID: {cls.COMMAND_CHANNEL_ID if cls.COMMAND_CHANNEL_ID else 'Not Configured (replies in-channel)'}",
+            f"Search Log Channel ID: {cls.SEARCH_LOG_CHANNEL_ID if cls.SEARCH_LOG_CHANNEL_ID else 'Not Configured (logs to terminal)'}",
             "Current Configuration:",
             "-" * 50,
             f"VLC Host: {cls.VLC_HOST}",

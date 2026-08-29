@@ -2116,6 +2116,43 @@ async def _check_allowed_roles_for_interaction(interaction: discord.Interaction)
     return False
 
 
+async def _log_no_results_search(
+    interaction: discord.Interaction, command_name: str, query: str, message: Optional[discord.Message] = None
+) -> None:
+    """Log a search that returned no results: the command, query, requester, and guild.
+
+    Posts to SEARCH_LOG_CHANNEL_ID when configured (falling back to the terminal if
+    that send fails), otherwise logs to the terminal directly.
+    """
+    guild_text = f"{interaction.guild.name} ({interaction.guild.id})" if interaction.guild else "DM"
+    user_text = f"{interaction.user} ({interaction.user.id})"
+    channel_text = f"#{interaction.channel}" if interaction.channel else str(interaction.channel_id)
+    message_link = message.jump_url if message else None
+
+    if Config.SEARCH_LOG_CHANNEL_ID:
+        try:
+            channel = bot.get_channel(Config.SEARCH_LOG_CHANNEL_ID) or await bot.fetch_channel(Config.SEARCH_LOG_CHANNEL_ID)
+            embed = discord.Embed(
+                title="Search returned no results",
+                description=f"`{command_name}` — **{query}**",
+                color=discord.Color.orange(),
+            )
+            embed.add_field(name="User", value=user_text, inline=True)
+            embed.add_field(name="Guild", value=guild_text, inline=True)
+            embed.add_field(name="Channel", value=channel_text, inline=True)
+            if message_link:
+                embed.add_field(name="Message", value=f"[Jump]({message_link})", inline=False)
+            await channel.send(embed=embed)
+            return
+        except Exception as e:
+            logger.warning(f"Failed to log no-results search to SEARCH_LOG_CHANNEL_ID={Config.SEARCH_LOG_CHANNEL_ID}: {e}")
+
+    logger.info(
+        f"No results: command={command_name} query={query!r} user={user_text} guild={guild_text} channel={channel_text}"
+        + (f" message={message_link}" if message_link else "")
+    )
+
+
 async def _check_request_channel_for_interaction(interaction: discord.Interaction) -> bool:
     """Return True when movie requests are configured and used in the right channel."""
     if not Config.REQUEST_CHANNEL_ID or not overseerr_service.is_configured():
@@ -2213,7 +2250,18 @@ class MovieRequestSelectView(discord.ui.View):
     def __init__(self, candidates: list[dict], requester: discord.abc.User):
         super().__init__(timeout=60)
         self.message: Optional[discord.Message] = None
+        self.requester = requester
         self.add_item(MovieRequestSelect(candidates, requester))
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.requester.id:
+            await interaction.response.send_message("Only the person who ran this command can cancel it.", ephemeral=True)
+            return
+        for item in self.children:
+            item.disabled = True
+        await interaction.response.edit_message(content="Request cancelled.", view=self)
+        self.stop()
 
     async def on_timeout(self) -> None:
         if self.message is None:
@@ -2889,6 +2937,11 @@ async def playlist_search(interaction: discord.Interaction, query: str):
     if not results:
         embed.add_field(name="No Results", value="No matches found in the playlist", inline=False)
         await interaction.response.send_message(embed=embed)
+        try:
+            reply = await interaction.original_response()
+        except Exception:
+            reply = None
+        await _log_no_results_search(interaction, "/playlist search", query, message=reply)
         return
 
     pages = playlist_cog._build_search_pages(results)
@@ -2925,6 +2978,11 @@ async def playlist_play_search(interaction: discord.Interaction, query: str):
     results = playlist_cog._search_items(query)
     if not results:
         await interaction.response.send_message("No matches found in playlist.", ephemeral=True)
+        try:
+            reply = await interaction.original_response()
+        except Exception:
+            reply = None
+        await _log_no_results_search(interaction, "/playlist play-search", query, message=reply)
         return
 
     playlist_num, item = results[0]
@@ -3590,7 +3648,8 @@ async def request_movie(interaction: discord.Interaction, title: str):
 
     candidates = tmdb_service.search_movies(title)
     if not candidates:
-        await interaction.followup.send(f"No results found for '{title}'.")
+        reply = await interaction.followup.send(f"No results found for '{title}'.")
+        await _log_no_results_search(interaction, "/request movie", title, message=reply)
         return
 
     view = MovieRequestSelectView(candidates, interaction.user)
