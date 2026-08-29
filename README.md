@@ -303,6 +303,7 @@ Prefix shown as `!` below; replace with your configured `DISCORD_COMMAND_PREFIX`
 
 - `/request movie <title>` — search and request a movie via Overseerr/Jellyseerr
 - `/request status` — check the status of your own requests
+- `/request clear` — remove your own declined/failed/removed requests from tracking
 
 ## Privacy Statement
 

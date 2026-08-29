@@ -3652,6 +3652,21 @@ async def request_status(interaction: discord.Interaction):
     await interaction.followup.send(embed=embed)
 
 
+@request_group.command(name="clear", description="Remove your declined/failed/removed requests from tracking")
+async def request_clear(interaction: discord.Interaction):
+    if not await _check_request_channel_for_interaction(interaction):
+        return
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    removed = movie_request_tracker.clear_terminal_for_user(interaction.user.id)
+    if removed:
+        await interaction.followup.send(f"Cleared {removed} declined/failed/removed request{'s' if removed != 1 else ''} from your history.")
+    else:
+        await interaction.followup.send("Nothing to clear — you have no declined/failed/removed requests.")
+
+
 _register_app_command_groups()
 
 def main():

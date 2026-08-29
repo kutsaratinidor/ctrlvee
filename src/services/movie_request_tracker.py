@@ -61,6 +61,19 @@ class MovieRequestTracker:
             matches = [dict(r) for r in self._records if r.get("requested_by_id") == user_id]
         return sorted(matches, key=lambda r: r.get("requested_at") or "", reverse=True)
 
+    def clear_terminal_for_user(self, user_id: int) -> int:
+        """Remove this user's declined/failed/removed records. Returns how many were removed."""
+        with self._lock:
+            before = len(self._records)
+            self._records = [
+                r for r in self._records
+                if not (r.get("requested_by_id") == user_id and r.get("status") in RETRYABLE_STATUSES)
+            ]
+            removed = before - len(self._records)
+            if removed:
+                self._save()
+        return removed
+
     def find_request_by_tmdb_id(self, tmdb_id: int) -> Optional[dict]:
         """Return the tracked record for this movie, if one already exists (any requester)."""
         with self._lock:
