@@ -155,6 +155,7 @@ Edit `.env` (starting from `template.env`).
 - `COMMAND_CHANNEL_ID` (if set > 0, slash commands are restricted to this channel)
 - `WATCH_ANNOUNCE_CHANNEL_ID` (when `COMMAND_CHANNEL_ID=0`, slash commands are restricted to these channels)
 - If both are unset/0, guild slash commands are blocked until one is configured.
+- `SEARCH_LOG_CHANNEL_ID` (default `0`): channel to log searches that returned no results (movie requests, playlist search/play-search). Logs to the terminal instead when unset.
 - `ITEMS_PER_PAGE` (default `20`)
 - `QUEUE_BACKUP_FILE` (default `queue_backup.json`)
 - `PLAYLIST_AUTOSAVE_FILE` + `PLAYLIST_AUTOSAVE_INTERVAL` (optional autosave)
@@ -231,6 +232,24 @@ RADARR_ANIME_USE_SSL=true
 RADARR_ANIME_DISPLAY_NAME=Anime
 ```
 
+### Movie Requests (Overseerr/Jellyseerr, Optional)
+
+Lets allowed users request movies via `/request movie <title>` (slash-only), tracked
+locally and announced when available. Availability is checked by polling — no
+inbound webhook is needed.
+
+```bash
+OVERSEERR_URL=http://localhost:5055
+OVERSEERR_API_KEY=your_overseerr_or_jellyseerr_api_key
+REQUEST_CHANNEL_ID=123456789012345678
+REQUEST_ANNOUNCE_CHANNEL_ID=0
+REQUEST_POLL_INTERVAL=900
+REQUEST_STORE_FILE=movie_requests.json
+# Optional: route every request to a specific Radarr instance configured in Overseerr
+# (Settings > Services > find its server ID). Blank uses Overseerr's own default instance.
+OVERSEERR_RADARR_SERVER_ID=
+```
+
 ## Commands
 
 Prefix shown as `!` below; replace with your configured `DISCORD_COMMAND_PREFIX`.
@@ -280,6 +299,12 @@ Prefix shown as `!` below; replace with your configured `DISCORD_COMMAND_PREFIX`
 - `!privacy` (aliases: `policy`, `data_policy`)
 - `!changelog` (aliases: `changes`, `whatsnew`)
 - `!controls`
+
+### Movie Requests (Slash Only)
+
+- `/request movie <title>` — search and request a movie via Overseerr/Jellyseerr
+- `/request status` — check the status of your own requests
+- `/request clear` — remove your own declined/failed/removed requests from tracking
 
 ## Privacy Statement
 

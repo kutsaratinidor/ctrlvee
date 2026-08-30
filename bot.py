@@ -5,7 +5,8 @@ import logging
 import threading
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
+from typing import Optional
 from src.config import Config
 from discord.ext import commands
 import discord
@@ -67,10 +68,14 @@ from src.services.tmdb_service import TMDBService
 from src.services.watch_folder_service import WatchFolderService
 from src.utils.media_utils import MediaUtils
 from src.services.radarr_service import RadarrService
+from src.services.overseerr_service import OverseerrService, STATUS_LABELS, REQUEST_STATUS_DECLINED, REQUEST_STATUS_FAILED
+from src.services.movie_request_tracker import MovieRequestTracker, RETRYABLE_STATUSES
 
 vlc = VLCController(bot=bot)
 tmdb_service = TMDBService()
 watch_service = WatchFolderService(vlc)
+overseerr_service = OverseerrService()
+movie_request_tracker = MovieRequestTracker(overseerr_service)
 _radarr_services = []
 try:
     # Build Radarr service instances from config (multi or single)
@@ -156,6 +161,14 @@ async def _enforce_slash_channel_policy(interaction: discord.Interaction) -> boo
     """Enforce configured slash-command channel policy for guild interactions."""
     # This policy is intended for server channels only.
     if interaction.guild is None:
+        return True
+
+    # /request commands enforce their own channel restriction against
+    # Config.REQUEST_CHANNEL_ID via _check_request_channel_for_interaction —
+    # skip the global gate entirely for this group so a dedicated request
+    # channel doesn't have to also be COMMAND_CHANNEL_ID.
+    command = interaction.command
+    if command is not None and getattr(command, 'root_parent', None) is request_group:
         return True
 
     allowed_ids, source = _get_slash_allowed_channel_ids()
@@ -294,6 +307,7 @@ def _build_privacy_embed() -> discord.Embed:
         name="What data may be stored",
         value=(
             "• Queue backup and schedule backup files (local bot storage)\n"
+            "• Movie request records (requester user ID/username, kept indefinitely to notify on availability)\n"
             "• Optional playlist autosave output files\n"
             "• Operational logs for troubleshooting"
         ),
@@ -708,6 +722,7 @@ def _register_app_command_groups() -> None:
         schedule_group,
         watch_group,
         admin_group,
+        request_group,
     ]
     for group in groups:
         try:
@@ -1435,6 +1450,57 @@ async def on_ready():
         else:
             logger.info("WatchFolderService not started (disabled or already running)")
 
+        def movie_request_notifier(record: dict) -> None:
+            async def _send_availability_announcement():
+                channel_id = Config.REQUEST_ANNOUNCE_CHANNEL_ID or Config.REQUEST_CHANNEL_ID
+                if not channel_id:
+                    return
+                channel = bot.get_channel(channel_id)
+                if channel is None:
+                    try:
+                        channel = await bot.fetch_channel(channel_id)
+                    except Exception as e:
+                        logger.error(f"Failed to fetch movie request announce channel {channel_id}: {e}")
+                        return
+                embed = discord.Embed(
+                    title="🎬 Now Available",
+                    description=f"**{record.get('title')}**" + (f" ({record.get('year')})" if record.get('year') else "") + " is now available to watch.",
+                    color=discord.Color.green(),
+                )
+                if record.get('overview'):
+                    embed.add_field(name="Overview", value=record['overview'][:1024], inline=False)
+                if record.get('poster_path'):
+                    embed.set_thumbnail(url=f"https://image.tmdb.org/t/p/w500{record['poster_path']}")
+                try:
+                    await channel.send(
+                        content=f"<@{record.get('requested_by_id')}> your requested movie is now available!",
+                        embed=embed,
+                    )
+                except discord.Forbidden:
+                    logger.warning(f"Missing permission to send movie request announcement in channel {channel_id}.")
+                except Exception as e:
+                    logger.error(f"Failed to send movie request announcement: {e}")
+
+            try:
+                future = asyncio.run_coroutine_threadsafe(_send_availability_announcement(), bot.loop)
+
+                def _log_result(fut):
+                    try:
+                        fut.result()
+                    except Exception as e:
+                        logger.error(f"Movie request announcement task failed: {e}", exc_info=True)
+
+                future.add_done_callback(_log_result)
+            except Exception as e:
+                logger.error(f"Failed to schedule movie request announcement: {e}", exc_info=True)
+
+        movie_request_tracker.set_notifier(movie_request_notifier)
+        request_tracker_started = movie_request_tracker.start()
+        if request_tracker_started:
+            logger.info("MovieRequestTracker started")
+        else:
+            logger.info("MovieRequestTracker not started (no REQUEST_STORE_FILE configured)")
+
         # Start autosave thread if configured
         if Config.PLAYLIST_AUTOSAVE_FILE:
             def _resolve_autosave_path(filename: str) -> str:
@@ -2018,6 +2084,7 @@ audio_group = app_commands.Group(name="audio", description="CtrlVee audio track 
 schedule_group = app_commands.Group(name="schedule", description="CtrlVee scheduled playback")
 watch_group = app_commands.Group(name="watch", description="CtrlVee watch folder management")
 admin_group = app_commands.Group(name="admin", description="CtrlVee owner administration")
+request_group = app_commands.Group(name="request", description="CtrlVee media requests")
 
 
 async def _check_allowed_roles_for_interaction(interaction: discord.Interaction) -> bool:
@@ -2047,6 +2114,167 @@ async def _check_allowed_roles_for_interaction(interaction: discord.Interaction)
         ephemeral=True,
     )
     return False
+
+
+async def _log_no_results_search(
+    interaction: discord.Interaction, command_name: str, query: str, message: Optional[discord.Message] = None
+) -> None:
+    """Log a search that returned no results: the command, query, requester, and guild.
+
+    Posts to SEARCH_LOG_CHANNEL_ID when configured (falling back to the terminal if
+    that send fails), otherwise logs to the terminal directly.
+    """
+    guild_text = f"{interaction.guild.name} ({interaction.guild.id})" if interaction.guild else "DM"
+    user_text = f"{interaction.user} ({interaction.user.id})"
+    channel_text = f"#{interaction.channel}" if interaction.channel else str(interaction.channel_id)
+    message_link = message.jump_url if message else None
+
+    if Config.SEARCH_LOG_CHANNEL_ID:
+        try:
+            channel = bot.get_channel(Config.SEARCH_LOG_CHANNEL_ID) or await bot.fetch_channel(Config.SEARCH_LOG_CHANNEL_ID)
+            embed = discord.Embed(
+                title="Search returned no results",
+                description=f"`{command_name}` — **{query}**",
+                color=discord.Color.orange(),
+            )
+            embed.add_field(name="User", value=user_text, inline=True)
+            embed.add_field(name="Guild", value=guild_text, inline=True)
+            embed.add_field(name="Channel", value=channel_text, inline=True)
+            if message_link:
+                embed.add_field(name="Message", value=f"[Jump]({message_link})", inline=False)
+            await channel.send(embed=embed)
+            return
+        except Exception as e:
+            logger.warning(f"Failed to log no-results search to SEARCH_LOG_CHANNEL_ID={Config.SEARCH_LOG_CHANNEL_ID}: {e}")
+
+    logger.info(
+        f"No results: command={command_name} query={query!r} user={user_text} guild={guild_text} channel={channel_text}"
+        + (f" message={message_link}" if message_link else "")
+    )
+
+
+async def _check_request_channel_for_interaction(interaction: discord.Interaction) -> bool:
+    """Return True when movie requests are configured and used in the right channel."""
+    if not Config.REQUEST_CHANNEL_ID or not overseerr_service.is_configured():
+        await interaction.response.send_message(
+            "Movie requests are not configured on this bot.", ephemeral=True
+        )
+        return False
+    if interaction.channel_id != Config.REQUEST_CHANNEL_ID:
+        await interaction.response.send_message(
+            f"Please use this command in <#{Config.REQUEST_CHANNEL_ID}>.", ephemeral=True
+        )
+        return False
+    return True
+
+
+def _build_movie_request_embed(candidate: dict, *, title_prefix: str = "", description: Optional[str] = None) -> discord.Embed:
+    year_text = f" ({candidate['year']})" if candidate.get('year') else ""
+    embed = discord.Embed(
+        title=f"{title_prefix}{candidate['title']}{year_text}",
+        description=description if description is not None else (candidate.get('overview') or "No overview available."),
+        color=discord.Color.purple(),
+    )
+    if candidate.get('poster_path'):
+        embed.set_thumbnail(url=f"https://image.tmdb.org/t/p/w500{candidate['poster_path']}")
+    return embed
+
+
+class MovieRequestSelect(discord.ui.Select):
+    def __init__(self, candidates: list[dict], requester: discord.abc.User):
+        self.candidates_by_value = {str(c['tmdb_id']): c for c in candidates}
+        self.requester = requester
+        options = [
+            discord.SelectOption(
+                label=f"{c['title']} ({c['year']})" if c.get('year') else c['title'],
+                value=str(c['tmdb_id']),
+                description=(c.get('overview') or "")[:100] or None,
+            )
+            for c in candidates
+        ]
+        super().__init__(placeholder="Select the correct movie...", options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.requester.id:
+            await interaction.response.send_message("Only the person who ran this command can pick a result.", ephemeral=True)
+            return
+
+        candidate = self.candidates_by_value[self.values[0]]
+
+        existing = movie_request_tracker.find_request_by_tmdb_id(candidate['tmdb_id'])
+        if existing and existing.get("status") not in RETRYABLE_STATUSES:
+            label = STATUS_LABELS[5] if existing.get("status") == "available" else existing.get("status", "pending").title()
+            duplicate_embed = _build_movie_request_embed(
+                candidate, title_prefix="ℹ️ Already requested: ",
+                description=f"Requested by {existing.get('requested_by_name', 'someone')} — status: {label}. Use `/request status` for the latest.\n\n{candidate.get('overview') or ''}",
+            )
+            await interaction.response.edit_message(embed=duplicate_embed, view=None)
+            self.view.stop()
+            return
+
+        submitting_embed = _build_movie_request_embed(candidate, title_prefix="Submitting request: ")
+        await interaction.response.edit_message(embed=submitting_embed, view=None)
+
+        result = await overseerr_service.request_movie(candidate['tmdb_id'])
+        if result.get("success"):
+            movie_request_tracker.add_request({
+                "tmdb_id": candidate['tmdb_id'],
+                "title": candidate['title'],
+                "year": candidate.get('year'),
+                "overview": candidate.get('overview') or "",
+                "poster_path": candidate.get('poster_path'),
+                "overseerr_request_id": result.get("request_id"),
+                "overseerr_media_id": result.get("media_id"),
+                "requested_by_id": self.requester.id,
+                "requested_by_name": str(self.requester),
+                "requested_at": datetime.now(timezone.utc).isoformat(),
+                "status": "pending",
+                "notified_at": None,
+            })
+            confirmed_embed = _build_movie_request_embed(
+                candidate, title_prefix="✅ Requested: ",
+                description=f"Requested by {self.requester.mention}. You'll be notified here once it's available.\n\n{candidate.get('overview') or ''}",
+            )
+            await interaction.edit_original_response(embed=confirmed_embed)
+        else:
+            failed_embed = _build_movie_request_embed(
+                candidate, title_prefix="❌ Request failed: ",
+                description=result.get("error", "Unknown error"),
+            )
+            await interaction.edit_original_response(embed=failed_embed)
+
+        self.view.stop()
+
+
+class MovieRequestSelectView(discord.ui.View):
+    def __init__(self, candidates: list[dict], requester: discord.abc.User):
+        super().__init__(timeout=60)
+        self.message: Optional[discord.Message] = None
+        self.requester = requester
+        self.add_item(MovieRequestSelect(candidates, requester))
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.requester.id:
+            await interaction.response.send_message("Only the person who ran this command can cancel it.", ephemeral=True)
+            return
+        # Discord can't turn a public message ephemeral after the fact, so instead of
+        # leaving "Request cancelled." visible to everyone, remove the public message
+        # entirely and privately ack only the person who cancelled.
+        await interaction.response.send_message("Request cancelled.", ephemeral=True)
+        try:
+            await interaction.message.delete()
+        except Exception:
+            pass
+        self.stop()
+
+    async def on_timeout(self) -> None:
+        if self.message is None:
+            return
+        try:
+            await self.message.delete()
+        except Exception:
+            pass
 
 
 def _build_system_help_embed() -> discord.Embed:
@@ -2712,6 +2940,11 @@ async def playlist_search(interaction: discord.Interaction, query: str):
     if not results:
         embed.add_field(name="No Results", value="No matches found in the playlist", inline=False)
         await interaction.response.send_message(embed=embed)
+        try:
+            reply = await interaction.original_response()
+        except Exception:
+            reply = None
+        await _log_no_results_search(interaction, "/playlist search", query, message=reply)
         return
 
     pages = playlist_cog._build_search_pages(results)
@@ -2748,6 +2981,11 @@ async def playlist_play_search(interaction: discord.Interaction, query: str):
     results = playlist_cog._search_items(query)
     if not results:
         await interaction.response.send_message("No matches found in playlist.", ephemeral=True)
+        try:
+            reply = await interaction.original_response()
+        except Exception:
+            reply = None
+        await _log_no_results_search(interaction, "/playlist play-search", query, message=reply)
         return
 
     playlist_num, item = results[0]
@@ -3399,6 +3637,96 @@ async def admin_leave_server(interaction: discord.Interaction, guild_id: str | N
 @admin_group.command(name="cleanup-playlist", description="Owner only: remove missing files from VLC playlist")
 async def admin_cleanup_playlist(interaction: discord.Interaction):
     await _run_playlist_cleanup(interaction, "/admin cleanup-playlist")
+
+
+@request_group.command(name="movie", description="Request a movie via Overseerr/Jellyseerr")
+@app_commands.describe(title="Movie title to search for")
+async def request_movie(interaction: discord.Interaction, title: str):
+    if not await _check_request_channel_for_interaction(interaction):
+        return
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    await interaction.response.defer(thinking=True)
+
+    candidates = tmdb_service.search_movies(title)
+    if not candidates:
+        reply = await interaction.followup.send(f"No results found for '{title}'.")
+        await _log_no_results_search(interaction, "/request movie", title, message=reply)
+        return
+
+    view = MovieRequestSelectView(candidates, interaction.user)
+    embed = discord.Embed(
+        title="Which movie did you mean?",
+        description="\n".join(
+            f"**{c['title']}**" + (f" ({c['year']})" if c.get('year') else "") for c in candidates
+        ),
+        color=discord.Color.blue(),
+    )
+    message = await interaction.followup.send(embed=embed, view=view)
+    view.message = message
+
+
+@request_group.command(name="status", description="Check the status of your movie requests")
+async def request_status(interaction: discord.Interaction):
+    if not await _check_request_channel_for_interaction(interaction):
+        return
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    await interaction.response.defer(thinking=True, ephemeral=True)
+
+    records = movie_request_tracker.get_requests_for_user(interaction.user.id)
+    if not records:
+        await interaction.followup.send("You haven't requested anything yet.")
+        return
+
+    lines = []
+    for record in records:
+        status = record.get("status", "pending")
+        if status in ("available", "declined", "failed", "removed"):
+            label = STATUS_LABELS[5] if status == "available" else status.title()
+        else:
+            request_id = record.get("overseerr_request_id")
+            result = await overseerr_service.get_request_status(request_id) if request_id is not None else {"success": False}
+            if result.get("success") and result.get("found", True):
+                request_status = result.get("request_status")
+                if request_status == REQUEST_STATUS_DECLINED:
+                    label = "Declined"
+                elif request_status == REQUEST_STATUS_FAILED:
+                    label = "Failed"
+                else:
+                    label = STATUS_LABELS.get(result.get("media_status"), "Unknown")
+            elif result.get("success") and not result.get("found", True):
+                label = "Removed"
+            else:
+                # Live check failed (e.g. Seerr temporarily unreachable) — fall back
+                # to the last known local status rather than showing an error.
+                label = status.title()
+        year_text = f" ({record['year']})" if record.get('year') else ""
+        lines.append(f"**{record['title']}**{year_text} — {label}")
+
+    embed = discord.Embed(
+        title="Your Movie Requests",
+        description="\n".join(lines),
+        color=discord.Color.blue(),
+    )
+    await interaction.followup.send(embed=embed)
+
+
+@request_group.command(name="clear", description="Remove your declined/failed/removed requests from tracking")
+async def request_clear(interaction: discord.Interaction):
+    if not await _check_request_channel_for_interaction(interaction):
+        return
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    removed = movie_request_tracker.clear_terminal_for_user(interaction.user.id)
+    if removed:
+        await interaction.followup.send(f"Cleared {removed} declined/failed/removed request{'s' if removed != 1 else ''} from your history.")
+    else:
+        await interaction.followup.send("Nothing to clear — you have no declined/failed/removed requests.")
 
 
 _register_app_command_groups()
