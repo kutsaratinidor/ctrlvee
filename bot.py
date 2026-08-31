@@ -2802,11 +2802,15 @@ async def playback_speed(interaction: discord.Interaction, target: str | None = 
     if not await _check_allowed_roles_for_interaction(interaction):
         return
 
+    # Every path below can make a blocking VLC HTTP call (up to a 5s timeout);
+    # defer so a slow/unresponsive VLC doesn't blow past Discord's 3s window.
+    await interaction.response.defer(thinking=True)
+
     target_text = target.strip().lower() if target is not None else None
     if target_text is None or target_text in {"status", "show", "current"}:
         status = vlc.get_status()
-        if not status:
-            await interaction.response.send_message("Could not access VLC status.")
+        if status is None:
+            await interaction.followup.send("Could not access VLC status.")
             return
 
         rate_elem = status.find('rate')
@@ -2818,14 +2822,14 @@ async def playback_speed(interaction: discord.Interaction, target: str | None = 
                 rate_val = None
 
         if rate_val is not None:
-            await interaction.response.send_message(f"Current playback rate: {rate_val:.2f}x")
+            await interaction.followup.send(f"Current playback rate: {rate_val:.2f}x")
         else:
-            await interaction.response.send_message("Current playback rate is unknown.")
+            await interaction.followup.send("Current playback rate is unknown.")
         return
 
     rate = _parse_speed_target(target)
     if rate is None:
-        await interaction.response.send_message(
+        await interaction.followup.send(
             "Invalid speed. Leave it blank or use status to check, or provide a number like 1.5 or preset normal.",
         )
         return
@@ -2833,11 +2837,11 @@ async def playback_speed(interaction: discord.Interaction, target: str | None = 
     ok = vlc.set_rate(rate)
     if ok:
         if rate == 1.0:
-            await interaction.response.send_message("Playback speed reset to normal (1.0x).")
+            await interaction.followup.send("Playback speed reset to normal (1.0x).")
         else:
-            await interaction.response.send_message(f"Playback speed set to {rate}x.")
+            await interaction.followup.send(f"Playback speed set to {rate}x.")
     else:
-        await interaction.response.send_message(f"Failed to set playback speed to {rate}x.")
+        await interaction.followup.send(f"Failed to set playback speed to {rate}x.")
 
 
 @playback_group.command(name="shuffle", description="Manage shuffle mode")
