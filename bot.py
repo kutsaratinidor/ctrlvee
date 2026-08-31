@@ -2720,22 +2720,27 @@ async def playback_status(interaction: discord.Interaction):
     if not await _check_allowed_roles_for_interaction(interaction):
         return
 
+    # This can make one or two blocking VLC HTTP calls (each up to a 5s timeout)
+    # before it has anything to send back — defer so a slow/unresponsive VLC
+    # doesn't blow past Discord's 3s interaction window ("Unknown interaction").
+    await interaction.response.defer(thinking=True)
+
     playback_cog = bot.get_cog("PlaybackCommands")
     if playback_cog and hasattr(playback_cog, 'get_status_embed'):
         try:
             embed = await playback_cog.get_status_embed()
             if embed:
-                await interaction.response.send_message(embed=embed)
+                await interaction.followup.send(embed=embed)
                 return
         except Exception as e:
             logger.debug(f"Slash /playback status embed fallback: {e}")
 
     status = vlc.get_status()
-    if not status:
-        await interaction.response.send_message("Could not read VLC status.")
+    if status is None:
+        await interaction.followup.send("Could not read VLC status.")
         return
     state = status.find('state').text if status.find('state') is not None else 'unknown'
-    await interaction.response.send_message(f"Current VLC state: {state}")
+    await interaction.followup.send(f"Current VLC state: {state}")
 
 
 async def _run_playlist_cleanup(interaction: discord.Interaction, source: str) -> None:
