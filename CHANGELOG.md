@@ -1,3 +1,17 @@
+## 1.10.0 - 2026-08-31
+
+### Added
+- **Movie Requests (Overseerr/Jellyseerr)**: Added `/request movie <title>`, which searches TMDB, lets you pick the right match, and submits the request to a self-hosted Overseerr/Jellyseerr instance, tracking who requested it.
+- **Movie Request Status & Cleanup**: Added `/request status` to show your own tracked requests with a live status check, and `/request clear` to remove your declined/failed/removed requests from tracking.
+- **Availability & Removal Detection**: Background polling detects when a requested movie becomes available and posts an announcement (with an @mention and metadata) in a configurable channel; it also detects when a request is declined, fails, or is removed on the Seerr side and updates its status quietly, without blocking a future re-request of the same title.
+- **Overseerr Radarr Instance Routing**: Added `OVERSEERR_RADARR_SERVER_ID` to route new requests to a specific Radarr instance configured in Overseerr, for setups with multiple Radarr instances.
+- **No-Results Search Logging**: Added `SEARCH_LOG_CHANNEL_ID` to optionally log searches that return no results (`/request movie`, `/playlist search`, `/playlist play-search`) — query, requester, guild, channel, and a jump link — falling back to the terminal log when unset.
+- **Movie Request Picker Cancel Button**: The `/request movie` picker now has a Cancel button so users aren't stuck waiting out the selection timeout.
+
+### Fixed
+- **Slash Command Interaction Timeouts**: `/playback status` and `/playback speed` now defer before making VLC HTTP calls, preventing "Unknown interaction" errors when VLC is slow to respond.
+- **Duplicate Movie Requests**: Requesting an already-active (or already-available) title now shows its existing status instead of submitting a duplicate request to Overseerr.
+
 ## 1.9.31 - 2026-08-07
 
 ### Added
