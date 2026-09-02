@@ -448,7 +448,7 @@ _voice_join_lock = asyncio.Lock()
 __last_connect_attempt_ts = 0.0
 
 async def _retry_initial_voice_join():
-    """Keep retrying the startup voice join until it succeeds once.
+    """Keep retrying the startup voice join, up to VOICE_MAX_RECONNECTS times.
 
     on_voice_state_update only fires when the bot's voice state actually
     changes (e.g. connected -> disconnected); if join_voice_channel() exhausts
@@ -457,9 +457,12 @@ async def _retry_initial_voice_join():
     ENABLE_VOICE_GUARD off (the default), nothing would otherwise ever retry.
     This loop's only job is to get the bot into voice at least once — ongoing
     health monitoring after that remains ENABLE_VOICE_GUARD's opt-in job.
+
+    Bounded (rather than retrying forever) so a persistent underlying issue
+    doesn't repeatedly flash join attempts in the channel indefinitely.
     """
-    while not bot.is_closed():
-        if not getattr(Config, 'ENABLE_VOICE_JOIN', False):
+    for attempt in range(_MAX_RECONNECTS):
+        if bot.is_closed() or not getattr(Config, 'ENABLE_VOICE_JOIN', False):
             return
         ch = await _resolve_voice_channel()
         if ch and _is_connected_to_channel(ch.guild, ch.id):
@@ -470,6 +473,10 @@ async def _retry_initial_voice_join():
         except Exception as e:
             logger.debug(f"Initial voice join retry failed: {e}")
         await asyncio.sleep(_VOICE_ERROR_RETRY_DELAY)
+    logger.warning(
+        f"Giving up on initial voice join after {_MAX_RECONNECTS} attempts. "
+        "Restart the bot once the underlying connectivity issue is resolved."
+    )
 
 
 async def _voice_connection_guard():
