@@ -447,6 +447,31 @@ _VOICE_ERROR_CODES = {
 _voice_join_lock = asyncio.Lock()
 __last_connect_attempt_ts = 0.0
 
+async def _retry_initial_voice_join():
+    """Keep retrying the startup voice join until it succeeds once.
+
+    on_voice_state_update only fires when the bot's voice state actually
+    changes (e.g. connected -> disconnected); if join_voice_channel() exhausts
+    its attempts without ever establishing a connection, there's no prior
+    connected state to transition away from, so that event never fires. With
+    ENABLE_VOICE_GUARD off (the default), nothing would otherwise ever retry.
+    This loop's only job is to get the bot into voice at least once — ongoing
+    health monitoring after that remains ENABLE_VOICE_GUARD's opt-in job.
+    """
+    while not bot.is_closed():
+        if not getattr(Config, 'ENABLE_VOICE_JOIN', False):
+            return
+        ch = await _resolve_voice_channel()
+        if ch and _is_connected_to_channel(ch.guild, ch.id):
+            return
+        try:
+            if await join_voice_channel():
+                return
+        except Exception as e:
+            logger.debug(f"Initial voice join retry failed: {e}")
+        await asyncio.sleep(_VOICE_ERROR_RETRY_DELAY)
+
+
 async def _voice_connection_guard():
     """Monitor voice connection and gracefully reconnect on common disconnects.
 
@@ -1577,7 +1602,12 @@ async def on_ready():
                 _autosave_thread.start()
 
         # Join voice channel after all startup tasks are done
-        await join_voice_channel()
+        joined = await join_voice_channel()
+        if not joined and getattr(Config, 'ENABLE_VOICE_JOIN', False):
+            # Don't permanently give up if the initial join failed — see
+            # _retry_initial_voice_join's docstring for why the event-driven
+            # reconnect handler can't recover this on its own.
+            bot.loop.create_task(_retry_initial_voice_join())
         # Start voice connection guard if enabled
         try:
             if getattr(Config, 'ENABLE_VOICE_GUARD', False):
