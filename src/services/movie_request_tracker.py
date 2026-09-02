@@ -143,13 +143,10 @@ class MovieRequestTracker:
                 changed = True
                 continue
 
-            request_status = result.get("request_status")
-            if request_status in (REQUEST_STATUS_DECLINED, REQUEST_STATUS_FAILED):
-                with self._lock:
-                    record["status"] = "declined" if request_status == REQUEST_STATUS_DECLINED else "failed"
-                changed = True
-                continue
-
+            # Availability wins regardless of the request's own approval status: Overseerr
+            # can leave a request marked Declined/Failed even after its media later becomes
+            # available through another path (e.g. a manual Radarr import), and the user
+            # getting notified matters more than that stale approval-status field.
             if result.get("available"):
                 with self._lock:
                     record["status"] = "available"
@@ -160,6 +157,14 @@ class MovieRequestTracker:
                         self._notifier(record)
                     except Exception as e:
                         self.logger.error(f"Notifier callback failed for tmdb_id={tmdb_id}: {e}")
+                continue
+
+            request_status = result.get("request_status")
+            if request_status in (REQUEST_STATUS_DECLINED, REQUEST_STATUS_FAILED):
+                with self._lock:
+                    record["status"] = "declined" if request_status == REQUEST_STATUS_DECLINED else "failed"
+                changed = True
+                continue
 
         if changed:
             with self._lock:
