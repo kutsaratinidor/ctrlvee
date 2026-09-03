@@ -146,6 +146,39 @@ class TMDBService:
 
         return best
 
+    def search_movies(self, title: str, limit: int = 5) -> list[dict]:
+        """Search TMDB for movies matching a title, for user-facing pick lists.
+
+        Unlike _find_best_movie_result (which collapses to a single best guess),
+        this returns up to `limit` raw candidates in TMDB's own relevance order.
+
+        Returns:
+            List of dicts: {tmdb_id, title, year, overview, poster_path}. Empty list
+            if unconfigured, no results, or on error.
+        """
+        if not self.api_key:
+            self.logger.warning("No TMDB API key found")
+            return []
+        try:
+            search = tmdb.Search()
+            response = search.movie(query=title)
+            results = (response or {}).get('results') or []
+            candidates = []
+            for item in results[:limit]:
+                release_date = item.get('release_date') or ''
+                year = int(release_date[:4]) if len(release_date) >= 4 and release_date[:4].isdigit() else None
+                candidates.append({
+                    'tmdb_id': item.get('id'),
+                    'title': item.get('title') or item.get('original_title') or 'Untitled',
+                    'year': year,
+                    'overview': item.get('overview') or '',
+                    'poster_path': item.get('poster_path'),
+                })
+            return candidates
+        except Exception as e:
+            self.logger.error(f"Error searching TMDB movies for title='{title}': {e}")
+            return []
+
     def _build_embed_from_movie_info(self, movie_info: dict) -> discord.Embed:
         """Build a Discord embed from a TMDB movie info dict."""
         embed = discord.Embed(

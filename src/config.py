@@ -1,4 +1,4 @@
-from typing import List, Union
+from typing import List, Optional, Union
 import os
 import logging
 from dotenv import load_dotenv
@@ -141,13 +141,28 @@ class Config:
 
     # Discord Command Prefix
     DISCORD_COMMAND_PREFIX: str = os.getenv('DISCORD_COMMAND_PREFIX', '!')
+    # Slash/prefix migration toggles.
+    # Prefix-first default for backward compatibility with existing deployments.
+    # Enable slash explicitly when desired.
+    ENABLE_PREFIX_COMMANDS: bool = os.getenv('ENABLE_PREFIX_COMMANDS', 'true').strip().lower() in {'1','true','yes','y'}
+    ENABLE_SLASH_COMMANDS: bool = os.getenv('ENABLE_SLASH_COMMANDS', 'false').strip().lower() in {'1','true','yes','y'}
+    # Optional development guild ID for instant slash sync.
+    # If set to a non-zero guild ID, slash commands sync to that guild on startup.
+    SLASH_COMMAND_GUILD_ID: int = int(os.getenv('SLASH_COMMAND_GUILD_ID', '0'))
+    # When SLASH_COMMAND_GUILD_ID is set, keep global sync disabled by default to avoid
+    # duplicate guild+global command entries in Discord's command picker during development.
+    SYNC_GLOBAL_COMMANDS: bool = os.getenv('SYNC_GLOBAL_COMMANDS', 'false').strip().lower() in {'1','true','yes','y'}
 
     # Optional dedicated channel for bot command responses.
     # When set, all ctx.send() responses are redirected to this channel.
     # Commands are still accepted from any channel (e.g. the voice channel text chat).
     # Set to 0 or leave empty to disable.
     COMMAND_CHANNEL_ID: int = int(os.getenv('COMMAND_CHANNEL_ID', '0'))
-    
+
+    # Optional channel to log searches that returned no results (movie requests,
+    # playlist search/play-search). Set to 0 to log to the terminal instead.
+    SEARCH_LOG_CHANNEL_ID: int = int(os.getenv('SEARCH_LOG_CHANNEL_ID', '0'))
+
     # TMDB Settings
     TMDB_API_KEY: str = os.getenv('TMDB_API_KEY', '')
     
@@ -160,7 +175,24 @@ class Config:
     # For each name N in RADARR_INSTANCES, configure:
     #   RADARR_<N>_HOST, RADARR_<N>_PORT, RADARR_<N>_API_KEY, RADARR_<N>_USE_SSL, RADARR_<N>_DISPLAY_NAME (optional)
     RADARR_INSTANCES: List[str] = [n.strip() for n in os.getenv('RADARR_INSTANCES', '').split(',') if n.strip()]
-    
+
+    # Movie Requests (Overseerr/Jellyseerr, optional)
+    OVERSEERR_URL: str = os.getenv('OVERSEERR_URL', '').strip()
+    OVERSEERR_API_KEY: str = os.getenv('OVERSEERR_API_KEY', '').strip()
+    REQUEST_CHANNEL_ID: int = int(os.getenv('REQUEST_CHANNEL_ID', '0'))
+    REQUEST_ANNOUNCE_CHANNEL_ID: int = int(os.getenv('REQUEST_ANNOUNCE_CHANNEL_ID', '0'))
+    REQUEST_POLL_INTERVAL: int = int(os.getenv('REQUEST_POLL_INTERVAL', '900'))
+    REQUEST_STORE_FILE: str = os.getenv('REQUEST_STORE_FILE', 'movie_requests.json').strip()
+    # Which Overseerr-configured Radarr instance (its Overseerr server id, not RADARR_INSTANCES)
+    # manages new requests. Blank lets Overseerr use its own default server.
+    _overseerr_radarr_server_id_raw: str = os.getenv('OVERSEERR_RADARR_SERVER_ID', '').strip()
+    try:
+        OVERSEERR_RADARR_SERVER_ID: Optional[int] = (
+            int(_overseerr_radarr_server_id_raw) if _overseerr_radarr_server_id_raw else None
+        )
+    except ValueError:
+        OVERSEERR_RADARR_SERVER_ID = None
+
     # Queue Settings
     QUEUE_BACKUP_FILE: str = os.getenv('QUEUE_BACKUP_FILE', 'queue_backup.json')
     # Optional: periodically save current VLC playlist to a file (relative to bot dir if not absolute)
@@ -263,6 +295,15 @@ class Config:
             
         if not cls.ALLOWED_ROLES:
             errors.append("ALLOWED_ROLES must contain at least one role")
+
+        if not cls.ENABLE_PREFIX_COMMANDS and not cls.ENABLE_SLASH_COMMANDS:
+            errors.append("At least one command mode must be enabled (ENABLE_PREFIX_COMMANDS and/or ENABLE_SLASH_COMMANDS)")
+
+        try:
+            if cls.SLASH_COMMAND_GUILD_ID < 0:
+                errors.append("SLASH_COMMAND_GUILD_ID must be 0 or a valid Discord guild ID")
+        except ValueError:
+            errors.append("SLASH_COMMAND_GUILD_ID must be a valid integer")
             
         try:
             if not (1 <= cls.VLC_PORT <= 65535):
@@ -337,7 +378,21 @@ class Config:
             if any([cls.RADARR_HOST, cls.RADARR_API_KEY]):
                 if not (cls.RADARR_HOST and cls.RADARR_API_KEY):
                     errors.append("RADARR single-instance is partially configured; set both RADARR_HOST and RADARR_API_KEY or clear both")
-            
+
+        # Movie request (Overseerr/Jellyseerr) validation (optional feature)
+        if any([cls.OVERSEERR_URL, cls.OVERSEERR_API_KEY]):
+            if not (cls.OVERSEERR_URL and cls.OVERSEERR_API_KEY):
+                errors.append("Overseerr is partially configured; set both OVERSEERR_URL and OVERSEERR_API_KEY or clear both")
+            elif cls.REQUEST_CHANNEL_ID <= 0:
+                errors.append("REQUEST_CHANNEL_ID must be set to a valid Discord channel ID when Overseerr is configured")
+        try:
+            if cls.REQUEST_POLL_INTERVAL < 60:
+                errors.append("REQUEST_POLL_INTERVAL must be at least 60 seconds")
+        except ValueError:
+            errors.append("REQUEST_POLL_INTERVAL must be a valid integer")
+        if cls._overseerr_radarr_server_id_raw and cls.OVERSEERR_RADARR_SERVER_ID is None:
+            errors.append("OVERSEERR_RADARR_SERVER_ID must be a valid integer")
+
         return errors
     
     @classmethod
@@ -350,7 +405,12 @@ class Config:
         )
         config_lines = [
             f"Discord Command Prefix: {cls.DISCORD_COMMAND_PREFIX}",
+            f"Prefix Commands Enabled: {cls.ENABLE_PREFIX_COMMANDS}",
+            f"Slash Commands Enabled: {cls.ENABLE_SLASH_COMMANDS}",
+            f"Slash Command Guild ID: {cls.SLASH_COMMAND_GUILD_ID if cls.SLASH_COMMAND_GUILD_ID else 'Global sync'}",
+            f"Slash Global Sync Enabled: {cls.SYNC_GLOBAL_COMMANDS}",
             f"Command Channel ID: {cls.COMMAND_CHANNEL_ID if cls.COMMAND_CHANNEL_ID else 'Not Configured (replies in-channel)'}",
+            f"Search Log Channel ID: {cls.SEARCH_LOG_CHANNEL_ID if cls.SEARCH_LOG_CHANNEL_ID else 'Not Configured (logs to terminal)'}",
             "Current Configuration:",
             "-" * 50,
             f"VLC Host: {cls.VLC_HOST}",
@@ -390,6 +450,10 @@ class Config:
                     f"Radarr (single): {'Configured' if (cls.RADARR_HOST and cls.RADARR_API_KEY) else 'Not Configured'}"
                 )
             ),
+            f"Overseerr: {'Configured' if (cls.OVERSEERR_URL and cls.OVERSEERR_API_KEY) else 'Not Configured'}",
+            f"Request Channel: {cls.REQUEST_CHANNEL_ID if cls.REQUEST_CHANNEL_ID else 'Not Configured'}",
+            f"Request Announce Channel: {cls.REQUEST_ANNOUNCE_CHANNEL_ID if cls.REQUEST_ANNOUNCE_CHANNEL_ID else 'Falls back to Request Channel'}",
+            f"Overseerr Radarr Server ID: {cls.OVERSEERR_RADARR_SERVER_ID if cls.OVERSEERR_RADARR_SERVER_ID is not None else 'Overseerr default'}",
             f"Discord Token: {'Configured' if cls.DISCORD_TOKEN else 'Not Configured'}",
             f"Ko-fi URL: {cls.KOFI_URL if cls.KOFI_URL else 'Not Configured'}",
             f"Privacy Policy URL: {cls.PRIVACY_POLICY_URL if cls.PRIVACY_POLICY_URL else 'Not Configured'}",

@@ -1,3 +1,130 @@
+## 1.10.1 - 2026-09-03
+
+### Fixed
+- **Stuck "Failed" Movie Requests Never Notifying**: A request that failed once (e.g. Overseerr's grab attempt errored) stopped being polled forever, so if the media later became available anyway (a manual Radarr retry, another request for the same title) the requester was never notified. Declined/failed requests now stay pollable until the media is actually available or the request is removed from Seerr.
+
+## 1.10.0 - 2026-08-31
+
+### Added
+- **Movie Requests (Overseerr/Jellyseerr)**: Added `/request movie <title>`, which searches TMDB, lets you pick the right match, and submits the request to a self-hosted Overseerr/Jellyseerr instance, tracking who requested it.
+- **Movie Request Status & Cleanup**: Added `/request status` to show your own tracked requests with a live status check, and `/request clear` to remove your declined/failed/removed requests from tracking.
+- **Availability & Removal Detection**: Background polling detects when a requested movie becomes available and posts an announcement (with an @mention and metadata) in a configurable channel; it also detects when a request is declined, fails, or is removed on the Seerr side and updates its status quietly, without blocking a future re-request of the same title.
+- **Overseerr Radarr Instance Routing**: Added `OVERSEERR_RADARR_SERVER_ID` to route new requests to a specific Radarr instance configured in Overseerr, for setups with multiple Radarr instances.
+- **No-Results Search Logging**: Added `SEARCH_LOG_CHANNEL_ID` to optionally log searches that return no results (`/request movie`, `/playlist search`, `/playlist play-search`) — query, requester, guild, channel, and a jump link — falling back to the terminal log when unset.
+- **Movie Request Picker Cancel Button**: The `/request movie` picker now has a Cancel button so users aren't stuck waiting out the selection timeout.
+
+### Fixed
+- **Slash Command Interaction Timeouts**: `/playback status` and `/playback speed` now defer before making VLC HTTP calls, preventing "Unknown interaction" errors when VLC is slow to respond.
+- **Duplicate Movie Requests**: Requesting an already-active (or already-available) title now shows its existing status instead of submitting a duplicate request to Overseerr.
+
+## 1.9.31 - 2026-08-07
+
+### Added
+- **First-Time Setup Script**: Added `setup.py` and `scripts/configure_env.py`, a cross-platform one-command setup (`python3 setup.py` / `python setup.py`) that creates the virtual environment, installs dependencies, and walks through the essential `.env` settings (Discord token, allowed roles, command mode, VLC connection, TMDB key) — replacing five manual commands and a hand-edited 58-variable `template.env`.
+
+## 1.9.30 - 2026-08-07
+
+### Changed
+- **Startup Command Mode Messaging**: Updated startup announcement text to show only the active command method(s) and a matching usage hint (prefix-only, slash-only, or hybrid).
+- **Prefix-First Defaults**: Switched default command mode behavior to prefix-first by making slash commands opt-in (`ENABLE_SLASH_COMMANDS=false` by default) for backward compatibility with existing deployments.
+
+## 1.9.29 - 2026-08-05
+
+### Changed
+- **Slash Cleanup Command Placement**: Moved playlist-missing-file cleanup to owner admin scope via `/admin cleanup-playlist`.
+- **Legacy Alias Removal**: Removed the temporary `/playback cleanup` slash alias now that admin cleanup is established.
+
+## 1.9.28 - 2026-08-01
+
+### Changed
+- **Slash Playback Command Cleanup**: Renamed `/playback play-num` to `/playback play-item` for clearer intent when selecting a playlist entry by number.
+- **Speed Command Consolidation**: Merged `/playback speed-status` into `/playback speed`, which now supports both status checks and rate changes from a single command.
+- **Shuffle Command Consolidation**: Replaced separate slash shuffle commands with a single `/playback shuffle` command that supports `status`, `toggle`, `on`, and `off` actions.
+
+## 1.9.27 - 2026-07-29
+
+### Changed
+- **Slash Command Channel Policy Hardening (Tracking Checkpoint)**: Enforced channel restrictions for slash commands using a global CommandTree check so guild slash commands only execute in allowed channels derived from config.
+- **Point-In-Time Marker**: This release marks the enforcement checkpoint for channel-scoped slash execution policy rollout (2026-07-29), including deny-path logging for verification.
+- **Policy Behavior Clarification**: When `COMMAND_CHANNEL_ID>0`, slash commands are restricted to that channel; otherwise they are restricted to `WATCH_ANNOUNCE_CHANNEL_ID`. If both are unset/`0`, guild slash commands are blocked until one is configured.
+
+## 1.9.26 - 2026-07-29
+
+### Added
+- **Startup Sync Scope Warning**: Added a startup warning when both `SLASH_COMMAND_GUILD_ID` and `SYNC_GLOBAL_COMMANDS=true` are configured, to highlight potential duplicate slash command entries (guild + global) in the same server.
+
+### Changed
+- **Dev Slash Sync Scope Control**: In development guild mode (`SLASH_COMMAND_GUILD_ID>0`), slash sync is now guild-only by default and global sync runs only when `SYNC_GLOBAL_COMMANDS=true`.
+- **Sync Diagnostics Output**: Updated owner sync outputs (`!syncslash` and `/system sync`) to explicitly report when global sync is skipped.
+- **Configuration Surface**: Added and documented `SYNC_GLOBAL_COMMANDS` in config logging, template env, and README migration notes.
+
+## 1.9.25 - 2026-07-29
+
+### Added
+- **Playback Advanced Slash Controls (Slice 6)**: Added `/playback speed`, `/playback speed-status`, `/playback shuffle-on`, `/playback shuffle-off`, and `/playback shuffle-toggle`.
+
+### Changed
+- **Slash Help Coverage**: Updated `/system help` to include the new playback advanced controls.
+- **Hybrid Migration Continuation**: Prefix and slash playback advanced controls now run in parallel for staged rollout.
+
+## 1.9.24 - 2026-07-29
+
+### Changed
+- **Shared Query Visibility**: Updated read-only slash query outputs to be channel-visible (non-ephemeral) for `/playlist list`, `/playlist search`, `/queue status`, and `/schedule list` so non-issuers can view results.
+
+## 1.9.23 - 2026-07-29
+
+### Changed
+- **Watch Command Permission Tightening**: Updated watch-folder add command to owner-only for both prefix (`watch_add`) and slash (`/watch add`) usage.
+
+## 1.9.22 - 2026-07-29
+
+### Added
+- **Schedule, Watch, and Admin Slash Commands (Slice 5)**: Added `/schedule` slash group with `add`, `list`, and `remove`; `/watch add`; and owner-only `/admin list-guilds` plus `/admin leave-server`.
+
+### Changed
+- **Slash Help Coverage**: Updated `/system help` to include `/schedule`, `/watch`, and `/admin` command groups.
+- **Hybrid Migration Continuation**: Prefix and slash commands for schedule/watch/admin now run in parallel for staged rollout.
+
+## 1.9.21 - 2026-07-29
+
+### Added
+- **Subtitles and Audio Slash Commands (Slice 4)**: Added `/subtitles` slash group with `list`, `set`, `next`, and `previous`, plus `/audio` slash group with `list` and `set`.
+- **Owner Cleanup Slash Command**: Added owner-only `/playback cleanup` command for removing missing files from VLC playlist.
+
+### Changed
+- **Cleanup Permission Tightening**: Updated prefix `cleanup` command to owner-only.
+- **Slash Help Coverage**: Updated `/system help` to include `/subtitles` and `/audio` command groups.
+- **Hybrid Migration Continuation**: Prefix and slash subtitle/audio commands now run in parallel for staged rollout.
+
+## 1.9.20 - 2026-07-29
+
+### Added
+- **Playlist and Queue Slash Commands (Slice 3)**: Added `/playlist` slash group with `list`, `search`, and `play-search`, plus `/queue` slash group with `add-next`, `status`, `clear`, and `remove`.
+
+### Changed
+- **Slash Help Coverage**: Updated `/system help` to include the new `/playlist` and `/queue` command groups.
+- **Hybrid Migration Continuation**: Prefix and slash commands for playlist and queue now run in parallel for staged rollout.
+
+## 1.9.19 - 2026-07-29
+
+### Added
+- **Playback Slash Commands (Slice 2)**: Added `/playback` slash command group with `play`, `pause`, `stop`, `restart`, `rewind`, `forward`, `next`, `previous`, `play-num`, and `status`.
+
+### Changed
+- **Slash Role Permission Parity**: Added role-check logic for slash playback commands to mirror existing `ALLOWED_ROLES` behavior used by prefix commands.
+- **Hybrid Migration Path**: Prefix commands remain available while slash playback commands are introduced in parallel.
+
+## 1.9.18 - 2026-07-29
+
+### Added
+- **Slash Command Foundation**: Added initial `/system` slash command group with `help`, `version`, `privacy`, `changelog`, and `radarr-recent` commands.
+- **Slash Migration Config Toggles**: Added `ENABLE_PREFIX_COMMANDS`, `ENABLE_SLASH_COMMANDS`, and `SLASH_COMMAND_GUILD_ID` configuration values to support staged migration and faster development sync.
+
+### Changed
+- **Message Content Intent Dependency Control**: Bot now enables `message_content` intent only when prefix commands are enabled. This allows deployments to disable prefix commands and run slash-only mode without Message Content Intent.
+- **Startup Slash Sync Behavior**: Added startup command-tree sync logic for global or guild-scoped slash command registration depending on configuration.
+
 ## 1.9.17 - 2026-07-29
 
 ### Added
