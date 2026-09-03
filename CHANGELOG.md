@@ -1,3 +1,8 @@
+## 1.10.1 - 2026-09-03
+
+### Fixed
+- **Stuck "Failed" Movie Requests Never Notifying**: A request that failed once (e.g. Overseerr's grab attempt errored) stopped being polled forever, so if the media later became available anyway (a manual Radarr retry, another request for the same title) the requester was never notified. Declined/failed requests now stay pollable until the media is actually available or the request is removed from Seerr.
+
 ## 1.10.0 - 2026-08-31
 
 ### Added
