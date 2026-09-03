@@ -9,10 +9,15 @@ from typing import Callable, List, Optional
 from ..config import Config
 from .overseerr_service import REQUEST_STATUS_DECLINED, REQUEST_STATUS_FAILED
 
-# Statuses that mean polling has nothing left to check.
-TERMINAL_STATUSES = ("available", "declined", "failed", "removed")
-# Of those, the ones that should NOT block a fresh request for the same title
-# (declined/failed/removed all mean there's no live request on Seerr anymore).
+# Statuses where polling truly has nothing left to check: the media is available
+# (already notified) or the request itself no longer exists on Seerr. "declined"
+# and "failed" only describe that one request's outcome -- the underlying media's
+# availability can still change afterward (e.g. a manual Radarr retry, or another
+# request for the same title), so those stay pollable rather than going stale.
+TERMINAL_STATUSES = ("available", "removed")
+# Statuses that should NOT block a fresh request for the same title (declined/
+# failed/removed all mean there's no live *request* on Seerr blocking a new one,
+# independent of whether we keep polling the old record for availability).
 RETRYABLE_STATUSES = ("declined", "failed", "removed")
 
 
@@ -161,9 +166,11 @@ class MovieRequestTracker:
 
             request_status = result.get("request_status")
             if request_status in (REQUEST_STATUS_DECLINED, REQUEST_STATUS_FAILED):
-                with self._lock:
-                    record["status"] = "declined" if request_status == REQUEST_STATUS_DECLINED else "failed"
-                changed = True
+                new_status = "declined" if request_status == REQUEST_STATUS_DECLINED else "failed"
+                if record.get("status") != new_status:
+                    with self._lock:
+                        record["status"] = new_status
+                    changed = True
                 continue
 
         if changed:
