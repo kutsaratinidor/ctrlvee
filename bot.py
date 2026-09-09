@@ -2408,7 +2408,8 @@ def _build_system_help_embed() -> discord.Embed:
         value=(
             "• `/admin cleanup-playlist`\n"
             "• `/admin list-guilds`\n"
-            "• `/admin leave-server`"
+            "• `/admin leave-server`\n"
+            "• `/admin show-config`"
         ),
         inline=False,
     )
@@ -3683,6 +3684,119 @@ async def admin_leave_server(interaction: discord.Interaction, guild_id: str | N
 @admin_group.command(name="cleanup-playlist", description="Owner only: remove missing files from VLC playlist")
 async def admin_cleanup_playlist(interaction: discord.Interaction):
     await _run_playlist_cleanup(interaction, "/admin cleanup-playlist")
+
+
+def _resolve_guild_channel_name(guild: discord.Guild, channel_id: int) -> str:
+    """Resolve a channel ID to its guild channel name, falling back to the raw ID."""
+    if not channel_id:
+        return "Not configured"
+    channel = guild.get_channel(channel_id)
+    return f"#{channel.name}" if channel else f"ID {channel_id}"
+
+
+def _resolve_guild_role_name(guild: discord.Guild, role_id: int) -> str:
+    """Resolve a role ID to its guild role name, falling back to the raw ID."""
+    if not role_id:
+        return "Not configured"
+    role = guild.get_role(role_id)
+    return role.name if role else f"ID {role_id}"
+
+
+def _format_allowed_roles_resolved(guild: discord.Guild) -> str:
+    """Format ALLOWED_ROLES for display, resolving role IDs to guild role names."""
+    parts = []
+    for role in Config.ALLOWED_ROLES:
+        if isinstance(role, int):
+            resolved = guild.get_role(role)
+            parts.append(f"@{resolved.name}" if resolved else f"ID {role}")
+        else:
+            parts.append(role)
+    return ", ".join(parts) or "None"
+
+
+def _build_admin_config_overview_embed(guild: discord.Guild) -> discord.Embed:
+    """Build a human-readable config overview embed for the given guild.
+
+    Resolves channel/role IDs to names and deliberately omits secrets and
+    voice-chat timing/number tuning knobs.
+    """
+    cfg = Config
+
+    embed = discord.Embed(
+        title="Configuration Overview",
+        description=f"**Server:** {guild.name} (`{guild.id}`)",
+        color=discord.Color.blue(),
+    )
+    embed.set_footer(text="Owner-only view · secrets excluded")
+
+    mode_lines = [
+        f"Prefix commands: **{'on' if cfg.ENABLE_PREFIX_COMMANDS else 'off'}** (prefix `{cfg.DISCORD_COMMAND_PREFIX}`)",
+        f"Slash commands: **{'on' if cfg.ENABLE_SLASH_COMMANDS else 'off'}**",
+    ]
+    if cfg.SLASH_COMMAND_GUILD_ID:
+        sync_guild = bot.get_guild(cfg.SLASH_COMMAND_GUILD_ID)
+        mode_lines.append(
+            f"Slash sync: **dev guild `{sync_guild.name if sync_guild else cfg.SLASH_COMMAND_GUILD_ID}`** only"
+        )
+    else:
+        mode_lines.append("Slash sync: **global**")
+    embed.add_field(name="Discord & Command Mode", value="\n".join(mode_lines), inline=False)
+
+    role_lines = [f"Allowed roles: **{_format_allowed_roles_resolved(guild)}**"]
+    if cfg.WATCH_ANNOUNCE_ROLE_ID:
+        role_lines.append(f"Announce role: **{_resolve_guild_role_name(guild, cfg.WATCH_ANNOUNCE_ROLE_ID)}**")
+    embed.add_field(name="Roles & Permissions", value="\n".join(role_lines), inline=False)
+
+    announce_ids = cfg.get_announce_channel_ids()
+    announce_display = (
+        ", ".join(_resolve_guild_channel_name(guild, cid) for cid in announce_ids)
+        if announce_ids
+        else "Not configured"
+    )
+    channel_lines = [
+        f"Command channel: **{_resolve_guild_channel_name(guild, cfg.COMMAND_CHANNEL_ID)}**",
+        f"Search log channel: **{_resolve_guild_channel_name(guild, cfg.SEARCH_LOG_CHANNEL_ID)}**",
+        f"Voice channel: **{_resolve_guild_channel_name(guild, cfg.VOICE_JOIN_CHANNEL_ID)}**",
+        f"Request channel: **{_resolve_guild_channel_name(guild, cfg.REQUEST_CHANNEL_ID)}**",
+        f"Request announce: **{_resolve_guild_channel_name(guild, cfg.REQUEST_ANNOUNCE_CHANNEL_ID)}**",
+        f"Watch announce: **{announce_display}**",
+    ]
+    embed.add_field(name="Channels", value="\n".join(channel_lines), inline=False)
+
+    radarr_names = [inst["display_name"] for inst in cfg.get_radarr_instances()]
+    overseerr = "Not configured"
+    if cfg.OVERSEERR_URL and cfg.OVERSEERR_API_KEY:
+        overseerr = cfg.OVERSEERR_URL
+    service_lines = [
+        f"VLC: **{cfg.VLC_HOST}:{cfg.VLC_PORT}**",
+        f"TMDB: **{'Configured' if cfg.TMDB_API_KEY else 'Not configured'}**",
+        f"Radarr: **{', '.join(radarr_names) if radarr_names else 'Not configured'}**",
+        f"Overseerr: **{overseerr}**",
+    ]
+    embed.add_field(name="Media & Services", value="\n".join(service_lines), inline=False)
+
+    lib_lines = [
+        f"Watch folders: **{', '.join(cfg.WATCH_FOLDERS) if cfg.WATCH_FOLDERS else 'Disabled'}**",
+        f"Queue backup: **{cfg.QUEUE_BACKUP_FILE}**",
+        f"Playlist autosave: **{cfg.PLAYLIST_AUTOSAVE_FILE or 'Disabled'}**",
+        f"Items per page: **{cfg.ITEMS_PER_PAGE}**",
+    ]
+    embed.add_field(name="Library & Watch", value="\n".join(lib_lines), inline=False)
+
+    return embed
+
+
+@app_commands.default_permissions(administrator=True)
+@admin_group.command(name="show-config", description="Owner only: show a human-readable config overview for this server")
+async def admin_show_config(interaction: discord.Interaction):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("This command is owner-only.", ephemeral=True)
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        return
+    embed = _build_admin_config_overview_embed(interaction.guild)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
 @request_group.command(name="movie", description="Request a movie via Overseerr/Jellyseerr")

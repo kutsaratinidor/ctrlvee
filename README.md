@@ -2,7 +2,7 @@
 
 A Discord bot that controls a local VLC player and exposes playback controls, playlist search, queueing, scheduling, watch-folder ingestion, and metadata lookups.
 
-Current app version: `1.10.1`.
+Current app version: `1.11.0`.
 
 ## What It Does
 
@@ -120,6 +120,7 @@ If you set `ENABLE_PREFIX_COMMANDS=false` and keep slash commands enabled, the b
 Owner slash maintenance commands:
 
 - `/admin cleanup-playlist` removes missing files from VLC playlist entries.
+- `/admin show-config` shows a human-readable config overview for the current server (resolves channel/role IDs to names; owner-only).
 - `/system clear-global-slash` performs one-time global slash cleanup in dev-guild mode.
 
 ### Troubleshooting: Duplicate Slash Commands in Dev Guild

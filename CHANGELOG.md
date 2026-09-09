@@ -1,3 +1,8 @@
+## 1.11.0 - 2026-09-09
+
+### Added
+- **Owner Config Overview**: Added `/admin show-config` (owner-only) to quickly glance at the current configuration for the guild the bot is in. Channel IDs and role IDs are resolved to readable names, secrets and voice-chat timing/tuning numbers are omitted, and the output is an ephemeral embed.
+
 ## 1.10.1 - 2026-09-03
 
 ### Fixed
