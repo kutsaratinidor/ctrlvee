@@ -2430,7 +2430,12 @@ def _build_system_help_embed() -> discord.Embed:
 
 @system_group.command(name="help", description="Show available CtrlVee slash system commands")
 async def system_help(interaction: discord.Interaction):
-    await interaction.response.send_message(embed=_build_system_help_embed(), ephemeral=True)
+    await interaction.response.send_message(embed=_build_system_help_embed())
+
+
+@bot.tree.command(name="help", description="Show available CtrlVee commands")
+async def root_help(interaction: discord.Interaction):
+    await interaction.response.send_message(embed=_build_system_help_embed())
 
 
 @system_group.command(name="version", description="Show CtrlVee version and configuration summary")
@@ -3045,7 +3050,6 @@ async def playlist_play_search(interaction: discord.Interaction, query: str):
     pretty = MediaUtils.clean_filename_for_display(item.get('name', ''), max_length=120)
     await interaction.response.send_message(
         f"Loading item #{playlist_num}: {pretty}.{hint}",
-        ephemeral=True,
     )
 
     playback_cog = bot.get_cog("PlaybackCommands")

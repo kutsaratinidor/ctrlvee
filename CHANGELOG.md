@@ -1,3 +1,9 @@
+## 1.11.1 - 2026-09-09
+
+### Changed
+- **Public `/playlist play-search`**: The `/playlist play-search` response is no longer ephemeral — other users in the channel can now see which item was loaded.
+- **Root `/help` Slash Command**: Added a top-level `/help` command (outside `/system` and `/admin`) that lists all available commands. Made `/system help` non-ephemeral as well.
+
 ## 1.11.0 - 2026-09-09
 
 ### Added
