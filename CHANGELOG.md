@@ -1,3 +1,8 @@
+## 1.11.3 - 2026-09-12
+
+### Changed
+- **Sequential Episode Enqueueing**: Files detected by the watch folder service are now enqueued in episode order (season, then episode) instead of filesystem directory order, so a freshly added TV season plays in the right sequence.
+
 ## 1.11.2 - 2026-09-12
 
 ### Changed
