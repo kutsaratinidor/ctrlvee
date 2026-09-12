@@ -1,3 +1,8 @@
+## 1.11.2 - 2026-09-12
+
+### Changed
+- **Help Output Cleanup**: `/help` and `/system help` no longer list owner-only `/admin` commands. Added the previously-missing `/request` group (`movie`, `status`, `clear`) to the listings.
+
 ## 1.11.1 - 2026-09-09
 
 ### Changed

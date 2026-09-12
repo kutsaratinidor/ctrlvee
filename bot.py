@@ -2318,7 +2318,7 @@ def _build_system_help_embed() -> discord.Embed:
     prefix = Config.DISCORD_COMMAND_PREFIX
     embed = discord.Embed(
         title="CtrlVee Slash Commands",
-        description="V2 migration in progress. Use these slash commands now.",
+        description="V2 migration in progress. Use these slash commands now. Run `/help` to see this list anytime.",
         color=discord.Color.blue(),
     )
     embed.add_field(
@@ -2404,12 +2404,11 @@ def _build_system_help_embed() -> discord.Embed:
         inline=False,
     )
     embed.add_field(
-        name="Available /admin commands",
+        name="Available /request commands",
         value=(
-            "• `/admin cleanup-playlist`\n"
-            "• `/admin list-guilds`\n"
-            "• `/admin leave-server`\n"
-            "• `/admin show-config`"
+            "• `/request movie`\n"
+            "• `/request status`\n"
+            "• `/request clear`"
         ),
         inline=False,
     )

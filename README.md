@@ -117,6 +117,8 @@ Default mode is prefix commands for backward compatibility. Slash commands are o
 
 If you set `ENABLE_PREFIX_COMMANDS=false` and keep slash commands enabled, the bot can run without Message Content Intent dependency for command parsing.
 
+Run `/help` anytime for a list of all available slash commands (the prefix equivalent is `!controls`).
+
 Owner slash maintenance commands:
 
 - `/admin cleanup-playlist` removes missing files from VLC playlist entries.
