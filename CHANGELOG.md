@@ -1,3 +1,8 @@
+## 1.11.4 - 2026-09-13
+
+### Added
+- **Playlist Numbers in Watch-Folder Announcements**: New-media announcements now show the playlist position of each added file, plus the exact command to play it (`!play_num <n>` in prefix mode, `/playback play-item <n>` in slash mode) — no need to check the list first. Single files get a "Playback" field; multi-file batches get a "Playlist Positions" list.
+
 ## 1.11.3 - 2026-09-12
 
 ### Changed

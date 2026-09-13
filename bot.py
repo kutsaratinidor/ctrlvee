@@ -1444,6 +1444,57 @@ async def on_ready():
                                 description=f"**{title_text}** has been added to the library.",
                                 color=discord.Color.purple()
                             )
+                    # Map each announced path to its playlist position (1-based leaf order,
+                    # matching play_num / /playback play-item) so users can play right away.
+                    pos_map = {}
+                    try:
+                        playlist = vlc.get_playlist()
+                        if playlist is not None:
+                            for idx, leaf in enumerate(playlist.findall('.//leaf'), 1):
+                                p = vlc._uri_to_path(leaf.get('uri'))
+                                if p:
+                                    pos_map[os.path.normpath(p)] = idx
+                    except Exception as e:
+                        logger.debug(f"Could not map playlist positions for announcement: {e}")
+
+                    if final_embed and pos_map:
+                        try:
+                            # Command hint matches whichever command mode is active.
+                            prefix = Config.DISCORD_COMMAND_PREFIX
+                            if Config.ENABLE_PREFIX_COMMANDS:
+                                play_cmd = f"{prefix}play_num {{n}}"
+                            else:
+                                play_cmd = "/playback play-item {n}"
+                            if len(paths) == 1:
+                                num = pos_map.get(os.path.normpath(paths[0]))
+                                if num:
+                                    final_embed.add_field(
+                                        name="Playback",
+                                        value=f"**#{num}** in the playlist — run `{play_cmd.format(n=num)}` to play it",
+                                        inline=False,
+                                    )
+                            else:
+                                lines = []
+                                for p in paths[:max_items]:
+                                    num = pos_map.get(os.path.normpath(p))
+                                    if num:
+                                        pretty = MediaUtils.clean_filename_for_display(os.path.basename(p), max_length=60)
+                                        lines.append(f"`#{num}` {pretty}")
+                                remaining = len(paths) - max_items
+                                if remaining > 0:
+                                    lines.append(f"… and {remaining} more (see `/playlist list`)")
+                                if lines:
+                                    final_embed.add_field(
+                                        name="Playlist Positions",
+                                        value="\n".join(lines),
+                                        inline=False,
+                                    )
+                                    final_embed.set_footer(
+                                        text=f"Run `{play_cmd.format(n='<number>')}` to play a specific one"
+                                    )
+                        except Exception as e:
+                            logger.debug(f"Could not add playlist numbers to announcement: {e}")
+
                     # Send the announcement to all configured channels
                     if not (len(paths) == 1 and 'suppress_single_tv' in locals() and suppress_single_tv):
                         for ch in channels:
