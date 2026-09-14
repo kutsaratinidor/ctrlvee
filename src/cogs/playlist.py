@@ -433,6 +433,13 @@ class PlaylistCommands(commands.Cog):
     async def play_search(self, ctx: commands.Context, *, query: str):
         """Search for and play an item from the playlist"""
         try:
+            playback_cog = self.bot.get_cog("PlaybackCommands")
+            if playback_cog:
+                ok, reason = playback_cog._playback_guard(ctx.author)
+                if not ok:
+                    await ctx.send(reason)
+                    return
+
             results = self._search_items(query)
             if not results:
                 await ctx.send('No matches found in playlist')
@@ -443,6 +450,8 @@ class PlaylistCommands(commands.Cog):
             item_id = item.get('id')
             
             if self.vlc.play_item(item_id):
+                if playback_cog:
+                    playback_cog._seat_playback_owner(ctx.author, item_id)
                 logger.info(f"Playing search result: {item.get('name')} (#{playlist_num})")
                 hint = ""
                 if len(results) > 1:
