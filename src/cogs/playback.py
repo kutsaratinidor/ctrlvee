@@ -13,6 +13,27 @@ from ..utils.command_utils import format_cmd_inline
 # Set up logger for this module
 logger = logging.getLogger(__name__)
 
+def _decide_playback_allow(
+    room_resolved: bool,
+    requester_in_room: bool,
+    requester_id: int,
+    owner_id: int | None,
+    owner_holds_current: bool,
+    owner_in_room: bool,
+) -> tuple[bool, str]:
+    """Pure rule evaluation for the play-start guard; returns (allowed, reason_code).
+
+    A play request is blocked only when: a room is configured, the requester is not
+    in it, or another user who still occupies the room holds the currently playing item.
+    """
+    if not room_resolved:
+        return True, ""
+    if not requester_in_room:
+        return False, "not_in_room"
+    if owner_id is not None and owner_id != requester_id and owner_holds_current and owner_in_room:
+        return False, "hijack"
+    return True, ""
+
 class PlaybackCommands(commands.Cog):
     def __init__(self, bot, vlc_controller, tmdb_service, watch_service):
         self.bot = bot
@@ -44,6 +65,9 @@ class PlaybackCommands(commands.Cog):
         self.periodic_announce_task = None
         self.playback_started_event = asyncio.Event()
         self.last_queue_auto_play = 0  # Timestamp of last queue auto-play to prevent rapid triggers
+        # Voice-room ownership: who started the currently playing item (per-track, see _playback_guard).
+        self._playback_owner_id = None  # Discord user id of the item's requester
+        self._playback_owner_item_id = None  # VLC playlist id they started
         # Presence/update throttling for bot activity updates
         self._presence_last_set = 0.0
         self._presence_last_name = None  # Track last presence activity name to avoid throttling new titles
@@ -671,6 +695,85 @@ class PlaybackCommands(commands.Cog):
                 break
                 
         return position, current_item
+
+    def _resolve_room_channel(self, guild) -> discord.VoiceChannel | None:
+        """Resolve the designated voice room (VOICE_JOIN_CHANNEL_ID) for presence checks."""
+        try:
+            channel_id = int(getattr(Config, 'VOICE_JOIN_CHANNEL_ID', 0) or 0)
+            if channel_id <= 0:
+                return None
+            if guild is not None:
+                ch = guild.get_channel(channel_id)
+                if isinstance(ch, discord.VoiceChannel):
+                    return ch
+            ch = self.bot.get_channel(channel_id)
+            return ch if isinstance(ch, discord.VoiceChannel) else None
+        except Exception:
+            return None
+
+    def _current_stream_item_id(self) -> str | None:
+        """VLC playlist id of the currently active stream, or None if nothing is active."""
+        try:
+            status = self.vlc.get_status()
+            if status is None:
+                return None
+            state_elem = status.find('state')
+            state = state_elem.text if state_elem is not None else None
+            if state in (None, 'stopped', 'end'):
+                return None
+            playlist = self.vlc.get_playlist()
+            if playlist is None:
+                return None
+            for leaf in playlist.findall('.//leaf'):
+                if leaf.get('current'):
+                    return leaf.get('id')
+            return None
+        except Exception:
+            return None
+
+    def _playback_guard(self, member: discord.Member) -> tuple[bool, str]:
+        """Presence + hijack gate for play-start commands. Call after the role check.
+
+        Per-track ownership: a requester's claim lives only on the exact item they
+        started. Once that item is no longer 'current' (auto-advance, watch folder,
+        next/stop), the claim is gone and the next play request reseats ownership.
+        """
+        if not bool(getattr(Config, 'ENABLE_VOICE_ROOM_RULES', True)):
+            return True, ""
+        room = self._resolve_room_channel(member.guild)
+        voice = getattr(member, 'voice', None)
+        requester_in_room = bool(voice and voice.channel and room is not None and voice.channel.id == room.id)
+        current_id = self._current_stream_item_id()
+        owner_id = self._playback_owner_id
+
+        owner_in_room = False
+        if owner_id is not None and owner_id != member.id:
+            owner = member.guild.get_member(owner_id)
+            ovoice = getattr(owner, 'voice', None) if owner is not None else None
+            owner_in_room = bool(ovoice and ovoice.channel and room is not None and ovoice.channel.id == room.id)
+
+        allowed, reason = _decide_playback_allow(
+            room_resolved=room is not None,
+            requester_in_room=requester_in_room,
+            requester_id=member.id,
+            owner_id=owner_id,
+            owner_holds_current=bool(current_id and current_id == self._playback_owner_item_id),
+            owner_in_room=owner_in_room,
+        )
+        if allowed:
+            return True, ""
+        if reason == "not_in_room":
+            return False, f"You must be in **{room.name}** to control playback."
+        owner = member.guild.get_member(owner_id) if owner_id else None
+        name = getattr(owner, 'display_name', 'This user') if owner else 'This user'
+        return False, f"⏳ **{name}** is watching this one — ask before switching the playback."
+
+    def _seat_playback_owner(self, member: discord.Member, item_id: str | None) -> None:
+        """Claim ownership of the item just started, for the hijack guard."""
+        if not bool(getattr(Config, 'ENABLE_VOICE_ROOM_RULES', True)):
+            return
+        self._playback_owner_id = member.id
+        self._playback_owner_item_id = item_id
 
     async def _check_cooldown(self, ctx):
         """Check if enough time has passed since last state change"""
@@ -1896,6 +1999,11 @@ class PlaybackCommands(commands.Cog):
                 await ctx.send('Please provide a number greater than 0')
                 return
 
+            ok, reason = self._playback_guard(ctx.author)
+            if not ok:
+                await ctx.send(reason)
+                return
+
             playlist = self.vlc.get_playlist()
             if not playlist:
                 await ctx.send('Could not access VLC playlist')
@@ -1914,6 +2022,7 @@ class PlaybackCommands(commands.Cog):
             item_id = item.get('id')
 
             if self.vlc.play_item(item_id):
+                self._seat_playback_owner(ctx.author, item_id)
                 logger.info(f"Loading playlist item #{number}")
                 await ctx.send(f'Loading item #{number}...')
                 await asyncio.sleep(3)  # Give VLC time to load and start playing the file

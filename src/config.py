@@ -245,6 +245,10 @@ class Config:
     # Voice guard/event toggles
     ENABLE_VOICE_GUARD: bool = os.getenv('ENABLE_VOICE_GUARD', 'false').strip().lower() in {'1','true','yes','y'}
     ENABLE_VOICE_EVENTS_RECONNECT: bool = os.getenv('ENABLE_VOICE_EVENTS_RECONNECT', 'true').strip().lower() in {'1','true','yes','y'}
+    # Require users to be in the designated voice channel to start playback, and
+    # prevent another user from hijacking the currently playing item while its
+    # requester is still in the room. (default: true)
+    ENABLE_VOICE_ROOM_RULES: bool = os.getenv('ENABLE_VOICE_ROOM_RULES', 'true').strip().lower() in {'1','true','yes','y'}
     # Voice channel name status updates (currently playing title)
     ENABLE_VOICE_CHANNEL_STATUS: bool = os.getenv('ENABLE_VOICE_CHANNEL_STATUS', 'false').strip().lower() in {'1','true','yes','y'}
     # Optional explicit channel ID to rename for status. If 0, falls back to VOICE_JOIN_CHANNEL_ID.

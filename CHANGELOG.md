@@ -1,3 +1,8 @@
+## 1.12.0 - 2026-09-14
+
+### Added
+- **Voice Room Rules**: Playback-start commands now behave like music bots, gated by the designated voice channel (`VOICE_JOIN_CHANNEL_ID`). A user must be in the room to use `/playback play-item` and `/playlist play-search` (or `!play_num` / `!play_search`), and another user cannot take over the currently playing item while the person who started it is still in the room — they're asked to coordinate instead. Ownership is per-track, so once the item changes (auto-advance, watch folder, `next`/`stop`) the slot is free again. Controlled by `ENABLE_VOICE_ROOM_RULES` (default: on); `queue add-next` / `!queue_next` remain unguarded.
+
 ## 1.11.4 - 2026-09-13
 
 ### Added

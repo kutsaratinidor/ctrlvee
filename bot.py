@@ -2782,6 +2782,13 @@ async def playback_play_num(interaction: discord.Interaction, number: app_comman
     if not await _check_allowed_roles_for_interaction(interaction):
         return
 
+    playback_cog = bot.get_cog("PlaybackCommands")
+    if playback_cog:
+        ok, reason = playback_cog._playback_guard(interaction.user)
+        if not ok:
+            await interaction.response.send_message(reason)
+            return
+
     playlist = vlc.get_playlist()
     if not playlist:
         await interaction.response.send_message("Could not access VLC playlist.")
@@ -2803,6 +2810,8 @@ async def playback_play_num(interaction: discord.Interaction, number: app_comman
     if not item_id or not vlc.play_item(item_id):
         await interaction.response.send_message("Could not start playback for that item.")
         return
+    if playback_cog:
+        playback_cog._seat_playback_owner(interaction.user, item_id)
 
     pretty = MediaUtils.clean_filename_for_display(item.get('name', ''), max_length=120)
     await interaction.response.send_message(f"Loading item #{number}: {pretty}")
@@ -3075,6 +3084,13 @@ async def playlist_play_search(interaction: discord.Interaction, query: str):
     if not await _check_allowed_roles_for_interaction(interaction):
         return
 
+    playback_cog = bot.get_cog("PlaybackCommands")
+    if playback_cog:
+        ok, reason = playback_cog._playback_guard(interaction.user)
+        if not ok:
+            await interaction.response.send_message(reason)
+            return
+
     playlist_cog = bot.get_cog("PlaylistCommands")
     if not playlist_cog or not hasattr(playlist_cog, '_search_items'):
         await interaction.response.send_message("Playlist search is unavailable right now.", ephemeral=True)
@@ -3095,6 +3111,8 @@ async def playlist_play_search(interaction: discord.Interaction, query: str):
     if not item_id or not vlc.play_item(item_id):
         await interaction.response.send_message("Could not play the selected item.", ephemeral=True)
         return
+    if playback_cog:
+        playback_cog._seat_playback_owner(interaction.user, item_id)
 
     hint = f" Top match selected from {len(results)} results." if len(results) > 1 else ""
     pretty = MediaUtils.clean_filename_for_display(item.get('name', ''), max_length=120)
@@ -3811,6 +3829,7 @@ def _build_admin_config_overview_embed(guild: discord.Guild) -> discord.Embed:
         f"Command channel: **{_resolve_guild_channel_name(guild, cfg.COMMAND_CHANNEL_ID)}**",
         f"Search log channel: **{_resolve_guild_channel_name(guild, cfg.SEARCH_LOG_CHANNEL_ID)}**",
         f"Voice channel: **{_resolve_guild_channel_name(guild, cfg.VOICE_JOIN_CHANNEL_ID)}**",
+        f"Voice room rules (play presence/hijack guard): **{'on' if cfg.ENABLE_VOICE_ROOM_RULES else 'off'}**",
         f"Request channel: **{_resolve_guild_channel_name(guild, cfg.REQUEST_CHANNEL_ID)}**",
         f"Request announce: **{_resolve_guild_channel_name(guild, cfg.REQUEST_ANNOUNCE_CHANNEL_ID)}**",
         f"Watch announce: **{announce_display}**",
