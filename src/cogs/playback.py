@@ -474,7 +474,7 @@ class PlaybackCommands(commands.Cog):
         except Exception:
             pass
         try:
-            result = self.vlc.remove_missing_playlist_items()
+            result = await asyncio.to_thread(self.vlc.remove_missing_playlist_items)
             removed = int(result.get('removed', 0))
             items = result.get('items', []) or []
             if removed == 0:

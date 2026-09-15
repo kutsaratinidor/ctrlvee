@@ -1,3 +1,8 @@
+## 1.13.1 - 2026-09-15
+
+### Fixed
+- **Cleanup no longer disconnects the bot**: `!cleanup` (`cleanup_missing`) and `/admin cleanup-playlist` ran the whole playlist scan synchronously on Discord's event loop — for large playlists or slow/missing network shares, file-existence and VLC HTTP checks could block past heartbeat expiry and silently drop the gateway connection. The scan now runs in a worker thread. Also, the "Bot is Online" banner is now sent once per process, so a reconnect no longer re-posts it.
+
 ## 1.13.0 - 2026-09-15
 
 ### Changed

@@ -919,6 +919,9 @@ async def on_ready():
     except Exception:
         pass
     async def send_startup_announcement():
+        global _startup_announced
+        if _startup_announced:
+            return
         announce_ids = Config.get_announce_channel_ids()
         if not announce_ids:
             return
@@ -994,11 +997,7 @@ async def on_ready():
                 logger.warning(f"Failed to send startup message to channel {cid}: {e}")
 
         # Mark startup announcement complete
-        try:
-            global _startup_announced
-            _startup_announced = True
-        except Exception:
-            pass
+        _startup_announced = True
 
     # If initial enqueue on start is enabled, delay the announcement until after initial scan completes
     if Config.WATCH_ENQUEUE_ON_START and watch_service:
@@ -2853,7 +2852,7 @@ async def _run_playlist_cleanup(interaction: discord.Interaction, source: str) -
 
     await interaction.response.defer(ephemeral=True, thinking=True)
     try:
-        result = vlc.remove_missing_playlist_items()
+        result = await asyncio.to_thread(vlc.remove_missing_playlist_items)
         removed = int(result.get('removed', 0))
         items = result.get('items', []) or []
         if removed == 0:
