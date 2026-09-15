@@ -1,4 +1,5 @@
 from typing import Optional, List, Tuple
+import asyncio
 import discord
 from discord.ext import commands
 import logging
@@ -200,6 +201,78 @@ class SearchResultsView(discord.ui.View):
 
         await interaction.response.edit_message(embed=embed, view=self)
 
+class PlaySearchView(discord.ui.View):
+    """Slash-command picker for play-search when multiple results match."""
+
+    def __init__(self, cog, requester_id: int, results: List[Tuple[int, dict]]):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.requester_id = requester_id
+        self.results = results          # already capped to 25 by caller
+
+        select = discord.ui.Select(placeholder='Choose an item to play')
+        for playlist_num, item in results:
+            name = MediaUtils.clean_filename_for_display(item.get('name', ''), max_length=88)
+            select.add_option(label=f'#{playlist_num} {name}', value=str(playlist_num))
+        select.callback = self._on_select
+        self.add_item(select)
+
+    async def _on_select(self, interaction: discord.Interaction):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message('That picker belongs to someone else.', ephemeral=True)
+            return
+
+        try:
+            playlist_num = int(interaction.data['values'][0])
+        except (KeyError, IndexError, TypeError, ValueError):
+            return
+
+        pair = next((p for p in self.results if p[0] == playlist_num), None)
+        if pair is None:
+            return
+        _, item = pair
+
+        playback_cog = self.cog.bot.get_cog('PlaybackCommands')
+        if playback_cog:
+            ok, reason = playback_cog._playback_guard(interaction.user)
+            if not ok:
+                await interaction.response.send_message(reason, ephemeral=True)
+                return
+
+        item_id = item.get('id')
+        if not item_id or not self.cog.vlc.play_item(item_id):
+            await interaction.response.send_message('Could not play the selected item.', ephemeral=True)
+            return
+
+        if playback_cog:
+            playback_cog._seat_playback_owner(interaction.user, item_id)
+
+        pretty = MediaUtils.clean_filename_for_display(item.get('name', ''), max_length=120)
+        await interaction.response.send_message(f'Loading item #{playlist_num}: {pretty}')
+
+        if playback_cog and hasattr(playback_cog, '_announce_now_playing'):
+            try:
+                await playback_cog._announce_now_playing('command', item, playlist_num)
+            except Exception:
+                pass
+
+        for child in self.children:
+            child.disabled = True
+        try:
+            await interaction.message.edit(view=self)
+        except Exception:
+            pass
+
+    async def on_timeout(self):
+        for child in self.children:
+            child.disabled = True
+        message = getattr(self, 'message', None)
+        if message is not None:
+            try:
+                await message.edit(view=self)
+            except Exception:
+                pass
+
 class PlaylistCommands(commands.Cog):
     def __init__(self, bot: commands.Bot, vlc_controller, tmdb_service, watch_service):
         self.bot = bot
@@ -379,6 +452,39 @@ class PlaylistCommands(commands.Cog):
 
         return pages
 
+    def make_play_search_view(self, requester_id: int, results: List[Tuple[int, dict]]) -> PlaySearchView:
+        """Create a slash-command picker capped to 25 options."""
+        return PlaySearchView(self, requester_id, results[:25])
+
+    async def _play_and_report(self, ctx, item, playlist_num: int) -> bool:
+        """Play an item and reply with its metadata embed. Returns True on success."""
+        item_id = item.get('id')
+        if not item_id or not self.vlc.play_item(item_id):
+            await ctx.send('Error: Could not play the selected item')
+            return False
+
+        logger.info(f"Playing search result: {item.get('name')} (#{playlist_num})")
+        await ctx.send(f'Loading item #{playlist_num}...')
+
+        search_title, search_year = MediaUtils.parse_movie_filename(item.get('name'))
+        movie_embed = self.tmdb.get_movie_metadata(search_title, search_year, file_path=item.get('uri'))
+        edition_tag = MediaUtils.extract_edition_tag(item.get('name'))
+
+        if movie_embed:
+            if edition_tag:
+                try:
+                    movie_embed.add_field(name="Edition", value=edition_tag, inline=True)
+                except Exception:
+                    pass
+            movie_embed.set_footer(text=f"Now Playing #{playlist_num}")
+            await ctx.send(embed=movie_embed)
+        else:
+            name = item.get('name', '')
+            icon = MediaUtils.get_media_icon(name)
+            basename = MediaUtils.clean_filename_for_display(name)
+            await ctx.send(f'Playing: {icon}`{playlist_num}` {basename}')
+        return True
+
     @commands.command(name='search')
     @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def search_playlist(self, ctx: commands.Context, *, query: str):
@@ -444,40 +550,56 @@ class PlaylistCommands(commands.Cog):
             if not results:
                 await ctx.send('No matches found in playlist')
                 return
-                
-            # Play the first match
-            playlist_num, item = results[0]
-            item_id = item.get('id')
-            
-            if self.vlc.play_item(item_id):
+
+            if len(results) == 1:
+                playlist_num, item = results[0]
+                if await self._play_and_report(ctx, item, playlist_num):
+                    if playback_cog:
+                        playback_cog._seat_playback_owner(ctx.author, item.get('id'))
+                return
+
+            # Multiple results: show a numbered list and wait for the user to pick.
+            shown = results[:25]
+            lines = []
+            for num, item in shown:
+                name = item.get('name', '')
+                icon = MediaUtils.get_media_icon(name)
+                basename = MediaUtils.clean_filename_for_display(name, max_length=60)
+                lines.append(f"{icon}`{num}` {basename}")
+
+            header = f"**{len(results)} matches** for *{query}* — reply with the number to play."
+            if len(results) > len(shown):
+                header += f" Showing top {len(shown)}; refine your query for more."
+            await ctx.send(header + "\n" + "\n".join(lines))
+
+            valid = {pair[0] for pair in shown}
+
+            def _is_valid_reply(m):
+                return (
+                    m.author == ctx.author
+                    and m.channel == ctx.channel
+                    and m.content.strip().isdigit()
+                    and int(m.content.strip()) in valid
+                )
+
+            try:
+                picked = await self.bot.wait_for('message', check=_is_valid_reply, timeout=60)
+            except asyncio.TimeoutError:
+                await ctx.send('Playback selection timed out — run the search again.')
+                return
+
+            number = int(picked.content.strip())
+            _, item = next(p for p in shown if p[0] == number)
+
+            if playback_cog:
+                ok, reason = playback_cog._playback_guard(ctx.author)
+                if not ok:
+                    await ctx.send(reason)
+                    return
+
+            if await self._play_and_report(ctx, item, number):
                 if playback_cog:
-                    playback_cog._seat_playback_owner(ctx.author, item_id)
-                logger.info(f"Playing search result: {item.get('name')} (#{playlist_num})")
-                hint = ""
-                if len(results) > 1:
-                    hint = f"\n💡 Top match selected from {len(results)} results."
-                await ctx.send(f'Loading item #{playlist_num}...{hint}')
-                
-                # Get parsed title and optional year for metadata search
-                search_title, search_year = MediaUtils.parse_movie_filename(item.get('name'))
-                movie_embed = self.tmdb.get_movie_metadata(search_title, search_year, file_path=item.get('uri'))
-                edition_tag = MediaUtils.extract_edition_tag(item.get('name'))
-                
-                if movie_embed:
-                    if edition_tag:
-                        try:
-                            movie_embed.add_field(name="Edition", value=edition_tag, inline=True)
-                        except Exception:
-                            pass
-                    movie_embed.set_footer(text=f"Now Playing #{playlist_num}")
-                    await ctx.send(embed=movie_embed)
-                else:
-                    name = item.get('name', '')
-                    icon = MediaUtils.get_media_icon(name)
-                    basename = MediaUtils.clean_filename_for_display(name)
-                    await ctx.send(f'Playing: {icon}`{playlist_num}` {basename}')
-            else:
-                await ctx.send('Error: Could not play the selected item')
+                    playback_cog._seat_playback_owner(ctx.author, item.get('id'))
         except Exception as e:
             logger.error(f"Error in play_search: {e}")
             await ctx.send(f'Error searching and playing: {str(e)}')

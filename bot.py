@@ -3078,7 +3078,7 @@ async def playlist_search(interaction: discord.Interaction, query: str):
         await interaction.response.send_message(embed=embed)
 
 
-@playlist_group.command(name="play-search", description="Search and play the top matching item")
+@playlist_group.command(name="play-search", description="Search and play an item from the playlist")
 @app_commands.describe(query="Search text")
 async def playlist_play_search(interaction: discord.Interaction, query: str):
     if not await _check_allowed_roles_for_interaction(interaction):
@@ -3106,26 +3106,46 @@ async def playlist_play_search(interaction: discord.Interaction, query: str):
         await _log_no_results_search(interaction, "/playlist play-search", query, message=reply)
         return
 
-    playlist_num, item = results[0]
-    item_id = item.get('id')
-    if not item_id or not vlc.play_item(item_id):
-        await interaction.response.send_message("Could not play the selected item.", ephemeral=True)
+    if len(results) == 1:
+        playlist_num, item = results[0]
+        item_id = item.get('id')
+        if not item_id or not vlc.play_item(item_id):
+            await interaction.response.send_message("Could not play the selected item.", ephemeral=True)
+            return
+        if playback_cog:
+            playback_cog._seat_playback_owner(interaction.user, item_id)
+        pretty = MediaUtils.clean_filename_for_display(item.get('name', ''), max_length=120)
+        await interaction.response.send_message(f"Loading item #{playlist_num}: {pretty}")
+        if playback_cog and hasattr(playback_cog, '_announce_now_playing'):
+            try:
+                await playback_cog._announce_now_playing('command', item, playlist_num)
+            except Exception as e:
+                logger.debug(f"Slash /playlist play-search announcement fallback: {e}")
         return
-    if playback_cog:
-        playback_cog._seat_playback_owner(interaction.user, item_id)
 
-    hint = f" Top match selected from {len(results)} results." if len(results) > 1 else ""
-    pretty = MediaUtils.clean_filename_for_display(item.get('name', ''), max_length=120)
-    await interaction.response.send_message(
-        f"Loading item #{playlist_num}: {pretty}.{hint}",
+    # Multiple results: show a dropdown picker via PlaySearchView
+    view = playlist_cog.make_play_search_view(interaction.user.id, results)
+    embed = discord.Embed(
+        title="Play Search Results",
+        description=f"**{len(results)} matches** for *{query}* — pick an item to play.",
+        color=discord.Color.blurple(),
     )
-
-    playback_cog = bot.get_cog("PlaybackCommands")
-    if playback_cog and hasattr(playback_cog, '_announce_now_playing'):
-        try:
-            await playback_cog._announce_now_playing('command', item, playlist_num)
-        except Exception as e:
-            logger.debug(f"Slash /playlist play-search announcement fallback: {e}")
+    shown = results[:25]
+    preview_lines = []
+    for playlist_num, item in shown:
+        name = MediaUtils.clean_filename_for_display(item.get('name', ''), max_length=60)
+        preview_lines.append(f"`#{playlist_num}` {name}")
+    embed.add_field(
+        name=f"Top {len(shown)} results",
+        value="\n".join(preview_lines),
+        inline=False,
+    )
+    if len(results) > len(shown):
+        embed.set_footer(text=f"Showing top {len(shown)} of {len(results)} — refine your query for more")
+    else:
+        embed.set_footer(text="Select an item from the dropdown below")
+    await interaction.response.send_message(embed=embed, view=view)
+    view.message = await interaction.original_response()
 
 
 @queue_group.command(name="add-next", description="Queue a playlist item to play next")

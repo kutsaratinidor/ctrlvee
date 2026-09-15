@@ -1,3 +1,8 @@
+## 1.13.0 - 2026-09-15
+
+### Changed
+- **Play-Search Picker**: When `/playlist play-search` or `!play_search` returns more than one result, a numbered list and interactive picker (slash) or reply-to-select prompt (prefix) is shown instead of auto-playing the top match. Single-result searches still play immediately without any picker.
+
 ## 1.12.0 - 2026-09-14
 
 ### Added

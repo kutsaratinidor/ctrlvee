@@ -2,7 +2,7 @@
 
 A Discord bot that controls a local VLC player and exposes playback controls, playlist search, queueing, scheduling, watch-folder ingestion, and metadata lookups.
 
-Current app version: `1.11.0`.
+Current app version: `1.13.0`.
 
 ## What It Does
 
@@ -279,7 +279,7 @@ Prefix shown as `!` below; replace with your configured `DISCORD_COMMAND_PREFIX`
 
 - `!list`
 - `!search <query>`
-- `!play_search <query>`
+- `!play_search <query>` — shows a picker when multiple results are found; plays directly if only one match
 - `!cleanup` (aliases: `plcleanup`, `cleanup_missing`) removes missing files from VLC playlist
 
 ### Subtitles and Audio
