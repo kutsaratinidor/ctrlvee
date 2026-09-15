@@ -217,6 +217,18 @@ class PlaySearchView(discord.ui.View):
         select.callback = self._on_select
         self.add_item(select)
 
+        cancel = discord.ui.Button(label='✕ Cancel', style=discord.ButtonStyle.danger)
+        cancel.callback = self._on_cancel
+        self.add_item(cancel)
+
+    async def _on_cancel(self, interaction: discord.Interaction):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message('That picker belongs to someone else.', ephemeral=True)
+            return
+        for child in self.children:
+            child.disabled = True
+        await interaction.response.edit_message(content='Playback selection cancelled.', embed=None, view=self)
+
     async def _on_select(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
             await interaction.response.send_message('That picker belongs to someone else.', ephemeral=True)
@@ -567,7 +579,7 @@ class PlaylistCommands(commands.Cog):
                 basename = MediaUtils.clean_filename_for_display(name, max_length=60)
                 lines.append(f"{icon}`{num}` {basename}")
 
-            header = f"**{len(results)} matches** for *{query}* — reply with the number to play."
+            header = f"**{len(results)} matches** for *{query}* — reply with the number to play, or `cancel` to dismiss."
             if len(results) > len(shown):
                 header += f" Showing top {len(shown)}; refine your query for more."
             await ctx.send(header + "\n" + "\n".join(lines))
@@ -575,17 +587,19 @@ class PlaylistCommands(commands.Cog):
             valid = {pair[0] for pair in shown}
 
             def _is_valid_reply(m):
-                return (
-                    m.author == ctx.author
-                    and m.channel == ctx.channel
-                    and m.content.strip().isdigit()
-                    and int(m.content.strip()) in valid
-                )
+                if m.author != ctx.author or m.channel != ctx.channel:
+                    return False
+                stripped = m.content.strip().lower()
+                return stripped == 'cancel' or (stripped.isdigit() and int(stripped) in valid)
 
             try:
                 picked = await self.bot.wait_for('message', check=_is_valid_reply, timeout=60)
             except asyncio.TimeoutError:
                 await ctx.send('Playback selection timed out — run the search again.')
+                return
+
+            if picked.content.strip().lower() == 'cancel':
+                await ctx.send('Playback selection cancelled.')
                 return
 
             number = int(picked.content.strip())
