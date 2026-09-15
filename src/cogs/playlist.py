@@ -201,6 +201,9 @@ class SearchResultsView(discord.ui.View):
 
         await interaction.response.edit_message(embed=embed, view=self)
 
+SEARCH_PICKER_CAP = 25  # hard limit on Discord select options
+
+
 class PlaySearchView(discord.ui.View):
     """Slash-command picker for play-search when multiple results match."""
 
@@ -208,7 +211,8 @@ class PlaySearchView(discord.ui.View):
         super().__init__(timeout=120)
         self.cog = cog
         self.requester_id = requester_id
-        self.results = results          # already capped to 25 by caller
+        self.message = None
+        self.results = results[:SEARCH_PICKER_CAP]
 
         select = discord.ui.Select(placeholder='Choose an item to play')
         for playlist_num, item in results:
@@ -221,12 +225,16 @@ class PlaySearchView(discord.ui.View):
         cancel.callback = self._on_cancel
         self.add_item(cancel)
 
+    def _disable_all(self) -> None:
+        """Disable every child (select + buttons) so the picker becomes inert."""
+        for child in self.children:
+            child.disabled = True
+
     async def _on_cancel(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester_id:
             await interaction.response.send_message('That picker belongs to someone else.', ephemeral=True)
             return
-        for child in self.children:
-            child.disabled = True
+        self._disable_all()
         await interaction.response.edit_message(content='Playback selection cancelled.', embed=None, view=self)
 
     async def _on_select(self, interaction: discord.Interaction):
@@ -268,24 +276,24 @@ class PlaySearchView(discord.ui.View):
             except Exception:
                 pass
 
-        for child in self.children:
-            child.disabled = True
+        self._disable_all()
         try:
             await interaction.message.edit(view=self)
         except Exception:
             pass
 
     async def on_timeout(self):
-        for child in self.children:
-            child.disabled = True
-        message = getattr(self, 'message', None)
-        if message is not None:
+        self._disable_all()
+        if self.message is not None:
             try:
-                await message.edit(view=self)
+                await self.message.edit(view=self)
             except Exception:
                 pass
 
 class PlaylistCommands(commands.Cog):
+    # Cap for play-search pickers; the slash embed preview must match this.
+    SEARCH_PICKER_CAP = SEARCH_PICKER_CAP
+
     def __init__(self, bot: commands.Bot, vlc_controller, tmdb_service, watch_service):
         self.bot = bot
         self.vlc = vlc_controller
@@ -465,8 +473,8 @@ class PlaylistCommands(commands.Cog):
         return pages
 
     def make_play_search_view(self, requester_id: int, results: List[Tuple[int, dict]]) -> PlaySearchView:
-        """Create a slash-command picker capped to 25 options."""
-        return PlaySearchView(self, requester_id, results[:25])
+        """Create a slash-command picker; capping happens inside the view."""
+        return PlaySearchView(self, requester_id, results)
 
     async def _play_and_report(self, ctx, item, playlist_num: int) -> bool:
         """Play an item and reply with its metadata embed. Returns True on success."""
@@ -571,7 +579,7 @@ class PlaylistCommands(commands.Cog):
                 return
 
             # Multiple results: show a numbered list and wait for the user to pick.
-            shown = results[:25]
+            shown = results[:SEARCH_PICKER_CAP]
             lines = []
             for num, item in shown:
                 name = item.get('name', '')

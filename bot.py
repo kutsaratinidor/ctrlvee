@@ -3130,7 +3130,7 @@ async def playlist_play_search(interaction: discord.Interaction, query: str):
         description=f"**{len(results)} matches** for *{query}* — pick an item to play.",
         color=discord.Color.blurple(),
     )
-    shown = results[:25]
+    shown = results[:playlist_cog.SEARCH_PICKER_CAP]  # must match the dropdown's cap
     preview_lines = []
     for playlist_num, item in shown:
         name = MediaUtils.clean_filename_for_display(item.get('name', ''), max_length=60)

@@ -747,6 +747,7 @@ class PlaybackCommands(commands.Cog):
         owner_id = self._playback_owner_id
 
         owner_in_room = False
+        owner = None
         if owner_id is not None and owner_id != member.id:
             owner = member.guild.get_member(owner_id)
             ovoice = getattr(owner, 'voice', None) if owner is not None else None
@@ -764,7 +765,6 @@ class PlaybackCommands(commands.Cog):
             return True, ""
         if reason == "not_in_room":
             return False, f"You must be in **{room.name}** to control playback."
-        owner = member.guild.get_member(owner_id) if owner_id else None
         name = getattr(owner, 'display_name', 'This user') if owner else 'This user'
         return False, f"⏳ **{name}** is watching this one — ask before switching the playback."
 
