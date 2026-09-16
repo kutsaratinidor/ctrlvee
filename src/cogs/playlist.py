@@ -388,12 +388,6 @@ class PlaylistCommands(commands.Cog):
             if len(query_tokens) <= len(item_tokens) and item_tokens[:len(query_tokens)] == query_tokens:
                 score += 160
 
-        # Small preference for tighter titles (reduces noisy broad matches)
-        try:
-            score -= abs(len(item_compact) - len(query_compact))
-        except Exception:
-            pass
-
         return max(0, score)
 
     def _search_items(self, query: str) -> List[Tuple[int, dict]]:
