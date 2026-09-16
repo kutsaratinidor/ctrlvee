@@ -118,14 +118,29 @@ def _format_bytes(n: int) -> str:
         return "-"
 
 
-def _format_allowed_roles_for_display() -> str:
-    """Format ALLOWED_ROLES for logs/help text, supporting names and IDs."""
+def _format_allowed_roles_for_display(guild=None) -> str:
+    """Format ALLOWED_ROLES for logs/help/denial text.
+
+    Resolves role IDs to their role names in the given guild (falling back to
+    the raw ID when the role isn't present there) and keeps configured role
+    names as-is. Duplicate names — e.g. the same role listed once by name and
+    once by ID — collapse to a single entry.
+    """
     parts = []
+    seen = set()
     for role in Config.ALLOWED_ROLES:
-        if isinstance(role, int):
-            parts.append(f"ID:{role}")
-        else:
-            parts.append(f"'{role}'")
+        display = role if isinstance(role, str) else None
+        if isinstance(role, int) and guild is not None:
+            resolved = guild.get_role(role)
+            if resolved is not None:
+                display = resolved.name
+        if display is None:
+            display = f"ID:{role}"  # unresolved role ID
+        key = display.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        parts.append(display)
     return ", ".join(parts)
     
 def _get_slash_allowed_channel_ids() -> tuple[list[int], str]:
@@ -1726,7 +1741,7 @@ async def on_command_error(ctx, error):
     cmd_name = getattr(getattr(ctx, 'command', None), 'name', None)
 
     if isinstance(error, commands.MissingAnyRole):
-        allowed_roles = _format_allowed_roles_for_display()
+        allowed_roles = _format_allowed_roles_for_display(getattr(ctx, 'guild', None))
         logger.warning(f"Role check failed: required roles (any of): {allowed_roles}")
         await ctx.send(f"You need one of these roles to use this command: {allowed_roles}")
     elif isinstance(error, commands.CommandNotFound):
@@ -1852,7 +1867,7 @@ Examples: `{prefix}radarr_recent` (all instances, 7 days), `{prefix}radarr_recen
             embed.add_field(name="🎬 Radarr Integration", value=radarr_commands, inline=False)
 
         # Add footer note about permissions
-        roles_str = _format_allowed_roles_for_display()
+        roles_str = _format_allowed_roles_for_display(getattr(ctx, 'guild', None))
         footer_text = f"⚠️ Most commands require one of these roles: {roles_str}"
         embed.set_footer(text=footer_text)
 
@@ -2197,7 +2212,7 @@ async def _check_allowed_roles_for_interaction(interaction: discord.Interaction)
             return True
 
     await interaction.response.send_message(
-        f"You need one of these roles to use this command: {_format_allowed_roles_for_display()}",
+        f"You need one of these roles to use this command: {_format_allowed_roles_for_display(interaction.guild)}",
         ephemeral=True,
     )
     return False
