@@ -1,3 +1,8 @@
+## 1.13.2 - 2026-09-16
+
+### Fixed
+- **Readable allowed roles in `/admin show-config`**: ALLOWED_ROLES now render as `@role-name` names resolved against the server the command is run in — both ID and name entries — and configured roles that don't exist in that server (deleted, renamed, or from another guild) are omitted instead of showing a bare role ID.
+
 ## 1.13.1 - 2026-09-15
 
 ### Fixed

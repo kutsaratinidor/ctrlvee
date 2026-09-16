@@ -3794,15 +3794,23 @@ def _resolve_guild_role_name(guild: discord.Guild, role_id: int) -> str:
 
 
 def _format_allowed_roles_resolved(guild: discord.Guild) -> str:
-    """Format ALLOWED_ROLES for display, resolving role IDs to guild role names."""
-    parts = []
+    """Format ALLOWED_ROLES for display, showing only roles that exist in this guild.
+
+    Config entries may be role IDs or role names; both are resolved against the
+    current guild so the owner sees readable @names. Any configured role that
+    isn't present in this guild (deleted, renamed, or from another server) is
+    omitted rather than shown as a raw ID.
+    """
+    names = []
     for role in Config.ALLOWED_ROLES:
-        if isinstance(role, int):
-            resolved = guild.get_role(role)
-            parts.append(f"@{resolved.name}" if resolved else f"ID {role}")
-        else:
-            parts.append(role)
-    return ", ".join(parts) or "None"
+        resolved = (
+            guild.get_role(role)
+            if isinstance(role, int)
+            else next((r for r in guild.roles if r.name == role), None)
+        )
+        if resolved is not None:
+            names.append(f"@{resolved.name}")
+    return ", ".join(names) or "None in this server"
 
 
 def _build_admin_config_overview_embed(guild: discord.Guild) -> discord.Embed:
