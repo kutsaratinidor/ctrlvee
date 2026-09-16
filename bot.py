@@ -2773,6 +2773,13 @@ async def playback_next(interaction: discord.Interaction):
     if not await _check_allowed_roles_for_interaction(interaction):
         return
 
+    playback_cog = bot.get_cog("PlaybackCommands")
+    if playback_cog:
+        ok, reason = playback_cog._playback_guard(interaction.user)
+        if not ok:
+            await interaction.response.send_message(reason, ephemeral=True)
+            return
+
     if vlc.next():
         await interaction.response.send_message("Skipped to next track.")
     else:
@@ -2783,6 +2790,13 @@ async def playback_next(interaction: discord.Interaction):
 async def playback_previous(interaction: discord.Interaction):
     if not await _check_allowed_roles_for_interaction(interaction):
         return
+
+    playback_cog = bot.get_cog("PlaybackCommands")
+    if playback_cog:
+        ok, reason = playback_cog._playback_guard(interaction.user)
+        if not ok:
+            await interaction.response.send_message(reason, ephemeral=True)
+            return
 
     if vlc.previous():
         await interaction.response.send_message("Jumped to previous track.")
@@ -3167,6 +3181,13 @@ async def playlist_play_search(interaction: discord.Interaction, query: str):
 async def queue_add_next(interaction: discord.Interaction, number: app_commands.Range[int, 1, 99999]):
     if not await _check_allowed_roles_for_interaction(interaction):
         return
+
+    playback_cog = bot.get_cog("PlaybackCommands")
+    if playback_cog:
+        ok, reason = playback_cog._playback_guard(interaction.user)
+        if not ok:
+            await interaction.response.send_message(reason, ephemeral=True)
+            return
 
     playlist = vlc.get_playlist()
     if not playlist:

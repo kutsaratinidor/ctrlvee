@@ -206,13 +206,15 @@ Edit `.env` (starting from `template.env`).
 - `ENABLE_VOICE_GUARD`
 - `ENABLE_VOICE_EVENTS_RECONNECT`
 
-The **voice room rules** (`ENABLE_VOICE_ROOM_RULES`, default `true`) make playback-start
-commands behave like a music bot tied to the room voice channel: the person using
-`play-item`/`play-search` must be inside `VOICE_JOIN_CHANNEL_ID`, and a different user
-can't take over the currently playing item while the person who started it is still in
-the room. Ownership resets automatically when the item changes, so auto-advanced/watch-
-folder screens and explicit `next`/`stop` free the slot. `queue add-next`/`!queue_next`
-are not guarded.
+The **voice room rules** (`ENABLE_VOICE_ROOM_RULES`, default `true`) make the
+commands that start or switch playback behave like a music bot tied to the room
+voice channel: the person using `play-item`/`play-search` must be inside
+`VOICE_JOIN_CHANNEL_ID`, and a different user can't take over the currently
+playing item while the person who started it is still in the room. `next`/`previous`
+and `queue add-next`/`!queue_next` are guarded the same way, so a non-owner can't
+skip or queue an item past the current watcher. Ownership resets automatically
+when the item actually changes — auto-advanced/watch-folder screens, `stop`, or
+the watcher's own `next` free the slot.
 
 ### Radarr (Optional)
 

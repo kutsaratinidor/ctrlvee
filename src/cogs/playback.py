@@ -2063,7 +2063,12 @@ class PlaybackCommands(commands.Cog):
         """Play next track in playlist (prioritizes queued items)"""
         if not await self._check_cooldown(ctx):
             return
-        
+
+        ok, reason = self._playback_guard(ctx.author)
+        if not ok:
+            await ctx.send(reason)
+            return
+
         # First check if there are any queued items to play
         next_queued = self.vlc.get_next_queued_item()
         if next_queued:
@@ -2136,7 +2141,12 @@ class PlaybackCommands(commands.Cog):
         """Play previous track in playlist"""
         if not await self._check_cooldown(ctx):
             return
-            
+
+        ok, reason = self._playback_guard(ctx.author)
+        if not ok:
+            await ctx.send(reason)
+            return
+
         if self.vlc.previous():
             logger.info("Loading previous track")
             await ctx.send('Loading previous track...')
@@ -2506,6 +2516,11 @@ class PlaybackCommands(commands.Cog):
         try:
             if number < 1:
                 await ctx.send('Please provide a number greater than 0')
+                return
+
+            ok, reason = self._playback_guard(ctx.author)
+            if not ok:
+                await ctx.send(reason)
                 return
 
             playlist = self.vlc.get_playlist()
