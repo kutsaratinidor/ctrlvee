@@ -3813,6 +3813,40 @@ def _format_allowed_roles_resolved(guild: discord.Guild) -> str:
     return ", ".join(names) or "None in this server"
 
 
+def _clip_field_lines(lines: list, limit: int = 1000) -> str:
+    """Join display lines into an embed field value kept under Discord's 1024-char
+    cap, preserving whole lines and noting how many were dropped."""
+    full = "\n".join(lines)
+    if len(full) <= limit:
+        return full
+
+    kept: list[str] = []
+    used = 0
+    for line in lines:
+        sep = 1 if kept else 0  # '\n' separator
+        if used + sep + len(line) > limit:
+            break
+        kept.append(line)
+        used += sep + len(line)
+    dropped = len(lines) - len(kept)
+
+    if not kept:
+        # Even the first line can't fit whole: show its head plus a drop note.
+        remaining = len(lines) - 1
+        suffix = f"\n… and {remaining} more" if remaining else "…"
+        head = max(1, limit - len(suffix))
+        return lines[0][: head - 1] + "…" + suffix
+
+    text = "\n".join(kept)
+    if dropped:
+        suffix = f"\n… and {dropped} more"
+        # Reclaim space from the last kept line if the suffix would overflow.
+        if len(text) + len(suffix) > limit:
+            text = text[: max(1, limit - len(suffix)) - 1] + "…"
+        text += suffix
+    return text
+
+
 def _build_admin_config_overview_embed(guild: discord.Guild) -> discord.Embed:
     """Build a human-readable config overview embed for the given guild.
 
@@ -3839,12 +3873,12 @@ def _build_admin_config_overview_embed(guild: discord.Guild) -> discord.Embed:
         )
     else:
         mode_lines.append("Slash sync: **global**")
-    embed.add_field(name="Discord & Command Mode", value="\n".join(mode_lines), inline=False)
+    embed.add_field(name="Discord & Command Mode", value=_clip_field_lines(mode_lines), inline=False)
 
     role_lines = [f"Allowed roles: **{_format_allowed_roles_resolved(guild)}**"]
     if cfg.WATCH_ANNOUNCE_ROLE_ID:
         role_lines.append(f"Announce role: **{_resolve_guild_role_name(guild, cfg.WATCH_ANNOUNCE_ROLE_ID)}**")
-    embed.add_field(name="Roles & Permissions", value="\n".join(role_lines), inline=False)
+    embed.add_field(name="Roles & Permissions", value=_clip_field_lines(role_lines), inline=False)
 
     announce_ids = cfg.get_announce_channel_ids()
     announce_display = (
@@ -3861,7 +3895,7 @@ def _build_admin_config_overview_embed(guild: discord.Guild) -> discord.Embed:
         f"Request announce: **{_resolve_guild_channel_name(guild, cfg.REQUEST_ANNOUNCE_CHANNEL_ID)}**",
         f"Watch announce: **{announce_display}**",
     ]
-    embed.add_field(name="Channels", value="\n".join(channel_lines), inline=False)
+    embed.add_field(name="Channels", value=_clip_field_lines(channel_lines), inline=False)
 
     radarr_names = [inst["display_name"] for inst in cfg.get_radarr_instances()]
     overseerr = "Not configured"
@@ -3873,7 +3907,7 @@ def _build_admin_config_overview_embed(guild: discord.Guild) -> discord.Embed:
         f"Radarr: **{', '.join(radarr_names) if radarr_names else 'Not configured'}**",
         f"Overseerr: **{overseerr}**",
     ]
-    embed.add_field(name="Media & Services", value="\n".join(service_lines), inline=False)
+    embed.add_field(name="Media & Services", value=_clip_field_lines(service_lines), inline=False)
 
     lib_lines = [
         f"Watch folders: **{', '.join(cfg.WATCH_FOLDERS) if cfg.WATCH_FOLDERS else 'Disabled'}**",
@@ -3881,7 +3915,7 @@ def _build_admin_config_overview_embed(guild: discord.Guild) -> discord.Embed:
         f"Playlist autosave: **{cfg.PLAYLIST_AUTOSAVE_FILE or 'Disabled'}**",
         f"Items per page: **{cfg.ITEMS_PER_PAGE}**",
     ]
-    embed.add_field(name="Library & Watch", value="\n".join(lib_lines), inline=False)
+    embed.add_field(name="Library & Watch", value=_clip_field_lines(lib_lines), inline=False)
 
     return embed
 
