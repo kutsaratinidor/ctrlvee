@@ -123,6 +123,7 @@ Owner slash maintenance commands:
 
 - `/admin cleanup-playlist` removes missing files from VLC playlist entries.
 - `/admin show-config` shows a human-readable config overview for the current server (resolves channel/role IDs to names; owner-only).
+- `/admin reconnect-voice` forces an immediate voice channel reconnect attempt without restarting the bot process (owner-only).
 - `/system clear-global-slash` performs one-time global slash cleanup in dev-guild mode.
 
 ### Troubleshooting: Duplicate Slash Commands in Dev Guild

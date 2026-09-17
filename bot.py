@@ -3806,6 +3806,50 @@ async def admin_cleanup_playlist(interaction: discord.Interaction):
     await _run_playlist_cleanup(interaction, "/admin cleanup-playlist")
 
 
+@admin_group.command(name="reconnect-voice", description="Owner only: force a voice channel reconnect attempt")
+async def admin_reconnect_voice(interaction: discord.Interaction):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("This command is owner-only.", ephemeral=True)
+        return
+
+    if not getattr(Config, 'ENABLE_VOICE_JOIN', False):
+        await interaction.response.send_message("Voice join is disabled (`ENABLE_VOICE_JOIN=false`).", ephemeral=True)
+        return
+
+    ch = await _resolve_voice_channel()
+    if not ch:
+        await interaction.response.send_message(
+            "Could not resolve the configured voice channel (check `VOICE_JOIN_CHANNEL_ID` and permissions).",
+            ephemeral=True,
+        )
+        return
+
+    if _is_connected_to_channel(ch.guild, ch.id):
+        await interaction.response.send_message(f"Already connected to **{ch.name}** — nothing to do.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    logger.warning(
+        "admin reconnect-voice invoked by %s (%s) for channel %s (%s)",
+        interaction.user, interaction.user.id, ch.name, ch.id,
+    )
+    try:
+        joined = await join_voice_channel()
+    except Exception as e:
+        logger.error(f"admin reconnect-voice error: {e}")
+        await interaction.followup.send(f"Reconnect attempt failed: {type(e).__name__}: {e}", ephemeral=True)
+        return
+
+    if joined and _is_connected_to_channel(ch.guild, ch.id):
+        # Let the background guard resume its normal cadence instead of
+        # immediately re-flagging this manual join as a failure.
+        global _reconnect_attempts
+        _reconnect_attempts = 0
+        await interaction.followup.send(f"Reconnected to **{ch.name}**.", ephemeral=True)
+    else:
+        await interaction.followup.send(f"Reconnect attempt did not succeed — still not in **{ch.name}**.", ephemeral=True)
+
+
 def _resolve_guild_channel_name(guild: discord.Guild, channel_id: int) -> str:
     """Resolve a channel ID to its guild channel name, falling back to the raw ID."""
     if not channel_id:
