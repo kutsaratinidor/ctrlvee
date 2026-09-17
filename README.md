@@ -2,7 +2,7 @@
 
 A Discord bot that controls a local VLC player and exposes playback controls, playlist search, queueing, scheduling, watch-folder ingestion, and metadata lookups.
 
-Current app version: `1.13.2`.
+Current app version: `1.14.0`.
 
 ## What It Does
 
@@ -17,10 +17,20 @@ Current app version: `1.13.2`.
 
 ## Requirements
 
-- Python `3.10+`
+- Python `3.10+`, with the `venv` and `pip` modules available (see below)
 - VLC Media Player with HTTP interface enabled
 - A Discord bot token
 - TMDB API key (required — the bot won't start without one)
+
+### Installing Python
+
+- **macOS**: `brew install python3` (includes `venv`/`pip`), or download from [python.org](https://www.python.org/downloads/).
+- **Windows**: download from [python.org](https://www.python.org/downloads/) and check "Add python.exe to PATH" during install.
+- **Debian/Ubuntu**: the system `python3` package alone is not enough — `venv` and `pip` are separate packages:
+  ```bash
+  sudo apt install python3 python3-venv python3-pip
+  ```
+  If you already ran `setup.py` before installing `python3-pip`, delete `.venv` and re-run it.
 
 ## Quick Setup
 

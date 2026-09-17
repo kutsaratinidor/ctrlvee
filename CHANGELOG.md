@@ -1,3 +1,12 @@
+## 1.14.0 - 2026-09-17
+
+### Added
+- **`/admin reconnect-voice`**: Owner-only command to force an immediate voice channel reconnect attempt without restarting the bot process, for when the background voice guard leaves the bot missing from its channel without reconnecting on its own.
+
+### Fixed
+- **Changelog embed field overflow**: `!changelog` / `/system changelog` capped sections to 5 items but not by character count, so a long section (e.g. v1.13.2's Fixed, 1600 chars) could still exceed Discord's 1024-char field cap and fail to send. Both command paths now share one helper that clips by character count instead.
+- **`setup.py` failing with "No module named pip"**: `python -m venv` can report success even when the created venv has no pip bundled (common on Debian/Ubuntu without `python3-pip` installed alongside `python3-venv`). `setup.py` now detects this and self-heals via `ensurepip` before giving up with an actionable error.
+
 ## 1.13.2 - 2026-09-16
 
 ### Fixed

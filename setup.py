@@ -46,7 +46,27 @@ def ensure_venv() -> Path:
     return python_path
 
 
+def ensure_pip(venv_python: Path) -> None:
+    check = subprocess.run([str(venv_python), "-m", "pip", "--version"], capture_output=True)
+    if check.returncode == 0:
+        return
+
+    # Some distro Pythons (notably Debian/Ubuntu without python3-pip installed)
+    # create a venv with no pip bundled, even though `venv` creation itself
+    # reports success. Bootstrap it explicitly before giving up.
+    print("pip is missing from the virtual environment; bootstrapping with ensurepip ...")
+    result = subprocess.run([str(venv_python), "-m", "ensurepip", "--upgrade"])
+    if result.returncode != 0:
+        print("Failed to bootstrap pip into the virtual environment.")
+        print("On Debian/Ubuntu, install the full Python toolchain first:")
+        print("  sudo apt install python3-venv python3-pip")
+        print(f"then delete {VENV_DIR} and re-run this script.")
+        sys.exit(1)
+
+
 def install_dependencies(venv_python: Path) -> None:
+    ensure_pip(venv_python)
+
     print("Upgrading pip ...")
     result = subprocess.run([str(venv_python), "-m", "pip", "install", "--upgrade", "pip"])
     if result.returncode != 0:
