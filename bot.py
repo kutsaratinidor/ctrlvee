@@ -1935,6 +1935,29 @@ async def privacy(ctx):
         logger.error(f"privacy command error: {e}")
         await ctx.send(f"Error showing privacy statement: {e}")
 
+def _build_changelog_embeds(entries: list) -> list:
+    """Build one embed per changelog version entry.
+
+    Field values are clipped to Discord's 1024-char field cap via
+    `_clip_field_lines` — changelog bullets (e.g. voice-room-rules entries)
+    can individually run past 600 chars, so even 5 items can overflow.
+    """
+    embeds = []
+    for entry in entries:
+        embed = discord.Embed(
+            title=f"v{entry['version']}",
+            description=f"Released: {entry['date']}",
+            color=discord.Color.blurple()
+        )
+        for section in ['Changed', 'Added', 'Fixed']:
+            items = entry['sections'].get(section)
+            if items:
+                lines = [f"• {item}" for item in items]
+                embed.add_field(name=section, value=_clip_field_lines(lines), inline=False)
+        embeds.append(embed)
+    return embeds
+
+
 @bot.command(name="changelog", aliases=['changes', 'whatsnew'])
 async def changelog(ctx):
     """Show recent changelog entries (latest 2 versions)."""
@@ -1943,26 +1966,10 @@ async def changelog(ctx):
         if not entries:
             await ctx.send("Changelog could not be loaded.")
             return
-        
-        # Build and send embeds for each version
-        for entry in entries:
-            embed = discord.Embed(
-                title=f"v{entry['version']}",
-                description=f"Released: {entry['date']}",
-                color=discord.Color.blurple()
-            )
-            
-            # Add sections in preferred order
-            for section in ['Changed', 'Added', 'Fixed']:
-                if section in entry['sections'] and entry['sections'][section]:
-                    items = entry['sections'][section][:5]  # Limit to 5 items per section
-                    value = '\n'.join([f"• {item}" for item in items])
-                    if len(entry['sections'][section]) > 5:
-                        value += f"\n• ... and {len(entry['sections'][section]) - 5} more"
-                    embed.add_field(name=section, value=value, inline=False)
-            
+
+        for embed in _build_changelog_embeds(entries):
             await ctx.send(embed=embed)
-    
+
     except Exception as e:
         logger.error(f"changelog command error: {e}")
         await ctx.send(f"Error loading changelog: {e}")
@@ -2529,21 +2536,7 @@ async def system_changelog(interaction: discord.Interaction):
         return
 
     first = True
-    for entry in entries:
-        embed = discord.Embed(
-            title=f"v{entry['version']}",
-            description=f"Released: {entry['date']}",
-            color=discord.Color.blurple()
-        )
-
-        for section in ['Changed', 'Added', 'Fixed']:
-            if section in entry['sections'] and entry['sections'][section]:
-                items = entry['sections'][section][:5]
-                value = '\n'.join([f"• {item}" for item in items])
-                if len(entry['sections'][section]) > 5:
-                    value += f"\n• ... and {len(entry['sections'][section]) - 5} more"
-                embed.add_field(name=section, value=value, inline=False)
-
+    for embed in _build_changelog_embeds(entries):
         if first:
             await interaction.response.send_message(embed=embed, ephemeral=True)
             first = False
