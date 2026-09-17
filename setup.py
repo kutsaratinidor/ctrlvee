@@ -7,6 +7,7 @@ Run with your system Python:
 """
 import argparse
 import platform
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -31,17 +32,33 @@ def venv_python_path() -> Path:
     return VENV_DIR / "bin" / "python"
 
 
+def venv_activate_path() -> Path:
+    if platform.system() == "Windows":
+        return VENV_DIR / "Scripts" / "activate.bat"
+    return VENV_DIR / "bin" / "activate"
+
+
 def ensure_venv() -> Path:
     python_path = venv_python_path()
-    if python_path.exists():
+    activate_path = venv_activate_path()
+    if python_path.exists() and activate_path.exists():
         print(f"Using existing virtual environment at {VENV_DIR}")
         return python_path
+
+    if VENV_DIR.exists():
+        # A previous run likely failed partway through (e.g. venv's internal
+        # ensurepip step errored, which aborts before the activate scripts
+        # are written) — python_path can exist without activate_path. Reusing
+        # that half-built venv would leave activate missing forever, so start
+        # clean instead.
+        print(f"Found an incomplete virtual environment at {VENV_DIR}; removing it and starting over ...")
+        shutil.rmtree(VENV_DIR)
 
     print(f"Creating virtual environment at {VENV_DIR} ...")
     result = subprocess.run([sys.executable, "-m", "venv", str(VENV_DIR)])
     if result.returncode != 0:
         print("Failed to create the virtual environment.")
-        print("On Debian/Ubuntu you may need: sudo apt install python3-venv")
+        print("On Debian/Ubuntu you may need: sudo apt install python3-venv python3-pip")
         sys.exit(1)
     return python_path
 
