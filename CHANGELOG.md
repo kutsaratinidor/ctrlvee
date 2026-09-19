@@ -1,3 +1,9 @@
+## 1.15.0 - 2026-09-19
+
+### Added
+- **Schedule proximity guard**: `play-item`/`play-search`, `next`/`previous`, and `queue add-next`/`!queue_next` now warn (without blocking) the issuer when an upcoming scheduled movie is due to start within `SCHEDULE_PROXIMITY_WINDOW_SECONDS` (default 30 minutes), naming the movie and who scheduled it. A schedule that has already started does not trigger it. Controlled by `ENABLE_SCHEDULE_PROXIMITY_GUARD` (default: on).
+- **"Scheduled By" on schedule embeds**: `!schedule`/`!schedules` and `/schedule add`/`/schedule list` now show who scheduled each movie — the scheduler's identity was already tracked internally but never surfaced.
+
 ## 1.14.0 - 2026-09-17
 
 ### Added
