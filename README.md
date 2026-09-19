@@ -227,6 +227,13 @@ skip or queue an item past the current watcher. Ownership resets automatically
 when the item actually changes — auto-advanced/watch-folder screens, `stop`, or
 the watcher's own `next` free the slot.
 
+The **schedule proximity guard** (`ENABLE_SCHEDULE_PROXIMITY_GUARD`, default `true`)
+warns — but does not block — whoever runs `play-item`/`play-search`, `next`/`previous`,
+or `queue add-next`/`!queue_next` when an **upcoming** scheduled movie is due to start
+within `SCHEDULE_PROXIMITY_WINDOW_SECONDS` (default `1800`, i.e. 30 minutes). A schedule
+that has already started does not trigger it. The warning names the scheduled movie and
+who scheduled it, so playing something else doesn't quietly run into `!schedule`d plans.
+
 ### Radarr (Optional)
 
 Single instance:

@@ -13,6 +13,25 @@ from ..utils.command_utils import format_cmd_inline
 # Set up logger for this module
 logger = logging.getLogger(__name__)
 
+def _find_nearby_schedule(scheduled: list, now, window_seconds: float):
+    """Pure lookup for the schedule-proximity guard.
+
+    Returns the *upcoming* scheduled entry starting soonest within `window_seconds`
+    of `now`, or None. Only entries in the future count — a schedule that has already
+    started is not "close to" a new playback request, it has been superseded by it.
+    Ties resolve to whichever starts soonest.
+    """
+    nearest, nearest_delta = None, None
+    for s in scheduled:
+        try:
+            delta = (s['dt'] - now).total_seconds()
+        except Exception:
+            continue
+        if 0 <= delta <= window_seconds and (nearest_delta is None or delta < nearest_delta):
+            nearest, nearest_delta = s, delta
+    return nearest
+
+
 def _decide_playback_allow(
     room_resolved: bool,
     requester_in_room: bool,
@@ -774,6 +793,34 @@ class PlaybackCommands(commands.Cog):
             return
         self._playback_owner_id = member.id
         self._playback_owner_item_id = item_id
+
+    def _nearby_schedule_notice(self, member: discord.Member) -> str | None:
+        """Non-blocking advisory for play-start commands: is an upcoming schedule close?
+
+        Unlike `_playback_guard`, this never blocks the request — it only returns a
+        heads-up message (movie info + who scheduled it) when a scheduled item is due
+        to start within Config.SCHEDULE_PROXIMITY_WINDOW_SECONDS from now. A schedule
+        that has already started does not trigger this — see `_find_nearby_schedule`.
+        """
+        if not bool(getattr(Config, 'ENABLE_SCHEDULE_PROXIMITY_GUARD', True)):
+            return None
+        scheduler_cog = self.bot.get_cog('Scheduler')
+        scheduled = getattr(scheduler_cog, 'scheduled', None) if scheduler_cog else None
+        if not scheduled:
+            return None
+        from datetime import datetime
+        from .scheduler import PH_TZ
+        window = float(getattr(Config, 'SCHEDULE_PROXIMITY_WINDOW_SECONDS', 1800))
+        now = datetime.now(PH_TZ)
+        nearest = _find_nearby_schedule(scheduled, now, window)
+        if not nearest:
+            return None
+        who = f"<@{nearest['user']}>" if nearest.get('user') else "someone"
+        when = nearest['dt'].strftime('%Y-%m-%d %H:%M %Z') if isinstance(nearest['dt'], datetime) else str(nearest['dt'])
+        return (
+            f"📅 Heads up, {member.mention}: **#{nearest['number']} — {nearest.get('title', 'Unknown')}** "
+            f"is scheduled to start at {when} by {who}. Playing something else may run into it."
+        )
 
     async def _check_cooldown(self, ctx):
         """Check if enough time has passed since last state change"""
@@ -2003,6 +2050,9 @@ class PlaybackCommands(commands.Cog):
             if not ok:
                 await ctx.send(reason)
                 return
+            notice = self._nearby_schedule_notice(ctx.author)
+            if notice:
+                await ctx.send(notice)
 
             playlist = self.vlc.get_playlist()
             if not playlist:
@@ -2068,6 +2118,9 @@ class PlaybackCommands(commands.Cog):
         if not ok:
             await ctx.send(reason)
             return
+        notice = self._nearby_schedule_notice(ctx.author)
+        if notice:
+            await ctx.send(notice)
 
         # First check if there are any queued items to play
         next_queued = self.vlc.get_next_queued_item()
@@ -2146,6 +2199,9 @@ class PlaybackCommands(commands.Cog):
         if not ok:
             await ctx.send(reason)
             return
+        notice = self._nearby_schedule_notice(ctx.author)
+        if notice:
+            await ctx.send(notice)
 
         if self.vlc.previous():
             logger.info("Loading previous track")
@@ -2522,6 +2578,9 @@ class PlaybackCommands(commands.Cog):
             if not ok:
                 await ctx.send(reason)
                 return
+            notice = self._nearby_schedule_notice(ctx.author)
+            if notice:
+                await ctx.send(notice)
 
             playlist = self.vlc.get_playlist()
             if not playlist:

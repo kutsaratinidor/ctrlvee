@@ -2772,6 +2772,9 @@ async def playback_next(interaction: discord.Interaction):
         if not ok:
             await interaction.response.send_message(reason, ephemeral=True)
             return
+        notice = playback_cog._nearby_schedule_notice(interaction.user)
+        if notice and interaction.channel:
+            await interaction.channel.send(notice)
 
     if vlc.next():
         await interaction.response.send_message("Skipped to next track.")
@@ -2790,6 +2793,9 @@ async def playback_previous(interaction: discord.Interaction):
         if not ok:
             await interaction.response.send_message(reason, ephemeral=True)
             return
+        notice = playback_cog._nearby_schedule_notice(interaction.user)
+        if notice and interaction.channel:
+            await interaction.channel.send(notice)
 
     if vlc.previous():
         await interaction.response.send_message("Jumped to previous track.")
@@ -2809,6 +2815,9 @@ async def playback_play_num(interaction: discord.Interaction, number: app_comman
         if not ok:
             await interaction.response.send_message(reason)
             return
+        notice = playback_cog._nearby_schedule_notice(interaction.user)
+        if notice and interaction.channel:
+            await interaction.channel.send(notice)
 
     playlist = vlc.get_playlist()
     if not playlist:
@@ -3111,6 +3120,9 @@ async def playlist_play_search(interaction: discord.Interaction, query: str):
         if not ok:
             await interaction.response.send_message(reason)
             return
+        notice = playback_cog._nearby_schedule_notice(interaction.user)
+        if notice and interaction.channel:
+            await interaction.channel.send(notice)
 
     playlist_cog = bot.get_cog("PlaylistCommands")
     if not playlist_cog or not hasattr(playlist_cog, '_search_items'):
@@ -3181,6 +3193,9 @@ async def queue_add_next(interaction: discord.Interaction, number: app_commands.
         if not ok:
             await interaction.response.send_message(reason, ephemeral=True)
             return
+        notice = playback_cog._nearby_schedule_notice(interaction.user)
+        if notice and interaction.channel:
+            await interaction.channel.send(notice)
 
     playlist = vlc.get_playlist()
     if not playlist:
@@ -3633,6 +3648,7 @@ async def schedule_add(
     embed.add_field(name="Title", value=title, inline=True)
     embed.add_field(name="Scheduled For", value=dt.strftime('%Y-%m-%d %H:%M %Z'), inline=False)
     embed.add_field(name="Duration", value=dur_str, inline=True)
+    embed.add_field(name="Scheduled By", value=interaction.user.mention, inline=True)
     await interaction.response.send_message(embed=embed)
 
 
@@ -3657,9 +3673,10 @@ async def schedule_list(interaction: discord.Interaction):
             dur_str = MediaUtils.format_time(duration)
         else:
             dur_str = "Unknown"
+        scheduled_by = f"<@{s['user']}>" if s.get('user') else "Unknown"
         embed.add_field(
             name=f"#{s['number']} — {s.get('title', 'Unknown')}",
-            value=f"Scheduled for {dt_str}\nDuration: {dur_str}",
+            value=f"Scheduled for {dt_str}\nDuration: {dur_str}\nScheduled by: {scheduled_by}",
             inline=False,
         )
 
