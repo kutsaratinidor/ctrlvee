@@ -13,6 +13,46 @@ from ..utils.command_utils import format_cmd_inline
 # Set up logger for this module
 logger = logging.getLogger(__name__)
 
+def _find_nearby_schedule(scheduled: list, now, window_seconds: float):
+    """Pure lookup for the schedule-proximity guard.
+
+    Returns the *upcoming* scheduled entry starting soonest within `window_seconds`
+    of `now`, or None. Only entries in the future count — a schedule that has already
+    started is not "close to" a new playback request, it has been superseded by it.
+    Ties resolve to whichever starts soonest.
+    """
+    nearest, nearest_delta = None, None
+    for s in scheduled:
+        try:
+            delta = (s['dt'] - now).total_seconds()
+        except Exception:
+            continue
+        if 0 <= delta <= window_seconds and (nearest_delta is None or delta < nearest_delta):
+            nearest, nearest_delta = s, delta
+    return nearest
+
+
+def _decide_playback_allow(
+    room_resolved: bool,
+    requester_in_room: bool,
+    requester_id: int,
+    owner_id: int | None,
+    owner_holds_current: bool,
+    owner_in_room: bool,
+) -> tuple[bool, str]:
+    """Pure rule evaluation for the play-start guard; returns (allowed, reason_code).
+
+    A play request is blocked only when: a room is configured, the requester is not
+    in it, or another user who still occupies the room holds the currently playing item.
+    """
+    if not room_resolved:
+        return True, ""
+    if not requester_in_room:
+        return False, "not_in_room"
+    if owner_id is not None and owner_id != requester_id and owner_holds_current and owner_in_room:
+        return False, "hijack"
+    return True, ""
+
 class PlaybackCommands(commands.Cog):
     def __init__(self, bot, vlc_controller, tmdb_service, watch_service):
         self.bot = bot
@@ -44,6 +84,9 @@ class PlaybackCommands(commands.Cog):
         self.periodic_announce_task = None
         self.playback_started_event = asyncio.Event()
         self.last_queue_auto_play = 0  # Timestamp of last queue auto-play to prevent rapid triggers
+        # Voice-room ownership: who started the currently playing item (per-track, see _playback_guard).
+        self._playback_owner_id = None  # Discord user id of the item's requester
+        self._playback_owner_item_id = None  # VLC playlist id they started
         # Presence/update throttling for bot activity updates
         self._presence_last_set = 0.0
         self._presence_last_name = None  # Track last presence activity name to avoid throttling new titles
@@ -436,6 +479,7 @@ class PlaybackCommands(commands.Cog):
             self.logger.info("Periodic announcement task stopped")
 
     @commands.command(name='cleanup', aliases=['plcleanup','cleanup_missing'])
+    @commands.is_owner()
     async def cleanup_missing(self, ctx: commands.Context):
         """Remove missing/unavailable files from the VLC playlist.
 
@@ -449,7 +493,7 @@ class PlaybackCommands(commands.Cog):
         except Exception:
             pass
         try:
-            result = self.vlc.remove_missing_playlist_items()
+            result = await asyncio.to_thread(self.vlc.remove_missing_playlist_items)
             removed = int(result.get('removed', 0))
             items = result.get('items', []) or []
             if removed == 0:
@@ -670,6 +714,113 @@ class PlaybackCommands(commands.Cog):
                 break
                 
         return position, current_item
+
+    def _resolve_room_channel(self, guild) -> discord.VoiceChannel | None:
+        """Resolve the designated voice room (VOICE_JOIN_CHANNEL_ID) for presence checks."""
+        try:
+            channel_id = int(getattr(Config, 'VOICE_JOIN_CHANNEL_ID', 0) or 0)
+            if channel_id <= 0:
+                return None
+            if guild is not None:
+                ch = guild.get_channel(channel_id)
+                if isinstance(ch, discord.VoiceChannel):
+                    return ch
+            ch = self.bot.get_channel(channel_id)
+            return ch if isinstance(ch, discord.VoiceChannel) else None
+        except Exception:
+            return None
+
+    def _current_stream_item_id(self) -> str | None:
+        """VLC playlist id of the currently active stream, or None if nothing is active."""
+        try:
+            status = self.vlc.get_status()
+            if status is None:
+                return None
+            state_elem = status.find('state')
+            state = state_elem.text if state_elem is not None else None
+            if state in (None, 'stopped', 'end'):
+                return None
+            playlist = self.vlc.get_playlist()
+            if playlist is None:
+                return None
+            for leaf in playlist.findall('.//leaf'):
+                if leaf.get('current'):
+                    return leaf.get('id')
+            return None
+        except Exception:
+            return None
+
+    def _playback_guard(self, member: discord.Member) -> tuple[bool, str]:
+        """Presence + hijack gate for play-start commands. Call after the role check.
+
+        Per-track ownership: a requester's claim lives only on the exact item they
+        started. Once that item is no longer 'current' (auto-advance, watch folder,
+        next/stop), the claim is gone and the next play request reseats ownership.
+        """
+        if not bool(getattr(Config, 'ENABLE_VOICE_ROOM_RULES', True)):
+            return True, ""
+        room = self._resolve_room_channel(member.guild)
+        voice = getattr(member, 'voice', None)
+        requester_in_room = bool(voice and voice.channel and room is not None and voice.channel.id == room.id)
+        current_id = self._current_stream_item_id()
+        owner_id = self._playback_owner_id
+
+        owner_in_room = False
+        owner = None
+        if owner_id is not None and owner_id != member.id:
+            owner = member.guild.get_member(owner_id)
+            ovoice = getattr(owner, 'voice', None) if owner is not None else None
+            owner_in_room = bool(ovoice and ovoice.channel and room is not None and ovoice.channel.id == room.id)
+
+        allowed, reason = _decide_playback_allow(
+            room_resolved=room is not None,
+            requester_in_room=requester_in_room,
+            requester_id=member.id,
+            owner_id=owner_id,
+            owner_holds_current=bool(current_id and current_id == self._playback_owner_item_id),
+            owner_in_room=owner_in_room,
+        )
+        if allowed:
+            return True, ""
+        if reason == "not_in_room":
+            return False, f"You must be in **{room.name}** to control playback."
+        name = getattr(owner, 'display_name', 'This user') if owner else 'This user'
+        return False, f"⏳ **{name}** is watching this one — ask before switching the playback."
+
+    def _seat_playback_owner(self, member: discord.Member, item_id: str | None) -> None:
+        """Claim ownership of the item just started, for the hijack guard."""
+        if not bool(getattr(Config, 'ENABLE_VOICE_ROOM_RULES', True)):
+            return
+        self._playback_owner_id = member.id
+        self._playback_owner_item_id = item_id
+
+    def _nearby_schedule_notice(self, member: discord.Member) -> str | None:
+        """Non-blocking advisory for play-start commands: is an upcoming schedule close?
+
+        Unlike `_playback_guard`, this never blocks the request — it only returns a
+        heads-up message (movie info + who scheduled it) when a scheduled item is due
+        to start within Config.SCHEDULE_PROXIMITY_WINDOW_SECONDS from now. A schedule
+        that has already started does not trigger this — see `_find_nearby_schedule`.
+        """
+        if not bool(getattr(Config, 'ENABLE_SCHEDULE_PROXIMITY_GUARD', True)):
+            return None
+        scheduler_cog = self.bot.get_cog('Scheduler')
+        scheduled = getattr(scheduler_cog, 'scheduled', None) if scheduler_cog else None
+        if not scheduled:
+            return None
+        from datetime import datetime
+        from .scheduler import PH_TZ
+        window = float(getattr(Config, 'SCHEDULE_PROXIMITY_WINDOW_SECONDS', 1800))
+        now = datetime.now(PH_TZ)
+        nearest = _find_nearby_schedule(scheduled, now, window)
+        if not nearest:
+            return None
+        who = f"<@{nearest['user']}>" if nearest.get('user') else "someone"
+        when = nearest['dt'].strftime('%Y-%m-%d %H:%M %Z') if isinstance(nearest['dt'], datetime) else str(nearest['dt'])
+        return (
+            f"📅 Heads up, {member.mention}: **#{nearest['number']} — {nearest.get('title', 'Unknown')}** "
+            f"is scheduled to start at {when} by {who}. Playing something else may run into it."
+        )
 
     async def _check_cooldown(self, ctx):
         """Check if enough time has passed since last state change"""
@@ -1895,6 +2046,14 @@ class PlaybackCommands(commands.Cog):
                 await ctx.send('Please provide a number greater than 0')
                 return
 
+            ok, reason = self._playback_guard(ctx.author)
+            if not ok:
+                await ctx.send(reason)
+                return
+            notice = self._nearby_schedule_notice(ctx.author)
+            if notice:
+                await ctx.send(notice)
+
             playlist = self.vlc.get_playlist()
             if not playlist:
                 await ctx.send('Could not access VLC playlist')
@@ -1913,6 +2072,7 @@ class PlaybackCommands(commands.Cog):
             item_id = item.get('id')
 
             if self.vlc.play_item(item_id):
+                self._seat_playback_owner(ctx.author, item_id)
                 logger.info(f"Loading playlist item #{number}")
                 await ctx.send(f'Loading item #{number}...')
                 await asyncio.sleep(3)  # Give VLC time to load and start playing the file
@@ -1953,7 +2113,15 @@ class PlaybackCommands(commands.Cog):
         """Play next track in playlist (prioritizes queued items)"""
         if not await self._check_cooldown(ctx):
             return
-        
+
+        ok, reason = self._playback_guard(ctx.author)
+        if not ok:
+            await ctx.send(reason)
+            return
+        notice = self._nearby_schedule_notice(ctx.author)
+        if notice:
+            await ctx.send(notice)
+
         # First check if there are any queued items to play
         next_queued = self.vlc.get_next_queued_item()
         if next_queued:
@@ -2026,7 +2194,15 @@ class PlaybackCommands(commands.Cog):
         """Play previous track in playlist"""
         if not await self._check_cooldown(ctx):
             return
-            
+
+        ok, reason = self._playback_guard(ctx.author)
+        if not ok:
+            await ctx.send(reason)
+            return
+        notice = self._nearby_schedule_notice(ctx.author)
+        if notice:
+            await ctx.send(notice)
+
         if self.vlc.previous():
             logger.info("Loading previous track")
             await ctx.send('Loading previous track...')
@@ -2397,6 +2573,14 @@ class PlaybackCommands(commands.Cog):
             if number < 1:
                 await ctx.send('Please provide a number greater than 0')
                 return
+
+            ok, reason = self._playback_guard(ctx.author)
+            if not ok:
+                await ctx.send(reason)
+                return
+            notice = self._nearby_schedule_notice(ctx.author)
+            if notice:
+                await ctx.send(notice)
 
             playlist = self.vlc.get_playlist()
             if not playlist:

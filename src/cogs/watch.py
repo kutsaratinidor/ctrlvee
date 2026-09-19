@@ -103,7 +103,7 @@ class WatchCommands(commands.Cog):
         self.bot = bot
 
     @commands.command(name="watch_add")
-    @commands.has_any_role(*Config.ALLOWED_ROLES)
+    @commands.is_owner()
     async def add_watch_folder(self, ctx: commands.Context, *, path: str):
         """Add a new folder to WATCH_FOLDERS in .env.
 
