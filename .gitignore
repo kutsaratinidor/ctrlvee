@@ -1,5 +1,6 @@
 # Environment files
 .env
+.env.tmp
 *.env
 !template.env
 
@@ -35,6 +36,8 @@ queue_backup.json
 ctrlvee_playlist.xspf
 # VLC schedule backup
 schedule_backup.json
+# Movie request tracker store
+movie_requests.json
 
 # IDE specific files
 .idea/
@@ -42,6 +45,16 @@ schedule_backup.json
 *.swp
 *.swo
 .DS_Store
+
+# Claude Code local settings/cache and MCP config (machine-specific)
+.claude/
+.mcp.json
+
+# Repowise local index/cache
+.repowise/
+
+# Git worktrees for isolated feature work
+.worktrees/
 
 # Keep screenshots
 !screenshots/

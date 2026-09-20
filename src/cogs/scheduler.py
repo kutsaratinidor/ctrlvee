@@ -126,6 +126,7 @@ class Scheduler(commands.Cog):
             embed.add_field(name="Title", value=title, inline=True)
             embed.add_field(name="Scheduled For", value=dt.strftime('%Y-%m-%d %H:%M %Z'), inline=False)
             embed.add_field(name="Duration", value=dur_str, inline=True)
+            embed.add_field(name="Scheduled By", value=ctx.author.mention, inline=True)
             await ctx.send(embed=embed)
         except Exception as e:
             await ctx.send(f"❌ Invalid date/time format. Use: {format_cmd_inline('schedule <number> <YYYY-MM-DD> <HH:MM>')}")
@@ -146,9 +147,10 @@ class Scheduler(commands.Cog):
                 dur_str = MediaUtils.format_time(duration)
             else:
                 dur_str = "Unknown"
+            scheduled_by = f"<@{s['user']}>" if s.get('user') else "Unknown"
             embed.add_field(
                 name=f"#{s['number']} — {s.get('title', 'Unknown')}",
-                value=f"Scheduled for {dt_str}\nDuration: {dur_str}",
+                value=f"Scheduled for {dt_str}\nDuration: {dur_str}\nScheduled by: {scheduled_by}",
                 inline=False
             )
         await ctx.send(embed=embed)

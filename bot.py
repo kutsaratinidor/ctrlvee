@@ -5,9 +5,12 @@ import logging
 import threading
 import re
 import time
+from datetime import datetime, timezone
+from typing import Optional
 from src.config import Config
 from discord.ext import commands
 import discord
+from discord import app_commands
 
 # Get logger for this module
 logger = logging.getLogger(__name__)
@@ -53,10 +56,11 @@ Config.print_config()
 
 # Bot setup
 intents = discord.Intents.default()
-intents.message_content = True
+intents.message_content = bool(getattr(Config, 'ENABLE_PREFIX_COMMANDS', True))
 intents.voice_states = True  # Needed for voice events
 intents.guilds = True        # Needed for channel resolution
-bot = commands.Bot(command_prefix=Config.DISCORD_COMMAND_PREFIX, intents=intents)
+command_prefix = Config.DISCORD_COMMAND_PREFIX if getattr(Config, 'ENABLE_PREFIX_COMMANDS', True) else commands.when_mentioned
+bot = commands.Bot(command_prefix=command_prefix, intents=intents)
 
 # Initialize services
 from src.services.vlc_controller import VLCController
@@ -64,10 +68,14 @@ from src.services.tmdb_service import TMDBService
 from src.services.watch_folder_service import WatchFolderService
 from src.utils.media_utils import MediaUtils
 from src.services.radarr_service import RadarrService
+from src.services.overseerr_service import OverseerrService, STATUS_LABELS, REQUEST_STATUS_DECLINED, REQUEST_STATUS_FAILED
+from src.services.movie_request_tracker import MovieRequestTracker, RETRYABLE_STATUSES
 
 vlc = VLCController(bot=bot)
 tmdb_service = TMDBService()
 watch_service = WatchFolderService(vlc)
+overseerr_service = OverseerrService()
+movie_request_tracker = MovieRequestTracker(overseerr_service)
 _radarr_services = []
 try:
     # Build Radarr service instances from config (multi or single)
@@ -110,15 +118,178 @@ def _format_bytes(n: int) -> str:
         return "-"
 
 
-def _format_allowed_roles_for_display() -> str:
-    """Format ALLOWED_ROLES for logs/help text, supporting names and IDs."""
+def _format_allowed_roles_for_display(guild=None) -> str:
+    """Format ALLOWED_ROLES for logs/help/denial text.
+
+    Resolves role IDs to their role names in the given guild (falling back to
+    the raw ID when the role isn't present there) and keeps configured role
+    names as-is. Duplicate names — e.g. the same role listed once by name and
+    once by ID — collapse to a single entry.
+    """
     parts = []
+    seen = set()
     for role in Config.ALLOWED_ROLES:
-        if isinstance(role, int):
-            parts.append(f"ID:{role}")
-        else:
-            parts.append(f"'{role}'")
+        display = role if isinstance(role, str) else None
+        if isinstance(role, int) and guild is not None:
+            resolved = guild.get_role(role)
+            if resolved is not None:
+                display = resolved.name
+        if display is None:
+            display = f"ID:{role}"  # unresolved role ID
+        key = display.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        parts.append(display)
     return ", ".join(parts)
+    
+def _get_slash_allowed_channel_ids() -> tuple[list[int], str]:
+    """Return allowed channel IDs for slash commands and their policy source.
+
+    Policy:
+    1. If COMMAND_CHANNEL_ID is set (>0), only that channel is allowed.
+    2. Otherwise, allow only channels in WATCH_ANNOUNCE_CHANNEL_ID.
+    """
+    command_channel_id = int(getattr(Config, 'COMMAND_CHANNEL_ID', 0) or 0)
+    if command_channel_id > 0:
+        return [command_channel_id], "command"
+
+    announce_ids = [cid for cid in Config.get_announce_channel_ids() if int(cid) > 0]
+    return announce_ids, "announce"
+
+
+def _filter_allowed_channel_ids_for_guild(allowed_ids: list[int], guild: discord.Guild) -> list[int]:
+    """Return only allowed channel IDs that belong to the provided guild."""
+    in_guild: list[int] = []
+    for cid in allowed_ids:
+        ch = guild.get_channel(cid)
+        if ch is None:
+            ch = bot.get_channel(cid)
+        if ch is None:
+            continue
+        if getattr(ch, 'guild', None) and ch.guild.id == guild.id:
+            in_guild.append(cid)
+    return in_guild
+
+
+async def _enforce_slash_channel_policy(interaction: discord.Interaction) -> bool:
+    """Enforce configured slash-command channel policy for guild interactions."""
+    # This policy is intended for server channels only.
+    if interaction.guild is None:
+        return True
+
+    # /request commands enforce their own channel restriction against
+    # Config.REQUEST_CHANNEL_ID via _check_request_channel_for_interaction —
+    # skip the global gate entirely for this group so a dedicated request
+    # channel doesn't have to also be COMMAND_CHANNEL_ID.
+    command = interaction.command
+    if command is not None and getattr(command, 'root_parent', None) is request_group:
+        return True
+
+    allowed_ids, source = _get_slash_allowed_channel_ids()
+    if not allowed_ids:
+        msg = (
+            "Slash commands are currently restricted by configuration, but no allowed channels are set. "
+            "Set `COMMAND_CHANNEL_ID` or configure `WATCH_ANNOUNCE_CHANNEL_ID`."
+        )
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except Exception:
+            logger.debug("Failed to send slash channel policy warning", exc_info=True)
+        return False
+
+    allowed_ids_guild = _filter_allowed_channel_ids_for_guild(allowed_ids, interaction.guild)
+    if not allowed_ids_guild:
+        msg = (
+            "Slash commands are restricted, but no allowed command channels are configured for this server. "
+            "Ask the bot owner to configure a channel in this guild."
+        )
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except Exception:
+            logger.debug("Failed to send slash channel policy warning", exc_info=True)
+        logger.info(
+            "Slash channel policy deny (no in-guild channels): guild=%s source=%s configured=%s user=%s",
+            getattr(interaction.guild, 'id', None),
+            source,
+            allowed_ids,
+            getattr(interaction.user, 'id', None),
+        )
+        return False
+
+    current_channel_id = int(interaction.channel_id or 0)
+    if current_channel_id in allowed_ids_guild:
+        logger.debug(
+            "Slash channel policy allow: guild=%s channel=%s source=%s allowed=%s",
+            getattr(interaction.guild, 'id', None),
+            current_channel_id,
+            source,
+            allowed_ids_guild,
+        )
+        return True
+
+    if source == "command" and len(allowed_ids_guild) == 1:
+        msg = (
+            f"Slash commands are restricted to <#{allowed_ids_guild[0]}>. "
+            "Please run this command there."
+        )
+    else:
+        allowed_mentions = ", ".join(f"<#{cid}>" for cid in allowed_ids_guild)
+        msg = (
+            f"Slash commands are restricted to these channels: {allowed_mentions}. "
+            "Please run this command there."
+        )
+
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+    except Exception:
+        logger.debug("Failed to send slash channel policy warning", exc_info=True)
+    logger.info(
+        "Slash channel policy deny: guild=%s channel=%s source=%s allowed=%s user=%s",
+        getattr(interaction.guild, 'id', None),
+        current_channel_id,
+        source,
+        allowed_ids_guild,
+        getattr(interaction.user, 'id', None),
+    )
+    return False
+
+# Global CommandTree check for all slash commands.
+async def global_slash_channel_policy_check(interaction: discord.Interaction) -> bool:
+    return await _enforce_slash_channel_policy(interaction)
+
+
+# Some discord.py versions do not expose CommandTree.check decorator.
+# Assigning interaction_check directly keeps this compatible.
+bot.tree.interaction_check = global_slash_channel_policy_check
+
+
+def _log_slash_channel_policy() -> None:
+    """Log effective slash channel policy at startup for easier troubleshooting."""
+    command_channel_id = int(getattr(Config, 'COMMAND_CHANNEL_ID', 0) or 0)
+    announce_ids = [cid for cid in Config.get_announce_channel_ids() if int(cid) > 0]
+
+    if command_channel_id > 0:
+        logger.info("Slash channel policy: restricted to COMMAND_CHANNEL_ID=%s", command_channel_id)
+        return
+
+    if announce_ids:
+        logger.info("Slash channel policy: restricted to WATCH_ANNOUNCE_CHANNEL_ID=%s", announce_ids)
+        return
+
+    logger.warning(
+        "Slash channel policy: no allowed channels configured. "
+        "Guild slash commands will be blocked until COMMAND_CHANNEL_ID or WATCH_ANNOUNCE_CHANNEL_ID is set."
+    )
 
 
 def _build_privacy_embed() -> discord.Embed:
@@ -151,6 +322,7 @@ def _build_privacy_embed() -> discord.Embed:
         name="What data may be stored",
         value=(
             "• Queue backup and schedule backup files (local bot storage)\n"
+            "• Movie request records (requester user ID/username, kept indefinitely to notify on availability)\n"
             "• Optional playlist autosave output files\n"
             "• Operational logs for troubleshooting"
         ),
@@ -258,11 +430,12 @@ _autosave_stop = threading.Event()
 
 # Import cogs
 from src.cogs.playback import PlaybackCommands
-from src.cogs.playlist import PlaylistCommands
-from src.cogs.scheduler import Scheduler
-from src.cogs.watch import WatchCommands
+from src.cogs.playlist import PlaylistCommands, PlaylistView, SearchResultsView
+from src.cogs.scheduler import Scheduler, PH_TZ
+from src.cogs.watch import WatchCommands, _write_env_watch_folders
 from src.version import __version__
 from changelog_helper import parse_changelog
+from src.config import get_watch_folders_from_env
 
 # -------- Voice connection management --------
 # Reconnect guard variables (configurable)
@@ -288,6 +461,38 @@ _VOICE_ERROR_CODES = {
 # Serialize voice join attempts to avoid overlapping connects
 _voice_join_lock = asyncio.Lock()
 __last_connect_attempt_ts = 0.0
+
+async def _retry_initial_voice_join():
+    """Keep retrying the startup voice join, up to VOICE_MAX_RECONNECTS times.
+
+    on_voice_state_update only fires when the bot's voice state actually
+    changes (e.g. connected -> disconnected); if join_voice_channel() exhausts
+    its attempts without ever establishing a connection, there's no prior
+    connected state to transition away from, so that event never fires. With
+    ENABLE_VOICE_GUARD off (the default), nothing would otherwise ever retry.
+    This loop's only job is to get the bot into voice at least once — ongoing
+    health monitoring after that remains ENABLE_VOICE_GUARD's opt-in job.
+
+    Bounded (rather than retrying forever) so a persistent underlying issue
+    doesn't repeatedly flash join attempts in the channel indefinitely.
+    """
+    for attempt in range(_MAX_RECONNECTS):
+        if bot.is_closed() or not getattr(Config, 'ENABLE_VOICE_JOIN', False):
+            return
+        ch = await _resolve_voice_channel()
+        if ch and _is_connected_to_channel(ch.guild, ch.id):
+            return
+        try:
+            if await join_voice_channel():
+                return
+        except Exception as e:
+            logger.debug(f"Initial voice join retry failed: {e}")
+        await asyncio.sleep(_VOICE_ERROR_RETRY_DELAY)
+    logger.warning(
+        f"Giving up on initial voice join after {_MAX_RECONNECTS} attempts. "
+        "Restart the bot once the underlying connectivity issue is resolved."
+    )
+
 
 async def _voice_connection_guard():
     """Monitor voice connection and gracefully reconnect on common disconnects.
@@ -519,6 +724,82 @@ async def join_voice_channel() -> bool:
         return False
 
 
+def _format_synced_top_level_commands(commands_list) -> str:
+    """Return a stable comma-separated list of top-level slash command names."""
+    try:
+        names = sorted({c.name for c in commands_list if getattr(c, 'name', None)})
+        return ", ".join(names) if names else "(none)"
+    except Exception:
+        return "(unknown)"
+
+
+async def _sync_app_commands_now() -> tuple[list | None, list | None]:
+    """Sync slash commands and return (global_synced_or_none, guild_synced_or_none)."""
+    guild_id = int(getattr(Config, 'SLASH_COMMAND_GUILD_ID', 0) or 0)
+    global_sync_enabled = bool(getattr(Config, 'SYNC_GLOBAL_COMMANDS', False))
+
+    if guild_id > 0 and global_sync_enabled:
+        logger.warning(
+            "Both SLASH_COMMAND_GUILD_ID and SYNC_GLOBAL_COMMANDS are enabled; "
+            "Discord may show duplicate slash entries in that guild (guild + global)."
+        )
+
+    if guild_id > 0:
+        dev_guild = discord.Object(id=guild_id)
+        bot.tree.copy_global_to(guild=dev_guild)
+        synced_guild = await bot.tree.sync(guild=dev_guild)
+        synced_global = None
+        if global_sync_enabled:
+            synced_global = await bot.tree.sync()
+        return synced_global, synced_guild
+
+    synced_global = await bot.tree.sync()
+    return synced_global, None
+
+
+def _register_app_command_groups() -> None:
+    """Register top-level slash command groups on the command tree."""
+    groups = [
+        system_group,
+        playback_group,
+        playlist_group,
+        queue_group,
+        subtitles_group,
+        audio_group,
+        schedule_group,
+        watch_group,
+        admin_group,
+        request_group,
+    ]
+    for group in groups:
+        try:
+            bot.tree.add_command(group)
+        except app_commands.CommandAlreadyRegistered:
+            # Safe when called after a partial re-registration path.
+            continue
+
+
+async def _purge_global_commands_once() -> tuple[int, int, int | None]:
+    """Clear global command registrations once and resync guild scope.
+
+    Returns:
+        (global_before_count, global_after_count, guild_after_count_or_none)
+    """
+    global_before = await bot.tree.fetch_commands()
+
+    # Push an empty global command set to remove stale global registrations.
+    bot.tree.clear_commands(guild=None)
+    global_after = await bot.tree.sync()
+
+    # Restore local groups for ongoing runtime behavior and future sync operations.
+    _register_app_command_groups()
+
+    _, synced_guild = await _sync_app_commands_now()
+    guild_after_count = len(synced_guild) if synced_guild is not None else None
+
+    return len(global_before), len(global_after), guild_after_count
+
+
 @bot.event
 async def on_voice_state_update(member, before, after):
     """When the bot itself gets disconnected from voice, attempt a controlled reconnect."""
@@ -600,6 +881,27 @@ async def setup_hook():
         await bot.add_cog(Scheduler(bot, vlc))
         await bot.add_cog(WatchCommands(bot))
         logger.info("Cogs loaded successfully")
+
+        # Sync slash commands (global or development guild).
+        if getattr(Config, 'ENABLE_SLASH_COMMANDS', True):
+            synced_global, synced_guild = await _sync_app_commands_now()
+            if synced_guild is not None:
+                logger.info(
+                    "Slash commands synced to guild %s: %s command(s) [%s]",
+                    int(getattr(Config, 'SLASH_COMMAND_GUILD_ID', 0) or 0),
+                    len(synced_guild),
+                    _format_synced_top_level_commands(synced_guild),
+                )
+            if synced_global is not None:
+                logger.info(
+                    "Slash commands synced globally: %s command(s) [%s]",
+                    len(synced_global),
+                    _format_synced_top_level_commands(synced_global),
+                )
+            elif synced_guild is not None:
+                logger.info("Slash global sync skipped (SYNC_GLOBAL_COMMANDS=false with dev guild mode)")
+        else:
+            logger.info("Slash command sync skipped (ENABLE_SLASH_COMMANDS=false)")
     except Exception as e:
         logger.error(f"Error loading cogs: {e}")
         sys.exit(1)
@@ -607,6 +909,7 @@ async def setup_hook():
 @bot.event
 async def on_ready():
     """Called when the bot is ready."""
+    _log_slash_channel_policy()
     # Log voice join/reconnect configuration to confirm loaded values
     try:
         logger.info(
@@ -631,14 +934,32 @@ async def on_ready():
     except Exception:
         pass
     async def send_startup_announcement():
+        global _startup_announced
+        if _startup_announced:
+            return
         announce_ids = Config.get_announce_channel_ids()
         if not announce_ids:
             return
+
+        prefix_enabled = bool(getattr(Config, 'ENABLE_PREFIX_COMMANDS', True))
+        slash_enabled = bool(getattr(Config, 'ENABLE_SLASH_COMMANDS', False))
+
+        if prefix_enabled and slash_enabled:
+            command_mode_line = "Command mode: Prefix + Slash"
+            command_hint_line = f"Prefix: `{Config.DISCORD_COMMAND_PREFIX}` • Try `{Config.DISCORD_COMMAND_PREFIX}controls` or `/system help`"
+        elif prefix_enabled:
+            command_mode_line = "Command mode: Prefix"
+            command_hint_line = f"Prefix: `{Config.DISCORD_COMMAND_PREFIX}` • Try `{Config.DISCORD_COMMAND_PREFIX}controls`"
+        else:
+            command_mode_line = "Command mode: Slash"
+            command_hint_line = "Try `/system help`"
+
         embed = discord.Embed(
             title="🤖 CtrlVee Bot is Online!",
             description=(
                 f"Version: {__version__}\n"
-                f"Command prefix: `{Config.DISCORD_COMMAND_PREFIX}`\n"
+                f"{command_mode_line}\n"
+                f"{command_hint_line}\n"
                 "Ready to receive commands."
             ),
             color=discord.Color.green()
@@ -691,11 +1012,7 @@ async def on_ready():
                 logger.warning(f"Failed to send startup message to channel {cid}: {e}")
 
         # Mark startup announcement complete
-        try:
-            global _startup_announced
-            _startup_announced = True
-        except Exception:
-            pass
+        _startup_announced = True
 
     # If initial enqueue on start is enabled, delay the announcement until after initial scan completes
     if Config.WATCH_ENQUEUE_ON_START and watch_service:
@@ -1141,6 +1458,57 @@ async def on_ready():
                                 description=f"**{title_text}** has been added to the library.",
                                 color=discord.Color.purple()
                             )
+                    # Map each announced path to its playlist position (1-based leaf order,
+                    # matching play_num / /playback play-item) so users can play right away.
+                    pos_map = {}
+                    try:
+                        playlist = vlc.get_playlist()
+                        if playlist is not None:
+                            for idx, leaf in enumerate(playlist.findall('.//leaf'), 1):
+                                p = vlc._uri_to_path(leaf.get('uri'))
+                                if p:
+                                    pos_map[os.path.normpath(p)] = idx
+                    except Exception as e:
+                        logger.debug(f"Could not map playlist positions for announcement: {e}")
+
+                    if final_embed and pos_map:
+                        try:
+                            # Command hint matches whichever command mode is active.
+                            prefix = Config.DISCORD_COMMAND_PREFIX
+                            if Config.ENABLE_PREFIX_COMMANDS:
+                                play_cmd = f"{prefix}play_num {{n}}"
+                            else:
+                                play_cmd = "/playback play-item {n}"
+                            if len(paths) == 1:
+                                num = pos_map.get(os.path.normpath(paths[0]))
+                                if num:
+                                    final_embed.add_field(
+                                        name="Playback",
+                                        value=f"**#{num}** in the playlist — run `{play_cmd.format(n=num)}` to play it",
+                                        inline=False,
+                                    )
+                            else:
+                                lines = []
+                                for p in paths[:max_items]:
+                                    num = pos_map.get(os.path.normpath(p))
+                                    if num:
+                                        pretty = MediaUtils.clean_filename_for_display(os.path.basename(p), max_length=60)
+                                        lines.append(f"`#{num}` {pretty}")
+                                remaining = len(paths) - max_items
+                                if remaining > 0:
+                                    lines.append(f"… and {remaining} more (see `/playlist list`)")
+                                if lines:
+                                    final_embed.add_field(
+                                        name="Playlist Positions",
+                                        value="\n".join(lines),
+                                        inline=False,
+                                    )
+                                    final_embed.set_footer(
+                                        text=f"Run `{play_cmd.format(n='<number>')}` to play a specific one"
+                                    )
+                        except Exception as e:
+                            logger.debug(f"Could not add playlist numbers to announcement: {e}")
+
                     # Send the announcement to all configured channels
                     if not (len(paths) == 1 and 'suppress_single_tv' in locals() and suppress_single_tv):
                         for ch in channels:
@@ -1178,6 +1546,57 @@ async def on_ready():
             logger.info("WatchFolderService started")
         else:
             logger.info("WatchFolderService not started (disabled or already running)")
+
+        def movie_request_notifier(record: dict) -> None:
+            async def _send_availability_announcement():
+                channel_id = Config.REQUEST_ANNOUNCE_CHANNEL_ID or Config.REQUEST_CHANNEL_ID
+                if not channel_id:
+                    return
+                channel = bot.get_channel(channel_id)
+                if channel is None:
+                    try:
+                        channel = await bot.fetch_channel(channel_id)
+                    except Exception as e:
+                        logger.error(f"Failed to fetch movie request announce channel {channel_id}: {e}")
+                        return
+                embed = discord.Embed(
+                    title="🎬 Now Available",
+                    description=f"**{record.get('title')}**" + (f" ({record.get('year')})" if record.get('year') else "") + " is now available to watch.",
+                    color=discord.Color.green(),
+                )
+                if record.get('overview'):
+                    embed.add_field(name="Overview", value=record['overview'][:1024], inline=False)
+                if record.get('poster_path'):
+                    embed.set_thumbnail(url=f"https://image.tmdb.org/t/p/w500{record['poster_path']}")
+                try:
+                    await channel.send(
+                        content=f"<@{record.get('requested_by_id')}> your requested movie is now available!",
+                        embed=embed,
+                    )
+                except discord.Forbidden:
+                    logger.warning(f"Missing permission to send movie request announcement in channel {channel_id}.")
+                except Exception as e:
+                    logger.error(f"Failed to send movie request announcement: {e}")
+
+            try:
+                future = asyncio.run_coroutine_threadsafe(_send_availability_announcement(), bot.loop)
+
+                def _log_result(fut):
+                    try:
+                        fut.result()
+                    except Exception as e:
+                        logger.error(f"Movie request announcement task failed: {e}", exc_info=True)
+
+                future.add_done_callback(_log_result)
+            except Exception as e:
+                logger.error(f"Failed to schedule movie request announcement: {e}", exc_info=True)
+
+        movie_request_tracker.set_notifier(movie_request_notifier)
+        request_tracker_started = movie_request_tracker.start()
+        if request_tracker_started:
+            logger.info("MovieRequestTracker started")
+        else:
+            logger.info("MovieRequestTracker not started (no REQUEST_STORE_FILE configured)")
 
         # Start autosave thread if configured
         if Config.PLAYLIST_AUTOSAVE_FILE:
@@ -1255,7 +1674,12 @@ async def on_ready():
                 _autosave_thread.start()
 
         # Join voice channel after all startup tasks are done
-        await join_voice_channel()
+        joined = await join_voice_channel()
+        if not joined and getattr(Config, 'ENABLE_VOICE_JOIN', False):
+            # Don't permanently give up if the initial join failed — see
+            # _retry_initial_voice_join's docstring for why the event-driven
+            # reconnect handler can't recover this on its own.
+            bot.loop.create_task(_retry_initial_voice_join())
         # Start voice connection guard if enabled
         try:
             if getattr(Config, 'ENABLE_VOICE_GUARD', False):
@@ -1290,6 +1714,9 @@ class CommandChannelContext(commands.Context):
 
 @bot.event
 async def on_message(message):
+    if not getattr(Config, 'ENABLE_PREFIX_COMMANDS', True):
+        return
+
     if message.author == bot.user:
         return
     
@@ -1314,7 +1741,7 @@ async def on_command_error(ctx, error):
     cmd_name = getattr(getattr(ctx, 'command', None), 'name', None)
 
     if isinstance(error, commands.MissingAnyRole):
-        allowed_roles = _format_allowed_roles_for_display()
+        allowed_roles = _format_allowed_roles_for_display(getattr(ctx, 'guild', None))
         logger.warning(f"Role check failed: required roles (any of): {allowed_roles}")
         await ctx.send(f"You need one of these roles to use this command: {allowed_roles}")
     elif isinstance(error, commands.CommandNotFound):
@@ -1440,7 +1867,7 @@ Examples: `{prefix}radarr_recent` (all instances, 7 days), `{prefix}radarr_recen
             embed.add_field(name="🎬 Radarr Integration", value=radarr_commands, inline=False)
 
         # Add footer note about permissions
-        roles_str = _format_allowed_roles_for_display()
+        roles_str = _format_allowed_roles_for_display(getattr(ctx, 'guild', None))
         footer_text = f"⚠️ Most commands require one of these roles: {roles_str}"
         embed.set_footer(text=footer_text)
 
@@ -1508,6 +1935,29 @@ async def privacy(ctx):
         logger.error(f"privacy command error: {e}")
         await ctx.send(f"Error showing privacy statement: {e}")
 
+def _build_changelog_embeds(entries: list) -> list:
+    """Build one embed per changelog version entry.
+
+    Field values are clipped to Discord's 1024-char field cap via
+    `_clip_field_lines` — changelog bullets (e.g. voice-room-rules entries)
+    can individually run past 600 chars, so even 5 items can overflow.
+    """
+    embeds = []
+    for entry in entries:
+        embed = discord.Embed(
+            title=f"v{entry['version']}",
+            description=f"Released: {entry['date']}",
+            color=discord.Color.blurple()
+        )
+        for section in ['Changed', 'Added', 'Fixed']:
+            items = entry['sections'].get(section)
+            if items:
+                lines = [f"• {item}" for item in items]
+                embed.add_field(name=section, value=_clip_field_lines(lines), inline=False)
+        embeds.append(embed)
+    return embeds
+
+
 @bot.command(name="changelog", aliases=['changes', 'whatsnew'])
 async def changelog(ctx):
     """Show recent changelog entries (latest 2 versions)."""
@@ -1516,26 +1966,10 @@ async def changelog(ctx):
         if not entries:
             await ctx.send("Changelog could not be loaded.")
             return
-        
-        # Build and send embeds for each version
-        for entry in entries:
-            embed = discord.Embed(
-                title=f"v{entry['version']}",
-                description=f"Released: {entry['date']}",
-                color=discord.Color.blurple()
-            )
-            
-            # Add sections in preferred order
-            for section in ['Changed', 'Added', 'Fixed']:
-                if section in entry['sections'] and entry['sections'][section]:
-                    items = entry['sections'][section][:5]  # Limit to 5 items per section
-                    value = '\n'.join([f"• {item}" for item in items])
-                    if len(entry['sections'][section]) > 5:
-                        value += f"\n• ... and {len(entry['sections'][section]) - 5} more"
-                    embed.add_field(name=section, value=value, inline=False)
-            
+
+        for embed in _build_changelog_embeds(entries):
             await ctx.send(embed=embed)
-    
+
     except Exception as e:
         logger.error(f"changelog command error: {e}")
         await ctx.send(f"Error loading changelog: {e}")
@@ -1687,6 +2121,2007 @@ async def list_guilds(ctx):
     except Exception as e:
         logger.error(f"list_guilds command error: {e}")
         await ctx.send(f"Error listing servers: {e}")
+
+
+@bot.command(name="syncslash", aliases=["sync_slash", "slashsync"])
+@commands.is_owner()
+async def syncslash(ctx):
+    """Owner-only: force resync slash commands and print registered top-level names."""
+    if not getattr(Config, 'ENABLE_SLASH_COMMANDS', True):
+        await ctx.send("Slash commands are disabled (`ENABLE_SLASH_COMMANDS=false`).")
+        return
+
+    try:
+        synced_global, synced_guild = await _sync_app_commands_now()
+        lines = []
+        if synced_guild is not None:
+            guild_id = int(getattr(Config, 'SLASH_COMMAND_GUILD_ID', 0) or 0)
+            lines.insert(
+                0,
+                f"Guild sync ({guild_id}): {len(synced_guild)} command(s) -> {_format_synced_top_level_commands(synced_guild)}",
+            )
+        if synced_global is not None:
+            lines.append(
+                f"Global sync: {len(synced_global)} command(s) -> {_format_synced_top_level_commands(synced_global)}"
+            )
+        elif synced_guild is not None:
+            lines.append("Global sync skipped (SYNC_GLOBAL_COMMANDS=false).")
+        await ctx.send("\n".join(lines))
+    except Exception as e:
+        logger.error(f"syncslash command error: {e}")
+        await ctx.send(f"Slash sync failed: {type(e).__name__}: {e}")
+
+
+@bot.command(name="clearglobalslash", aliases=["clear_global_slash", "purgeglobalslash"])
+@commands.is_owner()
+async def clearglobalslash(ctx):
+    """Owner-only: one-time purge of global slash registrations in dev-guild mode."""
+    if not getattr(Config, 'ENABLE_SLASH_COMMANDS', True):
+        await ctx.send("Slash commands are disabled (`ENABLE_SLASH_COMMANDS=false`).")
+        return
+
+    guild_id = int(getattr(Config, 'SLASH_COMMAND_GUILD_ID', 0) or 0)
+    if guild_id <= 0:
+        await ctx.send("Set `SLASH_COMMAND_GUILD_ID` to your dev server first (must be > 0).")
+        return
+
+    if bool(getattr(Config, 'SYNC_GLOBAL_COMMANDS', False)):
+        await ctx.send("Set `SYNC_GLOBAL_COMMANDS=false` first, then rerun this command.")
+        return
+
+    try:
+        before_count, after_count, guild_after_count = await _purge_global_commands_once()
+        lines = [
+            f"Global slash commands before purge: {before_count}",
+            f"Global slash commands after purge: {after_count}",
+        ]
+        if guild_after_count is not None:
+            lines.append(f"Guild slash commands resynced: {guild_after_count}")
+        lines.append("If duplicates still appear, restart Discord once more to refresh local cache.")
+        await ctx.send("\n".join(lines))
+    except Exception as e:
+        logger.error(f"clearglobalslash command error: {e}")
+        await ctx.send(f"Global slash cleanup failed: {type(e).__name__}: {e}")
+
+
+system_group = app_commands.Group(name="system", description="CtrlVee system and information commands")
+playback_group = app_commands.Group(name="playback", description="CtrlVee playback controls")
+playlist_group = app_commands.Group(name="playlist", description="CtrlVee playlist browsing and search")
+queue_group = app_commands.Group(name="queue", description="CtrlVee queue management")
+subtitles_group = app_commands.Group(name="subtitles", description="CtrlVee subtitle track controls")
+audio_group = app_commands.Group(name="audio", description="CtrlVee audio track controls")
+schedule_group = app_commands.Group(name="schedule", description="CtrlVee scheduled playback")
+watch_group = app_commands.Group(name="watch", description="CtrlVee watch folder management")
+admin_group = app_commands.Group(name="admin", description="CtrlVee owner administration")
+request_group = app_commands.Group(name="request", description="CtrlVee media requests")
+
+
+async def _reply(interaction: discord.Interaction, *args, **kwargs) -> None:
+    """Send an interaction reply via response or followup, whichever is still open.
+
+    Needed because the schedule-proximity confirmation defers the response while
+    it waits on Continue/Cancel, so the eventual result must go through followup.
+    """
+    if interaction.response.is_done():
+        await interaction.followup.send(*args, **kwargs)
+    else:
+        await interaction.response.send_message(*args, **kwargs)
+
+
+async def _confirm_nearby_schedule_for_interaction(playback_cog, interaction: discord.Interaction) -> bool:
+    """Defer the interaction if a schedule-proximity prompt is needed, then gate on it."""
+    if playback_cog._nearby_schedule_notice(interaction.user):
+        await interaction.response.defer()
+    return await playback_cog._confirm_nearby_schedule(interaction.channel, interaction.user)
+
+
+async def _check_allowed_roles_for_interaction(interaction: discord.Interaction) -> bool:
+    """Return True when the caller has one of ALLOWED_ROLES in guild context."""
+    # Role-gated slash commands are guild-only in this migration slice.
+    if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        return False
+
+    member: discord.Member = interaction.user
+    allowed = Config.ALLOWED_ROLES
+    if not allowed:
+        await interaction.response.send_message("Command permissions are not configured.", ephemeral=True)
+        return False
+
+    member_role_ids = {r.id for r in member.roles}
+    member_role_names = {r.name.lower() for r in member.roles}
+
+    for role in allowed:
+        if isinstance(role, int) and role in member_role_ids:
+            return True
+        if isinstance(role, str) and role.lower() in member_role_names:
+            return True
+
+    await interaction.response.send_message(
+        f"You need one of these roles to use this command: {_format_allowed_roles_for_display(interaction.guild)}",
+        ephemeral=True,
+    )
+    return False
+
+
+async def _log_no_results_search(
+    interaction: discord.Interaction, command_name: str, query: str, message: Optional[discord.Message] = None
+) -> None:
+    """Log a search that returned no results: the command, query, requester, and guild.
+
+    Posts to SEARCH_LOG_CHANNEL_ID when configured (falling back to the terminal if
+    that send fails), otherwise logs to the terminal directly.
+    """
+    guild_text = f"{interaction.guild.name} ({interaction.guild.id})" if interaction.guild else "DM"
+    user_text = f"{interaction.user} ({interaction.user.id})"
+    channel_text = f"#{interaction.channel}" if interaction.channel else str(interaction.channel_id)
+    message_link = message.jump_url if message else None
+
+    if Config.SEARCH_LOG_CHANNEL_ID:
+        try:
+            channel = bot.get_channel(Config.SEARCH_LOG_CHANNEL_ID) or await bot.fetch_channel(Config.SEARCH_LOG_CHANNEL_ID)
+            embed = discord.Embed(
+                title="Search returned no results",
+                description=f"`{command_name}` — **{query}**",
+                color=discord.Color.orange(),
+            )
+            embed.add_field(name="User", value=user_text, inline=True)
+            embed.add_field(name="Guild", value=guild_text, inline=True)
+            embed.add_field(name="Channel", value=channel_text, inline=True)
+            if message_link:
+                embed.add_field(name="Message", value=f"[Jump]({message_link})", inline=False)
+            await channel.send(embed=embed)
+            return
+        except Exception as e:
+            logger.warning(f"Failed to log no-results search to SEARCH_LOG_CHANNEL_ID={Config.SEARCH_LOG_CHANNEL_ID}: {e}")
+
+    logger.info(
+        f"No results: command={command_name} query={query!r} user={user_text} guild={guild_text} channel={channel_text}"
+        + (f" message={message_link}" if message_link else "")
+    )
+
+
+async def _check_request_channel_for_interaction(interaction: discord.Interaction) -> bool:
+    """Return True when movie requests are configured and used in the right channel."""
+    if not Config.REQUEST_CHANNEL_ID or not overseerr_service.is_configured():
+        await interaction.response.send_message(
+            "Movie requests are not configured on this bot.", ephemeral=True
+        )
+        return False
+    if interaction.channel_id != Config.REQUEST_CHANNEL_ID:
+        await interaction.response.send_message(
+            f"Please use this command in <#{Config.REQUEST_CHANNEL_ID}>.", ephemeral=True
+        )
+        return False
+    return True
+
+
+def _build_movie_request_embed(candidate: dict, *, title_prefix: str = "", description: Optional[str] = None) -> discord.Embed:
+    year_text = f" ({candidate['year']})" if candidate.get('year') else ""
+    embed = discord.Embed(
+        title=f"{title_prefix}{candidate['title']}{year_text}",
+        description=description if description is not None else (candidate.get('overview') or "No overview available."),
+        color=discord.Color.purple(),
+    )
+    if candidate.get('poster_path'):
+        embed.set_thumbnail(url=f"https://image.tmdb.org/t/p/w500{candidate['poster_path']}")
+    return embed
+
+
+class MovieRequestSelect(discord.ui.Select):
+    def __init__(self, candidates: list[dict], requester: discord.abc.User):
+        self.candidates_by_value = {str(c['tmdb_id']): c for c in candidates}
+        self.requester = requester
+        options = [
+            discord.SelectOption(
+                label=f"{c['title']} ({c['year']})" if c.get('year') else c['title'],
+                value=str(c['tmdb_id']),
+                description=(c.get('overview') or "")[:100] or None,
+            )
+            for c in candidates
+        ]
+        super().__init__(placeholder="Select the correct movie...", options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.requester.id:
+            await interaction.response.send_message("Only the person who ran this command can pick a result.", ephemeral=True)
+            return
+
+        candidate = self.candidates_by_value[self.values[0]]
+
+        existing = movie_request_tracker.find_request_by_tmdb_id(candidate['tmdb_id'])
+        if existing and existing.get("status") not in RETRYABLE_STATUSES:
+            label = STATUS_LABELS[5] if existing.get("status") == "available" else existing.get("status", "pending").title()
+            duplicate_embed = _build_movie_request_embed(
+                candidate, title_prefix="ℹ️ Already requested: ",
+                description=f"Requested by {existing.get('requested_by_name', 'someone')} — status: {label}. Use `/request status` for the latest.\n\n{candidate.get('overview') or ''}",
+            )
+            await interaction.response.edit_message(embed=duplicate_embed, view=None)
+            self.view.stop()
+            return
+
+        submitting_embed = _build_movie_request_embed(candidate, title_prefix="Submitting request: ")
+        await interaction.response.edit_message(embed=submitting_embed, view=None)
+
+        result = await overseerr_service.request_movie(candidate['tmdb_id'])
+        if result.get("success"):
+            movie_request_tracker.add_request({
+                "tmdb_id": candidate['tmdb_id'],
+                "title": candidate['title'],
+                "year": candidate.get('year'),
+                "overview": candidate.get('overview') or "",
+                "poster_path": candidate.get('poster_path'),
+                "overseerr_request_id": result.get("request_id"),
+                "overseerr_media_id": result.get("media_id"),
+                "requested_by_id": self.requester.id,
+                "requested_by_name": str(self.requester),
+                "requested_at": datetime.now(timezone.utc).isoformat(),
+                "status": "pending",
+                "notified_at": None,
+            })
+            confirmed_embed = _build_movie_request_embed(
+                candidate, title_prefix="✅ Requested: ",
+                description=f"Requested by {self.requester.mention}. You'll be notified here once it's available.\n\n{candidate.get('overview') or ''}",
+            )
+            await interaction.edit_original_response(embed=confirmed_embed)
+        else:
+            failed_embed = _build_movie_request_embed(
+                candidate, title_prefix="❌ Request failed: ",
+                description=result.get("error", "Unknown error"),
+            )
+            await interaction.edit_original_response(embed=failed_embed)
+
+        self.view.stop()
+
+
+class MovieRequestSelectView(discord.ui.View):
+    def __init__(self, candidates: list[dict], requester: discord.abc.User):
+        super().__init__(timeout=60)
+        self.message: Optional[discord.Message] = None
+        self.requester = requester
+        self.add_item(MovieRequestSelect(candidates, requester))
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.requester.id:
+            await interaction.response.send_message("Only the person who ran this command can cancel it.", ephemeral=True)
+            return
+        # Discord can't turn a public message ephemeral after the fact, so instead of
+        # leaving "Request cancelled." visible to everyone, remove the public message
+        # entirely and privately ack only the person who cancelled.
+        await interaction.response.send_message("Request cancelled.", ephemeral=True)
+        try:
+            await interaction.message.delete()
+        except Exception:
+            pass
+        self.stop()
+
+    async def on_timeout(self) -> None:
+        if self.message is None:
+            return
+        try:
+            await self.message.delete()
+        except Exception:
+            pass
+
+
+def _build_system_help_embed() -> discord.Embed:
+    prefix = Config.DISCORD_COMMAND_PREFIX
+    embed = discord.Embed(
+        title="CtrlVee Slash Commands",
+        description="V2 migration in progress. Use these slash commands now. Run `/help` to see this list anytime.",
+        color=discord.Color.blue(),
+    )
+    embed.add_field(
+        name="Available /system commands",
+        value=(
+            "• `/system help`\n"
+            "• `/system version`\n"
+            "• `/system privacy`\n"
+            "• `/system changelog`\n"
+            "• `/system sync` (owner only)\n"
+            "• `/system clear-global-slash` (owner only)"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Available /playback commands",
+        value=(
+            "• `/playback play`\n"
+            "• `/playback pause`\n"
+            "• `/playback stop`\n"
+            "• `/playback restart`\n"
+            "• `/playback rewind`\n"
+            "• `/playback forward`\n"
+            "• `/playback next`\n"
+            "• `/playback previous`\n"
+            "• `/playback play-item`\n"
+            "• `/playback status`\n"
+            "• `/playback speed`\n"
+            "• `/playback shuffle`"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Available /playlist commands",
+        value=(
+            "• `/playlist list`\n"
+            "• `/playlist search`\n"
+            "• `/playlist play-search`\n"
+            "• `/playlist radarr-recent`"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Available /queue commands",
+        value=(
+            "• `/queue add-next`\n"
+            "• `/queue status`\n"
+            "• `/queue clear`\n"
+            "• `/queue remove`"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Available /subtitles commands",
+        value=(
+            "• `/subtitles list`\n"
+            "• `/subtitles set`\n"
+            "• `/subtitles next`\n"
+            "• `/subtitles previous`"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Available /audio commands",
+        value=(
+            "• `/audio list`\n"
+            "• `/audio set`"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Available /schedule commands",
+        value=(
+            "• `/schedule add`\n"
+            "• `/schedule list`\n"
+            "• `/schedule remove`"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Available /watch commands",
+        value="• `/watch add`",
+        inline=False,
+    )
+    embed.add_field(
+        name="Available /request commands",
+        value=(
+            "• `/request movie`\n"
+            "• `/request status`\n"
+            "• `/request clear`"
+        ),
+        inline=False,
+    )
+    if getattr(Config, 'ENABLE_PREFIX_COMMANDS', True):
+        embed.add_field(
+            name="Prefix mode",
+            value=f"Prefix commands are still enabled during migration (prefix: `{prefix}`).",
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="Prefix mode",
+            value="Prefix commands are disabled. Message Content Intent is not required.",
+            inline=False,
+        )
+    return embed
+
+
+@system_group.command(name="help", description="Show available CtrlVee slash system commands")
+async def system_help(interaction: discord.Interaction):
+    await interaction.response.send_message(embed=_build_system_help_embed())
+
+
+@bot.tree.command(name="help", description="Show available CtrlVee commands")
+async def root_help(interaction: discord.Interaction):
+    await interaction.response.send_message(embed=_build_system_help_embed())
+
+
+@system_group.command(name="version", description="Show CtrlVee version and configuration summary")
+async def system_version(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="CtrlVee Version",
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="Version", value=__version__, inline=True)
+    embed.add_field(name="Items Per Page", value=str(Config.ITEMS_PER_PAGE), inline=True)
+    embed.add_field(name="TMDB", value=("Configured" if Config.TMDB_API_KEY else "Not Configured"), inline=True)
+    if getattr(Config, 'PRIVACY_POLICY_URL', '').strip():
+        embed.add_field(name="Privacy Policy", value=f"<{Config.PRIVACY_POLICY_URL}>", inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@system_group.command(name="privacy", description="Show privacy and data handling statement")
+async def system_privacy(interaction: discord.Interaction):
+    await interaction.response.send_message(embed=_build_privacy_embed(), ephemeral=True)
+
+
+@system_group.command(name="changelog", description="Show recent changelog entries")
+async def system_changelog(interaction: discord.Interaction):
+    entries = parse_changelog(max_versions=2)
+    if not entries:
+        await interaction.response.send_message("Changelog could not be loaded.", ephemeral=True)
+        return
+
+    first = True
+    for embed in _build_changelog_embeds(entries):
+        if first:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            first = False
+        else:
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@playlist_group.command(name="radarr-recent", description="Show recently downloaded movies from Radarr")
+@app_commands.describe(
+    instance="Radarr instance name or 'all'",
+    days="Lookback window in days",
+    limit="Maximum items per instance",
+)
+async def playlist_radarr_recent(
+    interaction: discord.Interaction,
+    instance: str = 'all',
+    days: app_commands.Range[int, 1, 365] = 7,
+    limit: app_commands.Range[int, 1, 25] = 10,
+):
+    if not _radarr_services:
+        await interaction.response.send_message("Radarr is not configured. Please set RADARR_* environment variables.")
+        return
+
+    target = instance.strip().lower() if isinstance(instance, str) else 'all'
+    selected = _radarr_services
+    if target != 'all':
+        selected = [i for i in _radarr_services if i['name'].lower() == target or i['display'].lower() == target]
+        if not selected:
+            names = ", ".join([i['name'] for i in _radarr_services])
+            disp = ", ".join([i['display'] for i in _radarr_services])
+            await interaction.response.send_message(f"Unknown Radarr instance '{instance}'. Try one of: {names} (display: {disp}) or 'all'.")
+            return
+
+    await interaction.response.defer(thinking=True)
+
+    async def fetch_one(item):
+        name = item['display']
+        svc: RadarrService = item['service']
+        try:
+            return name, await svc.get_recent_downloads(days=days, limit=limit)
+        except Exception as e:
+            return name, {"success": False, "error": str(e)}
+
+    results = await asyncio.gather(*(fetch_one(i) for i in selected))
+
+    embed = discord.Embed(
+        title="Recently Added Movies",
+        description=f"Time window: last {days} day(s).",
+        color=discord.Color.purple()
+    )
+
+    any_success = False
+    for display_name, res in results:
+        if res.get("success"):
+            any_success = True
+            movies = res.get("movies", [])
+            if not movies:
+                value = "No recent items found."
+            else:
+                lines = []
+                for m in movies[:limit]:
+                    title = m.get('title') or 'Untitled'
+                    year = m.get('year') or '—'
+                    lines.append(f"• {title} ({year})")
+                value = "\n".join(lines)
+            embed.add_field(name=display_name, value=value, inline=False)
+        else:
+            err = res.get("error", "Unknown error")
+            embed.add_field(name=f"{display_name} (error)", value=f"❌ {err}", inline=False)
+
+    if not any_success:
+        await interaction.followup.send("Could not retrieve recent movies from any Radarr instance.")
+        return
+
+    await interaction.followup.send(embed=embed)
+
+
+@system_group.command(name="sync", description="Owner only: force resync slash commands")
+async def system_sync(interaction: discord.Interaction):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("This command is owner-only.", ephemeral=True)
+        return
+
+    if not getattr(Config, 'ENABLE_SLASH_COMMANDS', True):
+        await interaction.response.send_message(
+            "Slash commands are disabled (`ENABLE_SLASH_COMMANDS=false`).",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        synced_global, synced_guild = await _sync_app_commands_now()
+        lines = []
+        if synced_guild is not None:
+            guild_id = int(getattr(Config, 'SLASH_COMMAND_GUILD_ID', 0) or 0)
+            lines.insert(
+                0,
+                f"Guild sync ({guild_id}): {len(synced_guild)} command(s) -> {_format_synced_top_level_commands(synced_guild)}",
+            )
+        if synced_global is not None:
+            lines.append(
+                f"Global sync: {len(synced_global)} command(s) -> {_format_synced_top_level_commands(synced_global)}"
+            )
+        elif synced_guild is not None:
+            lines.append("Global sync skipped (SYNC_GLOBAL_COMMANDS=false).")
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
+    except Exception as e:
+        logger.error(f"/system sync command error: {e}")
+        await interaction.followup.send(f"Slash sync failed: {type(e).__name__}: {e}", ephemeral=True)
+
+
+@system_group.command(name="clear-global-slash", description="Owner only: one-time purge of global slash registrations")
+async def system_clear_global_slash(interaction: discord.Interaction):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("This command is owner-only.", ephemeral=True)
+        return
+
+    if not getattr(Config, 'ENABLE_SLASH_COMMANDS', True):
+        await interaction.response.send_message(
+            "Slash commands are disabled (`ENABLE_SLASH_COMMANDS=false`).",
+            ephemeral=True,
+        )
+        return
+
+    guild_id = int(getattr(Config, 'SLASH_COMMAND_GUILD_ID', 0) or 0)
+    if guild_id <= 0:
+        await interaction.response.send_message(
+            "Set `SLASH_COMMAND_GUILD_ID` to your dev server first (must be > 0).",
+            ephemeral=True,
+        )
+        return
+
+    if bool(getattr(Config, 'SYNC_GLOBAL_COMMANDS', False)):
+        await interaction.response.send_message(
+            "Set `SYNC_GLOBAL_COMMANDS=false` first, then rerun this command.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        before_count, after_count, guild_after_count = await _purge_global_commands_once()
+        lines = [
+            f"Global slash commands before purge: {before_count}",
+            f"Global slash commands after purge: {after_count}",
+        ]
+        if guild_after_count is not None:
+            lines.append(f"Guild slash commands resynced: {guild_after_count}")
+        lines.append("If duplicates still appear, restart Discord once more to refresh local cache.")
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
+    except Exception as e:
+        logger.error(f"/system clear-global-slash command error: {e}")
+        await interaction.followup.send(f"Global slash cleanup failed: {type(e).__name__}: {e}", ephemeral=True)
+
+
+@playback_group.command(name="play", description="Start or resume playback")
+async def playback_play(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    if vlc.play():
+        await interaction.response.send_message("Playback resumed.")
+    else:
+        await interaction.response.send_message("Could not start playback.")
+
+
+@playback_group.command(name="pause", description="Pause playback")
+async def playback_pause(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    if vlc.pause():
+        await interaction.response.send_message("Playback paused.")
+    else:
+        await interaction.response.send_message("Could not pause playback.")
+
+
+@playback_group.command(name="stop", description="Stop playback")
+async def playback_stop(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    if vlc.stop():
+        await interaction.response.send_message("Playback stopped.")
+    else:
+        await interaction.response.send_message("Could not stop playback.")
+
+
+@playback_group.command(name="restart", description="Restart current item from beginning")
+async def playback_restart(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    if vlc.seek("0"):
+        await interaction.response.send_message("Restarted current item.")
+    else:
+        await interaction.response.send_message("Could not restart current item.")
+
+
+@playback_group.command(name="rewind", description="Rewind playback")
+@app_commands.describe(seconds="Number of seconds to rewind")
+async def playback_rewind(interaction: discord.Interaction, seconds: app_commands.Range[int, 1, 3600] = 10):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    if vlc.seek(f"-{seconds}"):
+        await interaction.response.send_message(f"Rewound {seconds} seconds.")
+    else:
+        await interaction.response.send_message("Could not rewind playback.")
+
+
+@playback_group.command(name="forward", description="Fast forward playback")
+@app_commands.describe(seconds="Number of seconds to fast forward")
+async def playback_forward(interaction: discord.Interaction, seconds: app_commands.Range[int, 1, 3600] = 10):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    if vlc.seek(f"+{seconds}"):
+        await interaction.response.send_message(f"Fast forwarded {seconds} seconds.")
+    else:
+        await interaction.response.send_message("Could not fast forward playback.")
+
+
+@playback_group.command(name="next", description="Play next track")
+async def playback_next(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    playback_cog = bot.get_cog("PlaybackCommands")
+    if playback_cog:
+        ok, reason = playback_cog._playback_guard(interaction.user)
+        if not ok:
+            await interaction.response.send_message(reason, ephemeral=True)
+            return
+        if not await _confirm_nearby_schedule_for_interaction(playback_cog, interaction):
+            return
+
+    if vlc.next():
+        await _reply(interaction, "Skipped to next track.")
+    else:
+        await _reply(interaction, "Could not skip to next track.")
+
+
+@playback_group.command(name="previous", description="Play previous track")
+async def playback_previous(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    playback_cog = bot.get_cog("PlaybackCommands")
+    if playback_cog:
+        ok, reason = playback_cog._playback_guard(interaction.user)
+        if not ok:
+            await interaction.response.send_message(reason, ephemeral=True)
+            return
+        if not await _confirm_nearby_schedule_for_interaction(playback_cog, interaction):
+            return
+
+    if vlc.previous():
+        await _reply(interaction, "Jumped to previous track.")
+    else:
+        await _reply(interaction, "Could not jump to previous track.")
+
+
+@playback_group.command(name="play-item", description="Play an item by playlist number")
+@app_commands.describe(number="1-based playlist item number")
+async def playback_play_num(interaction: discord.Interaction, number: app_commands.Range[int, 1, 99999]):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    playback_cog = bot.get_cog("PlaybackCommands")
+    if playback_cog:
+        ok, reason = playback_cog._playback_guard(interaction.user)
+        if not ok:
+            await interaction.response.send_message(reason)
+            return
+        if not await _confirm_nearby_schedule_for_interaction(playback_cog, interaction):
+            return
+
+    playlist = vlc.get_playlist()
+    if not playlist:
+        await _reply(interaction, "Could not access VLC playlist.")
+        return
+
+    items = playlist.findall('.//leaf')
+    if not items:
+        await _reply(interaction, "Playlist is empty.")
+        return
+
+    if number > len(items):
+        await _reply(interaction, f"Invalid playlist number. Playlist has {len(items)} item(s).")
+        return
+
+    item = items[number - 1]
+    item_id = item.get('id')
+    if not item_id or not vlc.play_item(item_id):
+        await _reply(interaction, "Could not start playback for that item.")
+        return
+    if playback_cog:
+        playback_cog._seat_playback_owner(interaction.user, item_id)
+
+    pretty = MediaUtils.clean_filename_for_display(item.get('name', ''), max_length=120)
+    await _reply(interaction, f"Loading item #{number}: {pretty}")
+
+
+@playback_group.command(name="status", description="Show current playback status")
+async def playback_status(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    # This can make one or two blocking VLC HTTP calls (each up to a 5s timeout)
+    # before it has anything to send back — defer so a slow/unresponsive VLC
+    # doesn't blow past Discord's 3s interaction window ("Unknown interaction").
+    await interaction.response.defer(thinking=True)
+
+    playback_cog = bot.get_cog("PlaybackCommands")
+    if playback_cog and hasattr(playback_cog, 'get_status_embed'):
+        try:
+            embed = await playback_cog.get_status_embed()
+            if embed:
+                await interaction.followup.send(embed=embed)
+                return
+        except Exception as e:
+            logger.debug(f"Slash /playback status embed fallback: {e}")
+
+    status = vlc.get_status()
+    if status is None:
+        await interaction.followup.send("Could not read VLC status.")
+        return
+    state = status.find('state').text if status.find('state') is not None else 'unknown'
+    await interaction.followup.send(f"Current VLC state: {state}")
+
+
+async def _run_playlist_cleanup(interaction: discord.Interaction, source: str) -> None:
+    """Shared owner-only playlist cleanup handler for slash commands."""
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("This command is owner-only.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        result = await asyncio.to_thread(vlc.remove_missing_playlist_items)
+        removed = int(result.get('removed', 0))
+        items = result.get('items', []) or []
+        if removed == 0:
+            await interaction.followup.send("Playlist cleanup complete: no missing files detected.", ephemeral=True)
+            return
+
+        max_list = 10
+        listed = items[:max_list]
+        more = removed - len(listed)
+        lines = []
+        for it in listed:
+            nm = it.get('name') or '<unknown>'
+            lines.append(f"• {MediaUtils.clean_filename_for_display(nm)}")
+        if more > 0:
+            lines.append(f"… and {more} more")
+
+        embed = discord.Embed(
+            title="Playlist Cleanup",
+            description=f"Removed {removed} missing file(s) from the playlist:\n\n" + "\n".join(lines),
+            color=discord.Color.orange(),
+        )
+        embed.set_footer(text="Cleanup tool")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as e:
+        logger.error(f"{source} error: {e}")
+        await interaction.followup.send(f"Cleanup failed: {e}", ephemeral=True)
+
+
+def _parse_speed_target(target: str | None) -> float | None:
+    if target is None:
+        return None
+    t = target.strip().lower()
+    if t in ('status', 'show', 'current'):
+        return None
+    if t in ('1.5', '1.5x', '15', 'fast', 'up'):
+        return 1.5
+    if t in ('1', '1.0', 'normal', 'default', 'reset', 'norm'):
+        return 1.0
+    try:
+        return float(t.rstrip('x'))
+    except Exception:
+        return None
+
+
+@playback_group.command(name="speed", description="Show or set playback speed")
+@app_commands.describe(target="Leave blank or use status to show speed; set to 1.5 or normal to change it")
+async def playback_speed(interaction: discord.Interaction, target: str | None = None):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    # Every path below can make a blocking VLC HTTP call (up to a 5s timeout);
+    # defer so a slow/unresponsive VLC doesn't blow past Discord's 3s window.
+    await interaction.response.defer(thinking=True)
+
+    target_text = target.strip().lower() if target is not None else None
+    if target_text is None or target_text in {"status", "show", "current"}:
+        status = vlc.get_status()
+        if status is None:
+            await interaction.followup.send("Could not access VLC status.")
+            return
+
+        rate_elem = status.find('rate')
+        rate_val = None
+        if rate_elem is not None and rate_elem.text:
+            try:
+                rate_val = float(rate_elem.text.strip())
+            except Exception:
+                rate_val = None
+
+        if rate_val is not None:
+            await interaction.followup.send(f"Current playback rate: {rate_val:.2f}x")
+        else:
+            await interaction.followup.send("Current playback rate is unknown.")
+        return
+
+    rate = _parse_speed_target(target)
+    if rate is None:
+        await interaction.followup.send(
+            "Invalid speed. Leave it blank or use status to check, or provide a number like 1.5 or preset normal.",
+        )
+        return
+
+    ok = vlc.set_rate(rate)
+    if ok:
+        if rate == 1.0:
+            await interaction.followup.send("Playback speed reset to normal (1.0x).")
+        else:
+            await interaction.followup.send(f"Playback speed set to {rate}x.")
+    else:
+        await interaction.followup.send(f"Failed to set playback speed to {rate}x.")
+
+
+@playback_group.command(name="shuffle", description="Manage shuffle mode")
+@app_commands.describe(action="Choose on, off, toggle, or status")
+@app_commands.choices(action=[
+    app_commands.Choice(name="status", value="status"),
+    app_commands.Choice(name="toggle", value="toggle"),
+    app_commands.Choice(name="on", value="on"),
+    app_commands.Choice(name="off", value="off"),
+])
+async def playback_shuffle(interaction: discord.Interaction, action: str = "status"):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    current = vlc.get_shuffle_state()
+    if action == "status":
+        await interaction.response.send_message(f"Shuffle is currently {'enabled' if current else 'disabled'}.")
+        return
+
+    if action == "on":
+        if current:
+            await interaction.response.send_message("Shuffle is already enabled.")
+            return
+
+        ok = vlc.toggle_shuffle() is not None
+        if ok and vlc.get_shuffle_state():
+            await interaction.response.send_message("Shuffle enabled.")
+        else:
+            await interaction.response.send_message("Could not enable shuffle.")
+        return
+
+    if action == "off":
+        if not current:
+            await interaction.response.send_message("Shuffle is already disabled.")
+            return
+
+        ok = vlc.toggle_shuffle() is not None
+        if ok and not vlc.get_shuffle_state():
+            await interaction.response.send_message("Shuffle disabled.")
+        else:
+            await interaction.response.send_message("Could not disable shuffle.")
+        return
+
+    if action != "toggle":
+        await interaction.response.send_message("Invalid shuffle action. Use status, toggle, on, or off.")
+        return
+
+    ok = vlc.toggle_shuffle() is not None
+    if not ok:
+        await interaction.response.send_message("Could not toggle shuffle.")
+        return
+
+    new_state = vlc.get_shuffle_state()
+    if new_state == current:
+        await interaction.response.send_message("Shuffle toggle command sent, but state did not change.")
+    else:
+        await interaction.response.send_message(
+            f"Shuffle {'enabled' if new_state else 'disabled'}.",
+        )
+
+
+def _human_size(num: int) -> str:
+    size = float(max(0, int(num)))
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
+        if size < 1024.0:
+            return f"{size:.2f} {unit}"
+        size /= 1024.0
+    return f"{size:.2f} PB"
+
+
+@playlist_group.command(name="list", description="Show playlist with interactive pagination")
+async def playlist_list(interaction: discord.Interaction):
+    items = vlc.get_playlist()
+    leaves = items.findall('.//leaf') if items is not None else []
+    if not leaves:
+        await interaction.response.send_message("Playlist is empty.")
+        return
+
+    view = PlaylistView(leaves, items_per_page=Config.ITEMS_PER_PAGE)
+    embed = view.build_embed()
+    size_bytes = watch_service.get_total_media_size() if watch_service else 0
+    footer = embed.footer.text or ""
+    embed.set_footer(text=f"{footer} | Media Library Size: {_human_size(size_bytes)}")
+    await interaction.response.send_message(embed=embed, view=view)
+
+
+@playlist_group.command(name="search", description="Search for items in playlist")
+@app_commands.describe(query="Search text")
+async def playlist_search(interaction: discord.Interaction, query: str):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    playlist_cog = bot.get_cog("PlaylistCommands")
+    if not playlist_cog or not hasattr(playlist_cog, '_search_items'):
+        await interaction.response.send_message("Playlist search is unavailable right now.")
+        return
+
+    results = playlist_cog._search_items(query)
+    embed = discord.Embed(
+        title="Search Results",
+        description=f"Search query: '{query}'",
+        color=discord.Color.blue(),
+    )
+
+    if not results:
+        embed.add_field(name="No Results", value="No matches found in the playlist", inline=False)
+        await interaction.response.send_message(embed=embed)
+        try:
+            reply = await interaction.original_response()
+        except Exception:
+            reply = None
+        await _log_no_results_search(interaction, "/playlist search", query, message=reply)
+        return
+
+    pages = playlist_cog._build_search_pages(results)
+    first_page = pages[0] if pages else []
+    embed.add_field(
+        name=f"Found {len(results)} matches • Page 1/{max(1, len(pages))}",
+        value="\n".join(first_page) if first_page else "No matches found in the playlist",
+        inline=False,
+    )
+    shown = len(first_page)
+    if shown:
+        embed.set_footer(text=f"Use /playback play-item to play an item • Showing 1-{shown} of {len(results)}")
+    else:
+        embed.set_footer(text="Use /playback play-item to play an item")
+
+    if len(pages) > 1:
+        view = SearchResultsView(query=query, pages=pages, total_matches=len(results))
+        await interaction.response.send_message(embed=embed, view=view)
+    else:
+        await interaction.response.send_message(embed=embed)
+
+
+@playlist_group.command(name="play-search", description="Search and play an item from the playlist")
+@app_commands.describe(query="Search text")
+async def playlist_play_search(interaction: discord.Interaction, query: str):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    playback_cog = bot.get_cog("PlaybackCommands")
+    if playback_cog:
+        ok, reason = playback_cog._playback_guard(interaction.user)
+        if not ok:
+            await interaction.response.send_message(reason)
+            return
+        if not await _confirm_nearby_schedule_for_interaction(playback_cog, interaction):
+            return
+
+    playlist_cog = bot.get_cog("PlaylistCommands")
+    if not playlist_cog or not hasattr(playlist_cog, '_search_items'):
+        await _reply(interaction, "Playlist search is unavailable right now.", ephemeral=True)
+        return
+
+    results = playlist_cog._search_items(query)
+    if not results:
+        await _reply(interaction, "No matches found in playlist.", ephemeral=True)
+        try:
+            reply = await interaction.original_response()
+        except Exception:
+            reply = None
+        await _log_no_results_search(interaction, "/playlist play-search", query, message=reply)
+        return
+
+    if len(results) == 1:
+        playlist_num, item = results[0]
+        item_id = item.get('id')
+        if not item_id or not vlc.play_item(item_id):
+            await _reply(interaction, "Could not play the selected item.", ephemeral=True)
+            return
+        if playback_cog:
+            playback_cog._seat_playback_owner(interaction.user, item_id)
+        pretty = MediaUtils.clean_filename_for_display(item.get('name', ''), max_length=120)
+        await _reply(interaction, f"Loading item #{playlist_num}: {pretty}")
+        if playback_cog and hasattr(playback_cog, '_announce_now_playing'):
+            try:
+                await playback_cog._announce_now_playing('command', item, playlist_num)
+            except Exception as e:
+                logger.debug(f"Slash /playlist play-search announcement fallback: {e}")
+        return
+
+    # Multiple results: show a dropdown picker via PlaySearchView
+    view = playlist_cog.make_play_search_view(interaction.user.id, results)
+    embed = discord.Embed(
+        title="Play Search Results",
+        description=f"**{len(results)} matches** for *{query}* — pick an item to play.",
+        color=discord.Color.blurple(),
+    )
+    shown = results[:playlist_cog.SEARCH_PICKER_CAP]  # must match the dropdown's cap
+    preview_lines = []
+    for playlist_num, item in shown:
+        name = MediaUtils.clean_filename_for_display(item.get('name', ''), max_length=60)
+        preview_lines.append(f"`#{playlist_num}` {name}")
+    embed.add_field(
+        name=f"Top {len(shown)} results",
+        value="\n".join(preview_lines),
+        inline=False,
+    )
+    if len(results) > len(shown):
+        embed.set_footer(text=f"Showing top {len(shown)} of {len(results)} — refine your query for more")
+    else:
+        embed.set_footer(text="Select an item from the dropdown below")
+    await _reply(interaction, embed=embed, view=view)
+    view.message = await interaction.original_response()
+
+
+@queue_group.command(name="add-next", description="Queue a playlist item to play next")
+@app_commands.describe(number="1-based playlist item number")
+async def queue_add_next(interaction: discord.Interaction, number: app_commands.Range[int, 1, 99999]):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    playback_cog = bot.get_cog("PlaybackCommands")
+    if playback_cog:
+        ok, reason = playback_cog._playback_guard(interaction.user)
+        if not ok:
+            await interaction.response.send_message(reason, ephemeral=True)
+            return
+        if not await _confirm_nearby_schedule_for_interaction(playback_cog, interaction):
+            return
+
+    playlist = vlc.get_playlist()
+    if not playlist:
+        await _reply(interaction, "Could not access VLC playlist.")
+        return
+
+    items = playlist.findall('.//leaf')
+    if not items:
+        await _reply(interaction, "Playlist is empty.")
+        return
+
+    if number > len(items):
+        await _reply(interaction, f"Invalid playlist number. Playlist has {len(items)} item(s).")
+        return
+
+    item = items[number - 1]
+    item_id = item.get('id')
+    item_name = item.get('name', 'Unknown')
+    result = vlc.queue_item_next(item_id)
+    if not result.get("success"):
+        await _reply(interaction, f"Error queuing item: {result.get('error', 'Unknown error')}")
+        return
+
+    embed = discord.Embed(title="Item Queued", color=discord.Color.green())
+    embed.add_field(
+        name="Queued Item",
+        value=f"**{item_name}**\nPlaylist position: #{number}",
+        inline=False,
+    )
+    embed.add_field(
+        name="Queue Position",
+        value=f"#{result['queue_order']} of {result.get('total_queued', 1)} in queue",
+        inline=True,
+    )
+    await _reply(interaction, embed=embed)
+
+
+@queue_group.command(name="status", description="Show current queue status")
+async def queue_status(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    queue_state = vlc.get_queue_status()
+    queued_items = queue_state.get("queued_items", {})
+    embed = discord.Embed(
+        title=f"Queue Status ({len(queued_items)} item{'s' if len(queued_items) != 1 else ''})" if queued_items else "Queue Status",
+        color=discord.Color.blue(),
+    )
+
+    if queued_items:
+        playlist = vlc.get_playlist()
+        playlist_map = {}
+        if playlist:
+            for idx, item in enumerate(playlist.findall('.//leaf'), 1):
+                item_id = item.get('id')
+                if item_id:
+                    playlist_map[item_id] = {
+                        'name': item.get('name', 'Unknown'),
+                        'position': idx,
+                    }
+
+        queue_lines = []
+        for item_id, info in queued_items.items():
+            if item_id in playlist_map:
+                name = playlist_map[item_id]['name']
+                pos = playlist_map[item_id]['position']
+                queue_lines.append(f"• **{name}** (playlist #{pos}, queue #{info['queue_order']})")
+            else:
+                name = info.get('item_name', 'Unknown')
+                queue_lines.append(f"• **{name}** (queue #{info['queue_order']})")
+
+        embed.add_field(
+            name="Active Queue Items",
+            value="\n".join(queue_lines[:5]) + ("\n..." if len(queue_lines) > 5 else ""),
+            inline=False,
+        )
+    else:
+        embed.add_field(name="Active Queue Items", value="No items currently queued", inline=False)
+
+    embed.add_field(name="Usage", value="Use /queue add-next to queue a playlist item", inline=False)
+    await interaction.response.send_message(embed=embed)
+
+
+@queue_group.command(name="clear", description="Clear all queue tracking")
+async def queue_clear(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    vlc.clear_queue_tracking()
+    embed = discord.Embed(
+        title="Queue Cleared",
+        description="All queue tracking has been cleared.",
+        color=discord.Color.orange(),
+    )
+    embed.add_field(
+        name="Note",
+        value="This clears tracking data only. Playlist item positions remain unchanged.",
+        inline=False,
+    )
+    await interaction.response.send_message(embed=embed)
+
+
+@queue_group.command(name="remove", description="Remove queued item by queue order or #playlist number")
+@app_commands.describe(ref="Queue order (e.g. 1) or playlist reference (e.g. #10)")
+async def queue_remove(interaction: discord.Interaction, ref: str):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    try:
+        if ref.startswith('#'):
+            num = int(ref[1:])
+            result = vlc.remove_from_queue_by_playlist_number(num)
+        else:
+            num = int(ref)
+            result = vlc.remove_from_queue_by_order(num)
+    except ValueError:
+        await interaction.response.send_message(
+            "Invalid reference. Use a number (queue order) or #<playlist number>.",
+        )
+        return
+
+    if not result.get('success'):
+        await interaction.response.send_message(
+            result.get('error', 'Failed to remove from queue.'),
+        )
+        return
+
+    name = result.get('item_name', 'Unknown')
+    embed = discord.Embed(
+        title="Removed from Queue",
+        description=f"{name} has been removed from the queue.",
+        color=discord.Color.red(),
+    )
+    await interaction.response.send_message(embed=embed)
+
+
+@subtitles_group.command(name="list", description="List subtitle tracks")
+async def subtitles_list(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    tracks = vlc.get_subtitle_tracks()
+    if tracks is None:
+        await interaction.response.send_message("Could not retrieve subtitle tracks from VLC.", ephemeral=True)
+        return
+    if len(tracks) == 0:
+        await interaction.response.send_message("No subtitle tracks reported for current media.", ephemeral=True)
+        return
+
+    playback_cog = bot.get_cog("PlaybackCommands")
+    selected_stream_index = getattr(playback_cog, 'selected_subtitle_stream_index', None) if playback_cog else None
+    if selected_stream_index is not None:
+        for tr in tracks:
+            if tr.get('stream_index') == selected_stream_index:
+                tr['selected'] = True
+                break
+
+    lines = []
+    for i, tr in enumerate(tracks, start=1):
+        mark = "✅" if tr.get('selected') else "⚪"
+        ui_idx = tr.get('index') or i
+        name = tr.get('name') or f"Track {ui_idx}"
+        lines.append(f"{mark} **{ui_idx}.** {name}")
+
+    embed = discord.Embed(
+        title="Subtitle Tracks",
+        description="\n".join(lines[:20]) + ("\n..." if len(lines) > 20 else ""),
+        color=discord.Color.blue(),
+    )
+    selected_track = next((tr for tr in tracks if tr.get('selected')), None)
+    if selected_track:
+        cur_idx = selected_track.get('index') or selected_track.get('id')
+        cur_name = selected_track.get('name') or f"Track {cur_idx}"
+        embed.add_field(name="Current", value=f"✅ {cur_name} ({cur_idx})", inline=True)
+    else:
+        embed.add_field(name="Current", value="⚪ Off", inline=True)
+    embed.add_field(name="Usage", value="Use /subtitles set <number|off>", inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@subtitles_group.command(name="set", description="Select subtitle track by position, or off")
+@app_commands.describe(track="Subtitle position from /subtitles list, or 'off'")
+async def subtitles_set(interaction: discord.Interaction, track: str):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    tracks = vlc.get_subtitle_tracks() or []
+    playback_cog = bot.get_cog("PlaybackCommands")
+
+    if track.lower() in {"off", "none", "disable", "disabled"}:
+        ok = vlc.set_subtitle_track(-1) or vlc.set_subtitle_track(0)
+        if not ok:
+            await interaction.response.send_message("Failed to disable subtitles.", ephemeral=True)
+            return
+        if playback_cog:
+            setattr(playback_cog, 'selected_subtitle_stream_index', None)
+        await interaction.response.send_message("Subtitles disabled.", ephemeral=True)
+        return
+
+    try:
+        pos_index = int(track)
+    except Exception:
+        await interaction.response.send_message("Please provide a number or 'off'.", ephemeral=True)
+        return
+
+    if pos_index < 1 or pos_index > len(tracks):
+        await interaction.response.send_message(
+            f"Position out of range. There are {len(tracks)} subtitle tracks.",
+            ephemeral=True,
+        )
+        return
+
+    tid = None
+    stream_idx = None
+    selected_track = None
+    for tr in tracks:
+        if tr.get('index') == pos_index:
+            tid = tr.get('id')
+            stream_idx = tr.get('stream_index')
+            selected_track = tr
+            break
+    if tid is None:
+        selected_track = tracks[pos_index - 1]
+        tid = selected_track.get('id')
+        stream_idx = selected_track.get('stream_index')
+
+    ok = False
+    if stream_idx is not None:
+        ok = vlc.set_subtitle_track(stream_idx)
+    if not ok and tid is not None:
+        ok = vlc.set_subtitle_track(tid)
+    if not ok:
+        ok = vlc.set_subtitle_track(pos_index - 1) or vlc.set_subtitle_track(pos_index)
+
+    if not ok:
+        await interaction.response.send_message("Failed to set subtitle track.", ephemeral=True)
+        return
+
+    if playback_cog:
+        setattr(
+            playback_cog,
+            'selected_subtitle_stream_index',
+            stream_idx if stream_idx is not None else tid,
+        )
+
+    fallback_name = selected_track.get('name') if selected_track else 'Unknown'
+    fallback_pos = selected_track.get('index') if selected_track else pos_index
+    await interaction.response.send_message(
+        f"Selected subtitle {fallback_pos}: {fallback_name}",
+        ephemeral=True,
+    )
+
+
+@subtitles_group.command(name="next", description="Switch to next subtitle track")
+async def subtitles_next(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    if vlc.subtitle_next():
+        await interaction.response.send_message("Switched to next subtitle track.", ephemeral=True)
+    else:
+        await interaction.response.send_message("Could not cycle subtitle track.", ephemeral=True)
+
+
+@subtitles_group.command(name="previous", description="Switch to previous subtitle track")
+async def subtitles_previous(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    if vlc.subtitle_prev():
+        await interaction.response.send_message("Switched to previous subtitle track.", ephemeral=True)
+    else:
+        await interaction.response.send_message("Could not cycle subtitle track.", ephemeral=True)
+
+
+@audio_group.command(name="list", description="List audio tracks")
+async def audio_list(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    tracks = vlc.get_audio_tracks()
+    if tracks is None:
+        await interaction.response.send_message("Could not retrieve audio tracks from VLC.", ephemeral=True)
+        return
+    if len(tracks) == 0:
+        await interaction.response.send_message("No audio tracks reported for current media.", ephemeral=True)
+        return
+
+    playback_cog = bot.get_cog("PlaybackCommands")
+    selected_stream_index = getattr(playback_cog, 'selected_audio_stream_index', None) if playback_cog else None
+    if selected_stream_index is not None:
+        for tr in tracks:
+            if tr.get('stream_index') == selected_stream_index:
+                tr['selected'] = True
+                break
+
+    lines = []
+    for i, tr in enumerate(tracks, start=1):
+        mark = "✅" if tr.get('selected') else "⚪"
+        ui_idx = tr.get('index') or i
+        name = tr.get('name') or f"Track {ui_idx}"
+        lines.append(f"{mark} **{ui_idx}.** {name}")
+
+    embed = discord.Embed(
+        title="Audio Tracks",
+        description="\n".join(lines[:20]) + ("\n..." if len(lines) > 20 else ""),
+        color=discord.Color.blue(),
+    )
+    selected_track = next((tr for tr in tracks if tr.get('selected')), None)
+    if selected_track:
+        cur_idx = selected_track.get('index') or selected_track.get('id')
+        cur_name = selected_track.get('name') or f"Track {cur_idx}"
+        embed.add_field(name="Current", value=f"✅ {cur_name} ({cur_idx})", inline=True)
+    else:
+        embed.add_field(name="Current", value="⚪ Unknown", inline=True)
+    embed.add_field(name="Usage", value="Use /audio set <number>", inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@audio_group.command(name="set", description="Select audio track by position")
+@app_commands.describe(track="Audio position from /audio list")
+async def audio_set(interaction: discord.Interaction, track: app_commands.Range[int, 1, 100]):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    tracks = vlc.get_audio_tracks() or []
+    if not tracks:
+        await interaction.response.send_message("No audio tracks found.", ephemeral=True)
+        return
+
+    pos_index = int(track)
+    if pos_index > len(tracks):
+        await interaction.response.send_message(
+            f"Position out of range. There are {len(tracks)} audio tracks.",
+            ephemeral=True,
+        )
+        return
+
+    tid = None
+    stream_idx = None
+    selected_track = None
+    for tr in tracks:
+        if tr.get('index') == pos_index:
+            tid = tr.get('id')
+            stream_idx = tr.get('stream_index')
+            selected_track = tr
+            break
+    if tid is None:
+        selected_track = tracks[pos_index - 1]
+        tid = selected_track.get('id')
+        stream_idx = selected_track.get('stream_index')
+
+    ok = False
+    if stream_idx is not None:
+        ok = vlc.set_audio_track(stream_idx)
+    if not ok and tid is not None:
+        ok = vlc.set_audio_track(tid)
+    if not ok:
+        ok = vlc.set_audio_track(pos_index - 1) or vlc.set_audio_track(pos_index)
+
+    if not ok:
+        await interaction.response.send_message("Failed to set audio track.", ephemeral=True)
+        return
+
+    playback_cog = bot.get_cog("PlaybackCommands")
+    if playback_cog:
+        setattr(
+            playback_cog,
+            'selected_audio_stream_index',
+            stream_idx if stream_idx is not None else tid,
+        )
+
+    fallback_name = selected_track.get('name') if selected_track else 'Unknown'
+    fallback_pos = selected_track.get('index') if selected_track else pos_index
+    await interaction.response.send_message(
+        f"Selected audio {fallback_pos}: {fallback_name}",
+        ephemeral=True,
+    )
+
+
+@schedule_group.command(name="add", description="Schedule playlist item playback")
+@app_commands.describe(number="Playlist item number", date="YYYY-MM-DD", time_24h="HH:MM (24h)")
+async def schedule_add(
+    interaction: discord.Interaction,
+    number: app_commands.Range[int, 1, 99999],
+    date: str,
+    time_24h: str,
+):
+    scheduler_cog = bot.get_cog("Scheduler")
+    if not scheduler_cog:
+        await interaction.response.send_message("Scheduler is unavailable.")
+        return
+
+    try:
+        dt = datetime.strptime(f"{date} {time_24h}", "%Y-%m-%d %H:%M").replace(tzinfo=PH_TZ)
+    except Exception:
+        await interaction.response.send_message("Invalid date/time format. Use YYYY-MM-DD and HH:MM.")
+        return
+
+    now = datetime.now(PH_TZ)
+    if dt <= now:
+        await interaction.response.send_message("Scheduled time must be in the future (PH time).")
+        return
+
+    for s in scheduler_cog.scheduled:
+        if s["number"] == number and abs((s["dt"] - dt).total_seconds()) < 60:
+            await interaction.response.send_message(
+                f"Movie #{number} is already scheduled at {s['dt'].strftime('%Y-%m-%d %H:%M %Z')}.",
+            )
+            return
+
+    playlist = vlc.get_playlist()
+    items = playlist.findall('.//leaf') if playlist is not None else []
+    idx = number - 1
+    if not (0 <= idx < len(items)):
+        await interaction.response.send_message(
+            f"Movie number {number} is out of bounds. Playlist has {len(items)} item(s).",
+        )
+        return
+
+    filename = items[idx].get('name', 'Unknown')
+    title = MediaUtils.clean_movie_title(filename)
+    item_uri = items[idx].get('uri')
+    duration = MediaUtils.get_media_duration(items[idx])
+    entry = {
+        "number": number,
+        "title": title,
+        "uri": item_uri,
+        "dt": dt,
+        "user": interaction.user.id,
+        "channel": interaction.channel_id,
+        "duration": duration,
+    }
+    scheduler_cog.scheduled.append(entry)
+    scheduler_cog._save_schedule_backup()
+
+    if duration == 'Loading...':
+        dur_str = 'Loading...'
+    elif duration:
+        dur_str = MediaUtils.format_time(duration)
+    else:
+        dur_str = 'Unknown'
+
+    embed = discord.Embed(title="Movie Scheduled", color=discord.Color.green())
+    embed.add_field(name="Number", value=f"#{number}", inline=True)
+    embed.add_field(name="Title", value=title, inline=True)
+    embed.add_field(name="Scheduled For", value=dt.strftime('%Y-%m-%d %H:%M %Z'), inline=False)
+    embed.add_field(name="Duration", value=dur_str, inline=True)
+    embed.add_field(name="Scheduled By", value=interaction.user.mention, inline=True)
+    await interaction.response.send_message(embed=embed)
+
+
+@schedule_group.command(name="list", description="List upcoming scheduled movies")
+async def schedule_list(interaction: discord.Interaction):
+    scheduler_cog = bot.get_cog("Scheduler")
+    if not scheduler_cog:
+        await interaction.response.send_message("Scheduler is unavailable.")
+        return
+
+    if not scheduler_cog.scheduled:
+        await interaction.response.send_message("No movies scheduled.")
+        return
+
+    embed = discord.Embed(title="Upcoming Scheduled Movies", color=discord.Color.purple())
+    for s in sorted(scheduler_cog.scheduled, key=lambda x: x["dt"]):
+        dt_str = s["dt"].strftime('%Y-%m-%d %H:%M %Z') if isinstance(s["dt"], datetime) else str(s["dt"])
+        duration = s.get("duration")
+        if duration == 'Loading...' or duration == 0:
+            dur_str = 'Loading...'
+        elif duration:
+            dur_str = MediaUtils.format_time(duration)
+        else:
+            dur_str = "Unknown"
+        scheduled_by = f"<@{s['user']}>" if s.get('user') else "Unknown"
+        embed.add_field(
+            name=f"#{s['number']} — {s.get('title', 'Unknown')}",
+            value=f"Scheduled for {dt_str}\nDuration: {dur_str}\nScheduled by: {scheduled_by}",
+            inline=False,
+        )
+
+    await interaction.response.send_message(embed=embed)
+
+
+@schedule_group.command(name="remove", description="Remove all schedules for a playlist number")
+@app_commands.describe(number="Playlist item number")
+async def schedule_remove(interaction: discord.Interaction, number: app_commands.Range[int, 1, 99999]):
+    scheduler_cog = bot.get_cog("Scheduler")
+    if not scheduler_cog:
+        await interaction.response.send_message("Scheduler is unavailable.")
+        return
+
+    before = len(scheduler_cog.scheduled)
+    scheduler_cog.scheduled = [s for s in scheduler_cog.scheduled if s["number"] != number]
+    scheduler_cog._save_schedule_backup()
+    after = len(scheduler_cog.scheduled)
+
+    if before == after:
+        await interaction.response.send_message(f"No schedules found for movie #{number}.")
+    else:
+        await interaction.response.send_message(f"Removed all schedules for movie #{number}.")
+
+
+@watch_group.command(name="add", description="Add a watch folder")
+@app_commands.describe(path="Absolute or relative directory path")
+async def watch_add(interaction: discord.Interaction, path: str):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("This command is owner-only.", ephemeral=True)
+        return
+
+    raw = (path or '').strip()
+    norm = os.path.normpath(os.path.abspath(os.path.expanduser(raw)))
+    if not os.path.isdir(norm):
+        await interaction.response.send_message(f"Path not found or not a directory: {raw}", ephemeral=True)
+        return
+
+    current_list = get_watch_folders_from_env()
+    if norm in current_list:
+        await interaction.response.send_message(f"Folder already in watch list: {norm}", ephemeral=True)
+        return
+
+    updated = current_list + [norm]
+    if not _write_env_watch_folders(updated):
+        await interaction.response.send_message("Failed to update watch folders configuration.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="Watch Folder Added",
+        description=(
+            f"Added: {norm}\n\n"
+            f"Total folders: {len(updated)}\n"
+            "Changes take effect immediately; new files are discovered on the next scan."
+        ),
+        color=discord.Color.green(),
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@admin_group.command(name="list-guilds", description="Owner only: list joined guilds")
+async def admin_list_guilds(interaction: discord.Interaction):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("This command is owner-only.", ephemeral=True)
+        return
+
+    guilds = sorted(list(bot.guilds), key=lambda g: (g.name or "").lower())
+    if not guilds:
+        await interaction.response.send_message("I am not currently in any servers.", ephemeral=True)
+        return
+
+    lines = [f"{i}. {g.name} ({g.id})" for i, g in enumerate(guilds, start=1)]
+    max_chars = 1900
+    chunks = []
+    current = ""
+    for line in lines:
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > max_chars:
+            chunks.append(current)
+            current = line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+
+    first = True
+    for chunk in chunks:
+        if first:
+            await interaction.response.send_message(
+                f"I am in **{len(guilds)}** server(s):\n{chunk}",
+                ephemeral=True,
+            )
+            first = False
+        else:
+            await interaction.followup.send(f"(continued)\n{chunk}", ephemeral=True)
+
+
+@admin_group.command(name="leave-server", description="Owner only: leave current or specified guild")
+@app_commands.describe(guild_id="Guild ID (omit to leave current guild)")
+async def admin_leave_server(interaction: discord.Interaction, guild_id: str | None = None):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("This command is owner-only.", ephemeral=True)
+        return
+
+    target_guild = None
+    if guild_id:
+        if not guild_id.isdigit():
+            await interaction.response.send_message("Invalid guild ID.", ephemeral=True)
+            return
+        target_guild = bot.get_guild(int(guild_id))
+        if target_guild is None:
+            await interaction.response.send_message(f"I am not in a server with ID {guild_id}.", ephemeral=True)
+            return
+    else:
+        if interaction.guild is None:
+            await interaction.response.send_message("When used in DMs, provide a guild ID.", ephemeral=True)
+            return
+        target_guild = interaction.guild
+
+    guild_name = target_guild.name
+    guild_id_text = str(target_guild.id)
+    try:
+        if target_guild.system_channel and target_guild.system_channel.permissions_for(target_guild.me).send_messages:
+            await target_guild.system_channel.send("Leaving this server by owner request.")
+    except Exception:
+        pass
+
+    await interaction.response.send_message(
+        f"Leaving server: **{guild_name}** ({guild_id_text}).",
+        ephemeral=True,
+    )
+    logger.warning(
+        "admin leave-server invoked by %s (%s) for guild %s (%s)",
+        interaction.user,
+        interaction.user.id,
+        guild_name,
+        guild_id_text,
+    )
+    await target_guild.leave()
+
+
+@admin_group.command(name="cleanup-playlist", description="Owner only: remove missing files from VLC playlist")
+async def admin_cleanup_playlist(interaction: discord.Interaction):
+    await _run_playlist_cleanup(interaction, "/admin cleanup-playlist")
+
+
+@admin_group.command(name="reconnect-voice", description="Owner only: force a voice channel reconnect attempt")
+async def admin_reconnect_voice(interaction: discord.Interaction):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("This command is owner-only.", ephemeral=True)
+        return
+
+    if not getattr(Config, 'ENABLE_VOICE_JOIN', False):
+        await interaction.response.send_message("Voice join is disabled (`ENABLE_VOICE_JOIN=false`).", ephemeral=True)
+        return
+
+    ch = await _resolve_voice_channel()
+    if not ch:
+        await interaction.response.send_message(
+            "Could not resolve the configured voice channel (check `VOICE_JOIN_CHANNEL_ID` and permissions).",
+            ephemeral=True,
+        )
+        return
+
+    if _is_connected_to_channel(ch.guild, ch.id):
+        await interaction.response.send_message(f"Already connected to **{ch.name}** — nothing to do.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    logger.warning(
+        "admin reconnect-voice invoked by %s (%s) for channel %s (%s)",
+        interaction.user, interaction.user.id, ch.name, ch.id,
+    )
+    try:
+        joined = await join_voice_channel()
+    except Exception as e:
+        logger.error(f"admin reconnect-voice error: {e}")
+        await interaction.followup.send(f"Reconnect attempt failed: {type(e).__name__}: {e}", ephemeral=True)
+        return
+
+    if joined and _is_connected_to_channel(ch.guild, ch.id):
+        # Let the background guard resume its normal cadence instead of
+        # immediately re-flagging this manual join as a failure.
+        global _reconnect_attempts
+        _reconnect_attempts = 0
+        await interaction.followup.send(f"Reconnected to **{ch.name}**.", ephemeral=True)
+    else:
+        await interaction.followup.send(f"Reconnect attempt did not succeed — still not in **{ch.name}**.", ephemeral=True)
+
+
+def _resolve_guild_channel_name(guild: discord.Guild, channel_id: int) -> str:
+    """Resolve a channel ID to its guild channel name, falling back to the raw ID."""
+    if not channel_id:
+        return "Not configured"
+    channel = guild.get_channel(channel_id)
+    return f"#{channel.name}" if channel else f"ID {channel_id}"
+
+
+def _resolve_guild_role_name(guild: discord.Guild, role_id: int) -> str:
+    """Resolve a role ID to its guild role name, falling back to the raw ID."""
+    if not role_id:
+        return "Not configured"
+    role = guild.get_role(role_id)
+    return role.name if role else f"ID {role_id}"
+
+
+def _format_allowed_roles_resolved(guild: discord.Guild) -> str:
+    """Format ALLOWED_ROLES for display, showing only roles that exist in this guild.
+
+    Config entries may be role IDs or role names; both are resolved against the
+    current guild so the owner sees readable @names. Any configured role that
+    isn't present in this guild (deleted, renamed, or from another server) is
+    omitted rather than shown as a raw ID.
+    """
+    names = []
+    for role in Config.ALLOWED_ROLES:
+        resolved = (
+            guild.get_role(role)
+            if isinstance(role, int)
+            else next((r for r in guild.roles if r.name == role), None)
+        )
+        if resolved is not None:
+            names.append(f"@{resolved.name}")
+    return ", ".join(names) or "None in this server"
+
+
+def _clip_field_lines(lines: list, limit: int = 1000) -> str:
+    """Join display lines into an embed field value kept under Discord's 1024-char
+    cap, preserving whole lines and noting how many were dropped."""
+    full = "\n".join(lines)
+    if len(full) <= limit:
+        return full
+
+    kept: list[str] = []
+    used = 0
+    for line in lines:
+        sep = 1 if kept else 0  # '\n' separator
+        if used + sep + len(line) > limit:
+            break
+        kept.append(line)
+        used += sep + len(line)
+    dropped = len(lines) - len(kept)
+
+    if not kept:
+        # Even the first line can't fit whole: show its head plus a drop note.
+        remaining = len(lines) - 1
+        suffix = f"\n… and {remaining} more" if remaining else "…"
+        head = max(1, limit - len(suffix))
+        return lines[0][: head - 1] + "…" + suffix
+
+    text = "\n".join(kept)
+    if dropped:
+        suffix = f"\n… and {dropped} more"
+        # Reclaim space from the last kept line if the suffix would overflow.
+        if len(text) + len(suffix) > limit:
+            text = text[: max(1, limit - len(suffix)) - 1] + "…"
+        text += suffix
+    return text
+
+
+def _build_admin_config_overview_embed(guild: discord.Guild) -> discord.Embed:
+    """Build a human-readable config overview embed for the given guild.
+
+    Resolves channel/role IDs to names and deliberately omits secrets and
+    voice-chat timing/number tuning knobs.
+    """
+    cfg = Config
+
+    embed = discord.Embed(
+        title="Configuration Overview",
+        description=f"**Server:** {guild.name} (`{guild.id}`)",
+        color=discord.Color.blue(),
+    )
+    embed.set_footer(text="Owner-only view · secrets excluded")
+
+    mode_lines = [
+        f"Prefix commands: **{'on' if cfg.ENABLE_PREFIX_COMMANDS else 'off'}** (prefix `{cfg.DISCORD_COMMAND_PREFIX}`)",
+        f"Slash commands: **{'on' if cfg.ENABLE_SLASH_COMMANDS else 'off'}**",
+    ]
+    if cfg.SLASH_COMMAND_GUILD_ID:
+        sync_guild = bot.get_guild(cfg.SLASH_COMMAND_GUILD_ID)
+        mode_lines.append(
+            f"Slash sync: **dev guild `{sync_guild.name if sync_guild else cfg.SLASH_COMMAND_GUILD_ID}`** only"
+        )
+    else:
+        mode_lines.append("Slash sync: **global**")
+    embed.add_field(name="Discord & Command Mode", value=_clip_field_lines(mode_lines), inline=False)
+
+    role_lines = [f"Allowed roles: **{_format_allowed_roles_resolved(guild)}**"]
+    if cfg.WATCH_ANNOUNCE_ROLE_ID:
+        role_lines.append(f"Announce role: **{_resolve_guild_role_name(guild, cfg.WATCH_ANNOUNCE_ROLE_ID)}**")
+    embed.add_field(name="Roles & Permissions", value=_clip_field_lines(role_lines), inline=False)
+
+    announce_ids = cfg.get_announce_channel_ids()
+    announce_display = (
+        ", ".join(_resolve_guild_channel_name(guild, cid) for cid in announce_ids)
+        if announce_ids
+        else "Not configured"
+    )
+    channel_lines = [
+        f"Command channel: **{_resolve_guild_channel_name(guild, cfg.COMMAND_CHANNEL_ID)}**",
+        f"Search log channel: **{_resolve_guild_channel_name(guild, cfg.SEARCH_LOG_CHANNEL_ID)}**",
+        f"Voice channel: **{_resolve_guild_channel_name(guild, cfg.VOICE_JOIN_CHANNEL_ID)}**",
+        f"Voice room rules (play presence/hijack guard): **{'on' if cfg.ENABLE_VOICE_ROOM_RULES else 'off'}**",
+        f"Request channel: **{_resolve_guild_channel_name(guild, cfg.REQUEST_CHANNEL_ID)}**",
+        f"Request announce: **{_resolve_guild_channel_name(guild, cfg.REQUEST_ANNOUNCE_CHANNEL_ID)}**",
+        f"Watch announce: **{announce_display}**",
+    ]
+    embed.add_field(name="Channels", value=_clip_field_lines(channel_lines), inline=False)
+
+    radarr_names = [inst["display_name"] for inst in cfg.get_radarr_instances()]
+    overseerr = "Not configured"
+    if cfg.OVERSEERR_URL and cfg.OVERSEERR_API_KEY:
+        overseerr = cfg.OVERSEERR_URL
+    service_lines = [
+        f"VLC: **{cfg.VLC_HOST}:{cfg.VLC_PORT}**",
+        f"TMDB: **{'Configured' if cfg.TMDB_API_KEY else 'Not configured'}**",
+        f"Radarr: **{', '.join(radarr_names) if radarr_names else 'Not configured'}**",
+        f"Overseerr: **{overseerr}**",
+    ]
+    embed.add_field(name="Media & Services", value=_clip_field_lines(service_lines), inline=False)
+
+    lib_lines = [
+        f"Watch folders: **{', '.join(cfg.WATCH_FOLDERS) if cfg.WATCH_FOLDERS else 'Disabled'}**",
+        f"Queue backup: **{cfg.QUEUE_BACKUP_FILE}**",
+        f"Playlist autosave: **{cfg.PLAYLIST_AUTOSAVE_FILE or 'Disabled'}**",
+        f"Items per page: **{cfg.ITEMS_PER_PAGE}**",
+    ]
+    embed.add_field(name="Library & Watch", value=_clip_field_lines(lib_lines), inline=False)
+
+    return embed
+
+
+@app_commands.default_permissions(administrator=True)
+@admin_group.command(name="show-config", description="Owner only: show a human-readable config overview for this server")
+async def admin_show_config(interaction: discord.Interaction):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("This command is owner-only.", ephemeral=True)
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        return
+    embed = _build_admin_config_overview_embed(interaction.guild)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@request_group.command(name="movie", description="Request a movie via Overseerr/Jellyseerr")
+@app_commands.describe(title="Movie title to search for")
+async def request_movie(interaction: discord.Interaction, title: str):
+    if not await _check_request_channel_for_interaction(interaction):
+        return
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    await interaction.response.defer(thinking=True)
+
+    candidates = tmdb_service.search_movies(title)
+    if not candidates:
+        reply = await interaction.followup.send(f"No results found for '{title}'.")
+        await _log_no_results_search(interaction, "/request movie", title, message=reply)
+        return
+
+    view = MovieRequestSelectView(candidates, interaction.user)
+    embed = discord.Embed(
+        title="Which movie did you mean?",
+        description="\n".join(
+            f"**{c['title']}**" + (f" ({c['year']})" if c.get('year') else "") for c in candidates
+        ),
+        color=discord.Color.blue(),
+    )
+    message = await interaction.followup.send(embed=embed, view=view)
+    view.message = message
+
+
+@request_group.command(name="status", description="Check the status of your movie requests")
+async def request_status(interaction: discord.Interaction):
+    if not await _check_request_channel_for_interaction(interaction):
+        return
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    await interaction.response.defer(thinking=True, ephemeral=True)
+
+    records = movie_request_tracker.get_requests_for_user(interaction.user.id)
+    if not records:
+        await interaction.followup.send("You haven't requested anything yet.")
+        return
+
+    lines = []
+    for record in records:
+        status = record.get("status", "pending")
+        if status in ("available", "declined", "failed", "removed"):
+            label = STATUS_LABELS[5] if status == "available" else status.title()
+        else:
+            request_id = record.get("overseerr_request_id")
+            result = await overseerr_service.get_request_status(request_id) if request_id is not None else {"success": False}
+            if result.get("success") and result.get("found", True):
+                request_status = result.get("request_status")
+                if request_status == REQUEST_STATUS_DECLINED:
+                    label = "Declined"
+                elif request_status == REQUEST_STATUS_FAILED:
+                    label = "Failed"
+                else:
+                    label = STATUS_LABELS.get(result.get("media_status"), "Unknown")
+            elif result.get("success") and not result.get("found", True):
+                label = "Removed"
+            else:
+                # Live check failed (e.g. Seerr temporarily unreachable) — fall back
+                # to the last known local status rather than showing an error.
+                label = status.title()
+        year_text = f" ({record['year']})" if record.get('year') else ""
+        lines.append(f"**{record['title']}**{year_text} — {label}")
+
+    embed = discord.Embed(
+        title="Your Movie Requests",
+        description="\n".join(lines),
+        color=discord.Color.blue(),
+    )
+    await interaction.followup.send(embed=embed)
+
+
+@request_group.command(name="clear", description="Remove your declined/failed/removed requests from tracking")
+async def request_clear(interaction: discord.Interaction):
+    if not await _check_request_channel_for_interaction(interaction):
+        return
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    removed = movie_request_tracker.clear_terminal_for_user(interaction.user.id)
+    if removed:
+        await interaction.followup.send(f"Cleared {removed} declined/failed/removed request{'s' if removed != 1 else ''} from your history.")
+    else:
+        await interaction.followup.send("Nothing to clear — you have no declined/failed/removed requests.")
+
+
+_register_app_command_groups()
 
 def main():
     """Main entry point for the bot"""
