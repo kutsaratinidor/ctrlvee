@@ -2196,6 +2196,25 @@ admin_group = app_commands.Group(name="admin", description="CtrlVee owner admini
 request_group = app_commands.Group(name="request", description="CtrlVee media requests")
 
 
+async def _reply(interaction: discord.Interaction, *args, **kwargs) -> None:
+    """Send an interaction reply via response or followup, whichever is still open.
+
+    Needed because the schedule-proximity confirmation defers the response while
+    it waits on Continue/Cancel, so the eventual result must go through followup.
+    """
+    if interaction.response.is_done():
+        await interaction.followup.send(*args, **kwargs)
+    else:
+        await interaction.response.send_message(*args, **kwargs)
+
+
+async def _confirm_nearby_schedule_for_interaction(playback_cog, interaction: discord.Interaction) -> bool:
+    """Defer the interaction if a schedule-proximity prompt is needed, then gate on it."""
+    if playback_cog._nearby_schedule_notice(interaction.user):
+        await interaction.response.defer()
+    return await playback_cog._confirm_nearby_schedule(interaction.channel, interaction.user)
+
+
 async def _check_allowed_roles_for_interaction(interaction: discord.Interaction) -> bool:
     """Return True when the caller has one of ALLOWED_ROLES in guild context."""
     # Role-gated slash commands are guild-only in this migration slice.
@@ -2772,14 +2791,13 @@ async def playback_next(interaction: discord.Interaction):
         if not ok:
             await interaction.response.send_message(reason, ephemeral=True)
             return
-        notice = playback_cog._nearby_schedule_notice(interaction.user)
-        if notice and interaction.channel:
-            await interaction.channel.send(notice)
+        if not await _confirm_nearby_schedule_for_interaction(playback_cog, interaction):
+            return
 
     if vlc.next():
-        await interaction.response.send_message("Skipped to next track.")
+        await _reply(interaction, "Skipped to next track.")
     else:
-        await interaction.response.send_message("Could not skip to next track.")
+        await _reply(interaction, "Could not skip to next track.")
 
 
 @playback_group.command(name="previous", description="Play previous track")
@@ -2793,14 +2811,13 @@ async def playback_previous(interaction: discord.Interaction):
         if not ok:
             await interaction.response.send_message(reason, ephemeral=True)
             return
-        notice = playback_cog._nearby_schedule_notice(interaction.user)
-        if notice and interaction.channel:
-            await interaction.channel.send(notice)
+        if not await _confirm_nearby_schedule_for_interaction(playback_cog, interaction):
+            return
 
     if vlc.previous():
-        await interaction.response.send_message("Jumped to previous track.")
+        await _reply(interaction, "Jumped to previous track.")
     else:
-        await interaction.response.send_message("Could not jump to previous track.")
+        await _reply(interaction, "Could not jump to previous track.")
 
 
 @playback_group.command(name="play-item", description="Play an item by playlist number")
@@ -2815,36 +2832,33 @@ async def playback_play_num(interaction: discord.Interaction, number: app_comman
         if not ok:
             await interaction.response.send_message(reason)
             return
-        notice = playback_cog._nearby_schedule_notice(interaction.user)
-        if notice and interaction.channel:
-            await interaction.channel.send(notice)
+        if not await _confirm_nearby_schedule_for_interaction(playback_cog, interaction):
+            return
 
     playlist = vlc.get_playlist()
     if not playlist:
-        await interaction.response.send_message("Could not access VLC playlist.")
+        await _reply(interaction, "Could not access VLC playlist.")
         return
 
     items = playlist.findall('.//leaf')
     if not items:
-        await interaction.response.send_message("Playlist is empty.")
+        await _reply(interaction, "Playlist is empty.")
         return
 
     if number > len(items):
-        await interaction.response.send_message(
-            f"Invalid playlist number. Playlist has {len(items)} item(s).",
-        )
+        await _reply(interaction, f"Invalid playlist number. Playlist has {len(items)} item(s).")
         return
 
     item = items[number - 1]
     item_id = item.get('id')
     if not item_id or not vlc.play_item(item_id):
-        await interaction.response.send_message("Could not start playback for that item.")
+        await _reply(interaction, "Could not start playback for that item.")
         return
     if playback_cog:
         playback_cog._seat_playback_owner(interaction.user, item_id)
 
     pretty = MediaUtils.clean_filename_for_display(item.get('name', ''), max_length=120)
-    await interaction.response.send_message(f"Loading item #{number}: {pretty}")
+    await _reply(interaction, f"Loading item #{number}: {pretty}")
 
 
 @playback_group.command(name="status", description="Show current playback status")
@@ -3120,18 +3134,17 @@ async def playlist_play_search(interaction: discord.Interaction, query: str):
         if not ok:
             await interaction.response.send_message(reason)
             return
-        notice = playback_cog._nearby_schedule_notice(interaction.user)
-        if notice and interaction.channel:
-            await interaction.channel.send(notice)
+        if not await _confirm_nearby_schedule_for_interaction(playback_cog, interaction):
+            return
 
     playlist_cog = bot.get_cog("PlaylistCommands")
     if not playlist_cog or not hasattr(playlist_cog, '_search_items'):
-        await interaction.response.send_message("Playlist search is unavailable right now.", ephemeral=True)
+        await _reply(interaction, "Playlist search is unavailable right now.", ephemeral=True)
         return
 
     results = playlist_cog._search_items(query)
     if not results:
-        await interaction.response.send_message("No matches found in playlist.", ephemeral=True)
+        await _reply(interaction, "No matches found in playlist.", ephemeral=True)
         try:
             reply = await interaction.original_response()
         except Exception:
@@ -3143,12 +3156,12 @@ async def playlist_play_search(interaction: discord.Interaction, query: str):
         playlist_num, item = results[0]
         item_id = item.get('id')
         if not item_id or not vlc.play_item(item_id):
-            await interaction.response.send_message("Could not play the selected item.", ephemeral=True)
+            await _reply(interaction, "Could not play the selected item.", ephemeral=True)
             return
         if playback_cog:
             playback_cog._seat_playback_owner(interaction.user, item_id)
         pretty = MediaUtils.clean_filename_for_display(item.get('name', ''), max_length=120)
-        await interaction.response.send_message(f"Loading item #{playlist_num}: {pretty}")
+        await _reply(interaction, f"Loading item #{playlist_num}: {pretty}")
         if playback_cog and hasattr(playback_cog, '_announce_now_playing'):
             try:
                 await playback_cog._announce_now_playing('command', item, playlist_num)
@@ -3177,7 +3190,7 @@ async def playlist_play_search(interaction: discord.Interaction, query: str):
         embed.set_footer(text=f"Showing top {len(shown)} of {len(results)} — refine your query for more")
     else:
         embed.set_footer(text="Select an item from the dropdown below")
-    await interaction.response.send_message(embed=embed, view=view)
+    await _reply(interaction, embed=embed, view=view)
     view.message = await interaction.original_response()
 
 
@@ -3193,24 +3206,21 @@ async def queue_add_next(interaction: discord.Interaction, number: app_commands.
         if not ok:
             await interaction.response.send_message(reason, ephemeral=True)
             return
-        notice = playback_cog._nearby_schedule_notice(interaction.user)
-        if notice and interaction.channel:
-            await interaction.channel.send(notice)
+        if not await _confirm_nearby_schedule_for_interaction(playback_cog, interaction):
+            return
 
     playlist = vlc.get_playlist()
     if not playlist:
-        await interaction.response.send_message("Could not access VLC playlist.")
+        await _reply(interaction, "Could not access VLC playlist.")
         return
 
     items = playlist.findall('.//leaf')
     if not items:
-        await interaction.response.send_message("Playlist is empty.")
+        await _reply(interaction, "Playlist is empty.")
         return
 
     if number > len(items):
-        await interaction.response.send_message(
-            f"Invalid playlist number. Playlist has {len(items)} item(s).",
-        )
+        await _reply(interaction, f"Invalid playlist number. Playlist has {len(items)} item(s).")
         return
 
     item = items[number - 1]
@@ -3218,9 +3228,7 @@ async def queue_add_next(interaction: discord.Interaction, number: app_commands.
     item_name = item.get('name', 'Unknown')
     result = vlc.queue_item_next(item_id)
     if not result.get("success"):
-        await interaction.response.send_message(
-            f"Error queuing item: {result.get('error', 'Unknown error')}",
-        )
+        await _reply(interaction, f"Error queuing item: {result.get('error', 'Unknown error')}")
         return
 
     embed = discord.Embed(title="Item Queued", color=discord.Color.green())
@@ -3234,7 +3242,7 @@ async def queue_add_next(interaction: discord.Interaction, number: app_commands.
         value=f"#{result['queue_order']} of {result.get('total_queued', 1)} in queue",
         inline=True,
     )
-    await interaction.response.send_message(embed=embed)
+    await _reply(interaction, embed=embed)
 
 
 @queue_group.command(name="status", description="Show current queue status")

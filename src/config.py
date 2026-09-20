@@ -255,6 +255,9 @@ class Config:
     # already started does not trigger this. (default: true)
     ENABLE_SCHEDULE_PROXIMITY_GUARD: bool = os.getenv('ENABLE_SCHEDULE_PROXIMITY_GUARD', 'true').strip().lower() in {'1','true','yes','y'}
     SCHEDULE_PROXIMITY_WINDOW_SECONDS: int = int(os.getenv('SCHEDULE_PROXIMITY_WINDOW_SECONDS', '1800'))
+    # How long the Continue/Cancel confirmation stays open before it's treated as
+    # cancelled. Default: 30 seconds.
+    SCHEDULE_PROXIMITY_CONFIRM_TIMEOUT_SECONDS: int = int(os.getenv('SCHEDULE_PROXIMITY_CONFIRM_TIMEOUT_SECONDS', '30'))
     # Voice channel name status updates (currently playing title)
     ENABLE_VOICE_CHANNEL_STATUS: bool = os.getenv('ENABLE_VOICE_CHANNEL_STATUS', 'false').strip().lower() in {'1','true','yes','y'}
     # Optional explicit channel ID to rename for status. If 0, falls back to VOICE_JOIN_CHANNEL_ID.

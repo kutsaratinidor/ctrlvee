@@ -53,6 +53,49 @@ def _decide_playback_allow(
         return False, "hijack"
     return True, ""
 
+class ScheduleConfirmView(discord.ui.View):
+    """Continue/Cancel prompt for the schedule-proximity guard.
+
+    `decision` stays None if nobody clicks in time; `on_timeout` then leaves it
+    None, which `_confirm_nearby_schedule` treats as cancelled.
+    """
+
+    def __init__(self, requester_id: int, timeout: float):
+        super().__init__(timeout=timeout)
+        self.requester_id = requester_id
+        self.message = None
+        self.decision: bool | None = None
+
+    def _disable_all(self) -> None:
+        for child in self.children:
+            child.disabled = True
+
+    async def _finish(self, interaction: discord.Interaction, decision: bool, label: str) -> None:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("This confirmation isn't for you.", ephemeral=True)
+            return
+        self.decision = decision
+        self._disable_all()
+        await interaction.response.edit_message(content=label, view=self)
+        self.stop()
+
+    @discord.ui.button(label="Continue playback", style=discord.ButtonStyle.primary)
+    async def continue_playback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._finish(interaction, True, "▶️ Continuing playback...")
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
+    async def cancel_playback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._finish(interaction, False, "✕ Playback cancelled.")
+
+    async def on_timeout(self) -> None:
+        self._disable_all()
+        if self.message is not None:
+            try:
+                await self.message.edit(content="⌛ Confirmation timed out — playback cancelled.", view=self)
+            except Exception:
+                pass
+
+
 class PlaybackCommands(commands.Cog):
     def __init__(self, bot, vlc_controller, tmdb_service, watch_service):
         self.bot = bot
@@ -821,6 +864,22 @@ class PlaybackCommands(commands.Cog):
             f"📅 Heads up, {member.mention}: **#{nearest['number']} — {nearest.get('title', 'Unknown')}** "
             f"is scheduled to start at {when} by {who}. Playing something else may run into it."
         )
+
+    async def _confirm_nearby_schedule(self, sendable, member: discord.Member) -> bool:
+        """Gate a play-start command behind the schedule-proximity prompt.
+
+        Returns True to proceed. When there's nothing nearby (or nowhere to prompt),
+        proceeds immediately with no message. Otherwise sends the notice with
+        Continue/Cancel buttons and waits; Cancel or a timeout returns False.
+        """
+        notice = self._nearby_schedule_notice(member)
+        if not notice or sendable is None:
+            return True
+        timeout = float(getattr(Config, 'SCHEDULE_PROXIMITY_CONFIRM_TIMEOUT_SECONDS', 30))
+        view = ScheduleConfirmView(member.id, timeout=timeout)
+        view.message = await sendable.send(notice, view=view)
+        await view.wait()
+        return bool(view.decision)
 
     async def _check_cooldown(self, ctx):
         """Check if enough time has passed since last state change"""
@@ -2050,9 +2109,8 @@ class PlaybackCommands(commands.Cog):
             if not ok:
                 await ctx.send(reason)
                 return
-            notice = self._nearby_schedule_notice(ctx.author)
-            if notice:
-                await ctx.send(notice)
+            if not await self._confirm_nearby_schedule(ctx, ctx.author):
+                return
 
             playlist = self.vlc.get_playlist()
             if not playlist:
@@ -2118,9 +2176,8 @@ class PlaybackCommands(commands.Cog):
         if not ok:
             await ctx.send(reason)
             return
-        notice = self._nearby_schedule_notice(ctx.author)
-        if notice:
-            await ctx.send(notice)
+        if not await self._confirm_nearby_schedule(ctx, ctx.author):
+            return
 
         # First check if there are any queued items to play
         next_queued = self.vlc.get_next_queued_item()
@@ -2199,9 +2256,8 @@ class PlaybackCommands(commands.Cog):
         if not ok:
             await ctx.send(reason)
             return
-        notice = self._nearby_schedule_notice(ctx.author)
-        if notice:
-            await ctx.send(notice)
+        if not await self._confirm_nearby_schedule(ctx, ctx.author):
+            return
 
         if self.vlc.previous():
             logger.info("Loading previous track")
@@ -2578,9 +2634,8 @@ class PlaybackCommands(commands.Cog):
             if not ok:
                 await ctx.send(reason)
                 return
-            notice = self._nearby_schedule_notice(ctx.author)
-            if notice:
-                await ctx.send(notice)
+            if not await self._confirm_nearby_schedule(ctx, ctx.author):
+                return
 
             playlist = self.vlc.get_playlist()
             if not playlist:

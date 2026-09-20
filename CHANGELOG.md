@@ -1,3 +1,8 @@
+## 1.16.0 - 2026-09-20
+
+### Changed
+- **Schedule proximity guard now confirms instead of just warning**: `play-item`/`play-search`, `next`/`previous`, and `queue add-next`/`!queue_next` now prompt the issuer with **Continue**/**Cancel** buttons when an upcoming scheduled movie is close (previously it only posted a non-blocking warning and proceeded regardless). Clicking Cancel, or leaving the prompt untouched for `SCHEDULE_PROXIMITY_CONFIRM_TIMEOUT_SECONDS` (default 30s), now stops the command instead of playing anyway.
+
 ## 1.15.0 - 2026-09-19
 
 ### Added
