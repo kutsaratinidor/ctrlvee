@@ -1,3 +1,8 @@
+## 1.16.1 - 2026-09-28
+
+### Fixed
+- **`/playlist play-search` crashing on more than 25 matches**: The result picker trimmed matches to Discord's 25-option select limit but built the dropdown from the untrimmed list, raising `ValueError: maximum number of options already provided (25)`. The dropdown now uses the trimmed list, matching the embed's "top 25" preview.
+
 ## 1.16.0 - 2026-09-20
 
 ### Changed

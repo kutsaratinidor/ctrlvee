@@ -215,7 +215,7 @@ class PlaySearchView(discord.ui.View):
         self.results = results[:SEARCH_PICKER_CAP]
 
         select = discord.ui.Select(placeholder='Choose an item to play')
-        for playlist_num, item in results:
+        for playlist_num, item in self.results:
             name = MediaUtils.clean_filename_for_display(item.get('name', ''), max_length=88)
             select.add_option(label=f'#{playlist_num} {name}', value=str(playlist_num))
         select.callback = self._on_select
