@@ -1,3 +1,9 @@
+## 1.17.1 - 2026-10-03
+
+### Fixed
+- **Voice channel status not showing ⏸ on pause**: The status was only refreshed on track changes, so pausing or resuming left it on `▶ Title`. It now also updates when VLC switches between playing and paused.
+- **Voice channel status stuck after a movie ends**: When a movie finished paused with nothing queued, the bot's presence was cleared but the voice status stayed on `⏸ Title`. It now switches to `VOICE_STATUS_IDLE_NAME` (or clears if that's empty), the same as when VLC is stopped.
+
 ## 1.17.0 - 2026-10-03
 
 ### Changed

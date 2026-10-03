@@ -1176,6 +1176,9 @@ class PlaybackCommands(commands.Cog):
                                 if position_changed and item_name:
                                     await self._set_presence(item_name, reason="track change")
                                     await self._set_voice_channel_status(item_name, state=current_state, reason="track change")
+                                elif state_changed and item_name and current_state in ('playing', 'paused'):
+                                    # Pause/resume: swap the ▶/⏸ prefix on the voice status
+                                    await self._set_voice_channel_status(item_name, state=current_state, reason=f"state change ({current_state})")
                             except Exception:
                                 pass
                             
@@ -1240,6 +1243,7 @@ class PlaybackCommands(commands.Cog):
                                     if total_length > 0 and (total_length - current_time) <= 3:
                                         # Near end while paused and nothing queued -> clear presence
                                         await self._set_presence(None, reason="paused at end")
+                                        await self._set_voice_channel_status(None, state='stopped', reason="paused at end")
                                         logger.info("Cleared presence: VLC paused at track end and no queued items")
                     except Exception as e:
                         logger.debug(f"Paused-end presence clear check failed: {e}")
