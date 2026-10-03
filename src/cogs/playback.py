@@ -298,13 +298,12 @@ class PlaybackCommands(commands.Cog):
                     clean = str(title).strip()
                 if not clean:
                     return None
-                prefix = str(getattr(Config, 'VOICE_STATUS_PREFIX', 'Now Playing: '))
+                prefix = str(getattr(Config, 'VOICE_STATUS_PREFIX', '▶'))
+                if state == 'paused' and bool(getattr(Config, 'VOICE_STATUS_SHOW_PAUSED', True)):
+                    prefix = '⏸'
                 if prefix and not prefix.endswith((' ', '-', '•', '|')):
                     prefix = f"{prefix} "
-                label = f"{prefix}{clean}"
-                if state == 'paused' and bool(getattr(Config, 'VOICE_STATUS_SHOW_PAUSED', True)):
-                    label = f"{label} [Paused]"
-                return label[:120]
+                return f"{prefix}{clean}"[:120]
 
             idle_name = str(getattr(Config, 'VOICE_STATUS_IDLE_NAME', '')).strip()
             if idle_name:
@@ -361,8 +360,10 @@ class PlaybackCommands(commands.Cog):
                     return
 
             me = channel.guild.me
-            if me is None or not channel.permissions_for(me).manage_channels:
-                self.logger.debug("Skipping voice status update: missing Manage Channels permission")
+            perms = channel.permissions_for(me) if me is not None else None
+            # SET_VOICE_CHANNEL_STATUS (1 << 48) has no named flag in discord.py; Manage Channels also works.
+            if perms is None or not (perms.manage_channels or perms.value & (1 << 48)):
+                self.logger.debug("Skipping voice status update: missing Set Voice Channel Status permission")
                 return
 
             await channel.edit(status=target_text, reason=(reason or "Update voice status"))

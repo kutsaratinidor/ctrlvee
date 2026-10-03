@@ -262,9 +262,9 @@ class Config:
     ENABLE_VOICE_CHANNEL_STATUS: bool = os.getenv('ENABLE_VOICE_CHANNEL_STATUS', 'false').strip().lower() in {'1','true','yes','y'}
     # Optional explicit channel ID to rename for status. If 0, falls back to VOICE_JOIN_CHANNEL_ID.
     VOICE_STATUS_CHANNEL_ID: int = int(os.getenv('VOICE_STATUS_CHANNEL_ID', '0'))
-    # Prefix used when composing the channel name.
-    VOICE_STATUS_PREFIX: str = os.getenv('VOICE_STATUS_PREFIX', 'Now Playing: ').strip()
-    # If true, append [Paused] when VLC is paused.
+    # Prefix used when composing the channel status (e.g. "▶ The Matrix").
+    VOICE_STATUS_PREFIX: str = os.getenv('VOICE_STATUS_PREFIX', '▶').strip()
+    # If true, swap the prefix for ⏸ when VLC is paused.
     VOICE_STATUS_SHOW_PAUSED: bool = os.getenv('VOICE_STATUS_SHOW_PAUSED', 'true').strip().lower() in {'1','true','yes','y'}
     # Optional idle name to use when playback is stopped. Leave empty to restore original channel name.
     VOICE_STATUS_IDLE_NAME: str = os.getenv('VOICE_STATUS_IDLE_NAME', '').strip()

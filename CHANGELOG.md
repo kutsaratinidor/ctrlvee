@@ -1,3 +1,11 @@
+## 1.17.0 - 2026-10-03
+
+### Changed
+- **Shorter voice channel status**: The now-playing voice channel status now reads `▶ Title` while playing and `⏸ Title` while paused, replacing `Now Playing: Title [Paused]`. `VOICE_STATUS_PREFIX` now defaults to `▶`, and `VOICE_STATUS_SHOW_PAUSED` swaps the prefix for `⏸` instead of appending `[Paused]`.
+
+### Fixed
+- **Voice channel status skipped without Manage Channels**: Status updates were skipped unless the bot had Manage Channels, even though Discord only requires Set Voice Channel Status while the bot is in the channel. Either permission is now accepted.
+
 ## 1.16.1 - 2026-09-28
 
 ### Fixed
