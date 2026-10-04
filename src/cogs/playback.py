@@ -292,7 +292,7 @@ class PlaybackCommands(commands.Cog):
     def _format_voice_status_text(self, title: str | None, state: str | None = None) -> str | None:
         """Build a voice channel status text from current media title and state."""
         try:
-            if title:
+            if title and state != 'stopped':
                 clean = MediaUtils.clean_filename_for_display(title).strip()
                 if not clean:
                     clean = str(title).strip()
@@ -482,7 +482,15 @@ class PlaybackCommands(commands.Cog):
             # Update presence
             try:
                 await self._set_presence(display_name, reason=f"now playing ({origin})")
-                await self._set_voice_channel_status(display_name, state='playing', reason=f"now playing ({origin})")
+                # Use VLC's real state: monitor/periodic announces also fire while paused or stopped.
+                # Commands just started playback, where VLC can briefly still report 'stopped'.
+                vlc_state = 'playing'
+                if origin != 'command':
+                    vlc_status = self.vlc.get_status()
+                    state_elem = vlc_status.find('state') if vlc_status is not None else None
+                    if state_elem is not None and state_elem.text:
+                        vlc_state = state_elem.text
+                await self._set_voice_channel_status(display_name, state=vlc_state, reason=f"now playing ({origin})")
             except Exception:
                 pass
             # Send to announce channels

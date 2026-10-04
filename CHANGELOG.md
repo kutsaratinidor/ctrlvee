@@ -1,3 +1,8 @@
+## 1.17.2 - 2026-10-03
+
+### Fixed
+- **Voice channel status reverting to ▶ while paused or stopped**: The Now Playing announcer always set the voice status as playing, and the monitor calls it on every VLC state change (and the periodic announcer calls it on a timer). Pausing or stopping showed `⏸ Title` or the idle text for a moment, then flipped back to `▶ Title`. The announcer now uses VLC's actual state (commands that just started playback still count as playing), and a stopped state always shows `VOICE_STATUS_IDLE_NAME` or clears the status.
+
 ## 1.17.1 - 2026-10-03
 
 ### Fixed
