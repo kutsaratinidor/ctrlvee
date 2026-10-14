@@ -1,3 +1,8 @@
+## 1.17.4 - 2026-10-14
+
+### Fixed
+- **Duplicate voice guard tasks after a gateway reconnect**: `on_ready` fires again when Discord starts a new gateway session, and each time it started another voice connection guard (and initial voice-join retry). The copies shared the same reconnect counters and could try to rejoin voice at the same moment. Each task now starts only if one isn't already running.
+
 ## 1.17.3 - 2026-10-14
 
 ### Fixed

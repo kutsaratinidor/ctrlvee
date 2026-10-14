@@ -462,6 +462,11 @@ _VOICE_ERROR_CODES = {
 _voice_join_lock = asyncio.Lock()
 __last_connect_attempt_ts = 0.0
 
+# Background voice tasks; on_ready can fire again after a gateway reconnect,
+# so these are kept to avoid spawning duplicates.
+_voice_guard_task = None
+_voice_retry_task = None
+
 async def _retry_initial_voice_join():
     """Keep retrying the startup voice join, up to VOICE_MAX_RECONNECTS times.
 
@@ -1674,16 +1679,19 @@ async def on_ready():
                 _autosave_thread.start()
 
         # Join voice channel after all startup tasks are done
+        global _voice_guard_task, _voice_retry_task
         joined = await join_voice_channel()
         if not joined and getattr(Config, 'ENABLE_VOICE_JOIN', False):
             # Don't permanently give up if the initial join failed — see
             # _retry_initial_voice_join's docstring for why the event-driven
             # reconnect handler can't recover this on its own.
-            bot.loop.create_task(_retry_initial_voice_join())
+            if _voice_retry_task is None or _voice_retry_task.done():
+                _voice_retry_task = bot.loop.create_task(_retry_initial_voice_join())
         # Start voice connection guard if enabled
         try:
             if getattr(Config, 'ENABLE_VOICE_GUARD', False):
-                bot.loop.create_task(_voice_connection_guard())
+                if _voice_guard_task is None or _voice_guard_task.done():
+                    _voice_guard_task = bot.loop.create_task(_voice_connection_guard())
             else:
                 logger.info("Voice guard is disabled (ENABLE_VOICE_GUARD=false)")
         except Exception as e:
