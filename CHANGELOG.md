@@ -1,3 +1,8 @@
+## 1.17.3 - 2026-10-14
+
+### Fixed
+- **Raw connection errors in Overseerr/Radarr responses**: When Overseerr or Radarr was down or returned an error, the bot showed the full `requests` exception (e.g. `HTTPConnectionPool(host=..., port=5055): Max retries exceeded ... Connection refused`) or the raw response body. It now shows a short message such as `Overseerr is unreachable (is it running?)`, `didn't respond in time`, `rejected the API key (HTTP 401)`, or `had an internal error (HTTP 502)`. The full error is still logged. Overseerr's own request errors (e.g. already requested) are still shown as-is.
+
 ## 1.17.2 - 2026-10-03
 
 ### Fixed

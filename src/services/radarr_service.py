@@ -5,6 +5,8 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 from urllib.parse import urljoin
 
+from ..utils.http_errors import describe_request_error, describe_http_status
+
 
 class RadarrService:
     def __init__(self, host: str = None, port: int = None, api_key: str = None, use_ssl: bool = None):
@@ -74,18 +76,14 @@ class RadarrService:
             else:
                 return {
                     "success": False,
-                    "error": f"HTTP {response.status_code}: {response.text}"
+                    "error": describe_http_status("Radarr", response.status_code)
                 }
                 
-        except requests.exceptions.RequestException as e:
-            return {
-                "success": False,
-                "error": f"Connection error: {str(e)}"
-            }
         except Exception as e:
+            self.logger.error(f"Radarr request failed: {e}")
             return {
                 "success": False,
-                "error": f"Unexpected error: {str(e)}"
+                "error": describe_request_error("Radarr", e)
             }
     
     async def get_recent_downloads(self, days: int = 7, limit: int = 20) -> Dict[str, any]:
@@ -204,17 +202,11 @@ class RadarrService:
                 "days_searched": days
             }
             
-        except requests.exceptions.RequestException as e:
-            self.logger.error(f"Request error getting recent downloads: {e}")
-            return {
-                "success": False,
-                "error": f"Connection error: {str(e)}"
-            }
         except Exception as e:
-            self.logger.error(f"Error getting recent downloads: {e}")
+            self.logger.error(f"Radarr request failed: {e}")
             return {
                 "success": False,
-                "error": f"Unexpected error: {str(e)}"
+                "error": describe_request_error("Radarr", e)
             }
     
     async def get_movie_details(self, movie_id: int) -> Dict[str, any]:
@@ -258,5 +250,5 @@ class RadarrService:
         except Exception as e:
             return {
                 "success": False,
-                "error": f"Error fetching movie details: {str(e)}"
+                "error": describe_request_error("Radarr", e)
             }

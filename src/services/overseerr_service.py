@@ -4,6 +4,8 @@ import requests
 from typing import Dict, Optional
 from urllib.parse import urljoin
 
+from ..utils.http_errors import describe_request_error, describe_http_status
+
 
 STATUS_LABELS = {
     1: "Unknown",
@@ -61,11 +63,11 @@ class OverseerrService:
             if response.status_code == 200:
                 data = response.json()
                 return {"success": True, "message": f"Connected to Overseerr v{data.get('version', 'unknown')}"}
-            return {"success": False, "error": f"HTTP {response.status_code}: {response.text}"}
-        except requests.exceptions.RequestException as e:
-            return {"success": False, "error": f"Connection error: {str(e)}"}
+            self.logger.warning(f"Overseerr HTTP {response.status_code}: {response.text[:500]}")
+            return {"success": False, "error": describe_http_status("Overseerr", response.status_code)}
         except Exception as e:
-            return {"success": False, "error": f"Unexpected error: {str(e)}"}
+            self.logger.warning(f"Overseerr request failed: {e}")
+            return {"success": False, "error": describe_request_error("Overseerr", e)}
 
     async def request_movie(self, tmdb_id: int) -> Dict:
         """Submit a movie request to Overseerr/Jellyseerr by TMDB ID.
@@ -102,15 +104,17 @@ class OverseerrService:
                     "request_id": data.get("id"),
                     "media_id": (data.get("media") or {}).get("id"),
                 }
+            self.logger.warning(f"Overseerr HTTP {response.status_code}: {response.text[:500]}")
             try:
-                err = response.json().get("message") or response.text
+                err = response.json().get("message")
             except Exception:
-                err = response.text
+                err = None
+            if not err or response.status_code >= 500:
+                return {"success": False, "error": describe_http_status("Overseerr", response.status_code)}
             return {"success": False, "error": f"{err} (HTTP {response.status_code})"}
-        except requests.exceptions.RequestException as e:
-            return {"success": False, "error": f"Connection error: {str(e)}"}
         except Exception as e:
-            return {"success": False, "error": f"Unexpected error: {str(e)}"}
+            self.logger.warning(f"Overseerr request failed: {e}")
+            return {"success": False, "error": describe_request_error("Overseerr", e)}
 
     async def get_request_status(self, request_id: int) -> Dict:
         """Look up a specific request's approval and media status on Overseerr/Jellyseerr.
@@ -137,7 +141,8 @@ class OverseerrService:
             if response.status_code == 404:
                 return {"success": True, "found": False}
             if response.status_code != 200:
-                return {"success": False, "error": f"HTTP {response.status_code}: {response.text}"}
+                self.logger.warning(f"Overseerr HTTP {response.status_code}: {response.text[:500]}")
+                return {"success": False, "error": describe_http_status("Overseerr", response.status_code)}
             data = response.json()
             media = data.get("media")
             if not media:
@@ -150,7 +155,6 @@ class OverseerrService:
                 "media_status": media_status,
                 "available": media_status == 5,
             }
-        except requests.exceptions.RequestException as e:
-            return {"success": False, "error": f"Connection error: {str(e)}"}
         except Exception as e:
-            return {"success": False, "error": f"Unexpected error: {str(e)}"}
+            self.logger.warning(f"Overseerr request failed: {e}")
+            return {"success": False, "error": describe_request_error("Overseerr", e)}
