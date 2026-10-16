@@ -67,3 +67,7 @@ movie_requests.json
 
 # /brag launch-video output — regenerable (run /brag).
 /brag-output/
+
+# Local agent/tool files — not committed.
+/.ignore
+/CLAUDE.md
