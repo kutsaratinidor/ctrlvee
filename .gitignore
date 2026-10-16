@@ -64,3 +64,6 @@ movie_requests.json
 
 # graphify knowledge graph output — regenerable (run /graphify).
 /graphify-out/
+
+# /brag launch-video output — regenerable (run /brag).
+/brag-output/
