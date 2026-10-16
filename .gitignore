@@ -61,3 +61,6 @@ movie_requests.json
 
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
+
+# graphify knowledge graph output — regenerable (run /graphify).
+/graphify-out/
