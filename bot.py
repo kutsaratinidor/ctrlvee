@@ -2216,6 +2216,17 @@ async def _reply(interaction: discord.Interaction, *args, **kwargs) -> None:
         await interaction.response.send_message(*args, **kwargs)
 
 
+async def _defer_if_needed(interaction: discord.Interaction) -> None:
+    """Acknowledge the interaction before slow VLC work.
+
+    Discord drops an interaction that isn't answered within 3 seconds (404 Unknown
+    interaction), even if the action itself succeeded. Deferring extends that to
+    15 minutes; replies after this must go through _reply.
+    """
+    if not interaction.response.is_done():
+        await interaction.response.defer()
+
+
 async def _confirm_nearby_schedule_for_interaction(playback_cog, interaction: discord.Interaction) -> bool:
     """Defer the interaction if a schedule-proximity prompt is needed, then gate on it."""
     if playback_cog._nearby_schedule_notice(interaction.user):
@@ -3068,10 +3079,11 @@ def _human_size(num: int) -> str:
 
 @playlist_group.command(name="list", description="Show playlist with interactive pagination")
 async def playlist_list(interaction: discord.Interaction):
+    await _defer_if_needed(interaction)
     items = vlc.get_playlist()
     leaves = items.findall('.//leaf') if items is not None else []
     if not leaves:
-        await interaction.response.send_message("Playlist is empty.")
+        await _reply(interaction, "Playlist is empty.")
         return
 
     view = PlaylistView(leaves, items_per_page=Config.ITEMS_PER_PAGE)
@@ -3079,7 +3091,7 @@ async def playlist_list(interaction: discord.Interaction):
     size_bytes = watch_service.get_total_media_size() if watch_service else 0
     footer = embed.footer.text or ""
     embed.set_footer(text=f"{footer} | Media Library Size: {_human_size(size_bytes)}")
-    await interaction.response.send_message(embed=embed, view=view)
+    await _reply(interaction, embed=embed, view=view)
 
 
 @playlist_group.command(name="search", description="Search for items in playlist")
@@ -3090,9 +3102,10 @@ async def playlist_search(interaction: discord.Interaction, query: str):
 
     playlist_cog = bot.get_cog("PlaylistCommands")
     if not playlist_cog or not hasattr(playlist_cog, '_search_items'):
-        await interaction.response.send_message("Playlist search is unavailable right now.")
+        await _reply(interaction, "Playlist search is unavailable right now.")
         return
 
+    await _defer_if_needed(interaction)
     results = playlist_cog._search_items(query)
     embed = discord.Embed(
         title="Search Results",
@@ -3102,7 +3115,7 @@ async def playlist_search(interaction: discord.Interaction, query: str):
 
     if not results:
         embed.add_field(name="No Results", value="No matches found in the playlist", inline=False)
-        await interaction.response.send_message(embed=embed)
+        await _reply(interaction, embed=embed)
         try:
             reply = await interaction.original_response()
         except Exception:
@@ -3125,9 +3138,9 @@ async def playlist_search(interaction: discord.Interaction, query: str):
 
     if len(pages) > 1:
         view = SearchResultsView(query=query, pages=pages, total_matches=len(results))
-        await interaction.response.send_message(embed=embed, view=view)
+        await _reply(interaction, embed=embed, view=view)
     else:
-        await interaction.response.send_message(embed=embed)
+        await _reply(interaction, embed=embed)
 
 
 @playlist_group.command(name="play-search", description="Search and play an item from the playlist")
@@ -3150,6 +3163,7 @@ async def playlist_play_search(interaction: discord.Interaction, query: str):
         await _reply(interaction, "Playlist search is unavailable right now.", ephemeral=True)
         return
 
+    await _defer_if_needed(interaction)
     results = playlist_cog._search_items(query)
     if not results:
         await _reply(interaction, "No matches found in playlist.", ephemeral=True)
@@ -3217,6 +3231,7 @@ async def queue_add_next(interaction: discord.Interaction, number: app_commands.
         if not await _confirm_nearby_schedule_for_interaction(playback_cog, interaction):
             return
 
+    await _defer_if_needed(interaction)
     playlist = vlc.get_playlist()
     if not playlist:
         await _reply(interaction, "Could not access VLC playlist.")
@@ -3258,6 +3273,7 @@ async def queue_status(interaction: discord.Interaction):
     if not await _check_allowed_roles_for_interaction(interaction):
         return
 
+    await _defer_if_needed(interaction)
     queue_state = vlc.get_queue_status()
     queued_items = queue_state.get("queued_items", {})
     embed = discord.Embed(
@@ -3296,7 +3312,7 @@ async def queue_status(interaction: discord.Interaction):
         embed.add_field(name="Active Queue Items", value="No items currently queued", inline=False)
 
     embed.add_field(name="Usage", value="Use /queue add-next to queue a playlist item", inline=False)
-    await interaction.response.send_message(embed=embed)
+    await _reply(interaction, embed=embed)
 
 
 @queue_group.command(name="clear", description="Clear all queue tracking")
@@ -3324,6 +3340,7 @@ async def queue_remove(interaction: discord.Interaction, ref: str):
     if not await _check_allowed_roles_for_interaction(interaction):
         return
 
+    await _defer_if_needed(interaction)
     try:
         if ref.startswith('#'):
             num = int(ref[1:])
@@ -3332,13 +3349,15 @@ async def queue_remove(interaction: discord.Interaction, ref: str):
             num = int(ref)
             result = vlc.remove_from_queue_by_order(num)
     except ValueError:
-        await interaction.response.send_message(
+        await _reply(
+            interaction,
             "Invalid reference. Use a number (queue order) or #<playlist number>.",
         )
         return
 
     if not result.get('success'):
-        await interaction.response.send_message(
+        await _reply(
+            interaction,
             result.get('error', 'Failed to remove from queue.'),
         )
         return
@@ -3349,7 +3368,7 @@ async def queue_remove(interaction: discord.Interaction, ref: str):
         description=f"{name} has been removed from the queue.",
         color=discord.Color.red(),
     )
-    await interaction.response.send_message(embed=embed)
+    await _reply(interaction, embed=embed)
 
 
 @subtitles_group.command(name="list", description="List subtitle tracks")

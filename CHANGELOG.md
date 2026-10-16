@@ -1,3 +1,8 @@
+## 1.17.6 - 2026-10-16
+
+### Fixed
+- **"Unknown interaction" (404) on slow slash commands**: Discord drops a slash command that isn't answered within 3 seconds. `/playlist search`, `/playlist play-search`, `/playlist list`, `/queue add-next`, `/queue status`, and `/queue remove` fetched the playlist from VLC before replying, so a slow VLC response or large playlist made the reply fail with `404 Unknown interaction`, even when the action (e.g. queueing the item) had already succeeded. These commands now acknowledge the interaction first ("CtrlVee is thinking…") and then post the result.
+
 ## 1.17.5 - 2026-10-16
 
 ### Changed

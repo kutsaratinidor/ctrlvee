@@ -2,7 +2,7 @@
 
 A Discord bot that controls a local VLC player and exposes playback controls, playlist search, queueing, scheduling, watch-folder ingestion, and metadata lookups.
 
-Current app version: `1.17.5`.
+Current app version: `1.17.6`.
 
 ## What It Does
 
