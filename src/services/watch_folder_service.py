@@ -6,6 +6,7 @@ import logging
 from typing import Iterable, Set, Optional, List, Callable
 
 from ..config import Config, get_watch_folders_from_env
+from ..utils.media_utils import MediaUtils
 
 
 MEDIA_EXTENSIONS = {
@@ -244,6 +245,16 @@ class WatchFolderService:
         if not add_to_playlist:
             self.logger.info("Initial discovery only (not enqueuing this pass)")
             return
+
+        # Sort new files so episodes land in the playlist in sequential order.
+        # os.walk yields in OS directory order, which is not episode order.
+        def _episode_sort_key(path: str) -> tuple:
+            _, season, episode, _ = MediaUtils.parse_tv_filename(path)
+            if season is not None and episode is not None:
+                return (0, season, episode, os.path.basename(path))
+            # Non-episode files (movies, music) trail behind, in stable path order.
+            return (1, 0, 0, os.path.basename(path))
+        new_files.sort(key=_episode_sort_key)
 
         # Enqueue each new file by path
         enqueued: List[str] = []

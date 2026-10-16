@@ -26,6 +26,7 @@ Depending on configuration, CtrlVee may store data locally in files and logs, in
 
 - Queue backups (for queue continuity)
 - Schedule backups (for scheduled playback continuity)
+- Movie request records (requester Discord user ID/username, requested title, and status, kept indefinitely to track availability and notify the requester)
 - Optional playlist autosave output
 - Operational logs for troubleshooting and bot maintenance
 

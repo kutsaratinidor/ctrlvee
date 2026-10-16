@@ -23,6 +23,16 @@ def get_ph_timezone():
             return get_localzone()
 
 PH_TZ = get_ph_timezone()
+
+
+def format_schedule_time(dt) -> str:
+    """PH time plus Discord timestamps, which each viewer's client renders in their own timezone."""
+    if not isinstance(dt, datetime):
+        return str(dt)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=PH_TZ)
+    ts = int(dt.timestamp())
+    return f"{dt.strftime('%Y-%m-%d %H:%M %Z')} · <t:{ts}:f> (<t:{ts}:R>)"
 logger = logging.getLogger(__name__)
 
 
@@ -88,7 +98,7 @@ class Scheduler(commands.Cog):
             # Check for double scheduling (same movie, same time within 1 minute)
             for s in self.scheduled:
                 if s["number"] == number and abs((s["dt"] - dt).total_seconds()) < 60:
-                    await ctx.send(f"❌ Movie #{number} is already scheduled at {s['dt'].strftime('%Y-%m-%d %H:%M %Z')}. Double scheduling is not allowed.")
+                    await ctx.send(f"❌ Movie #{number} is already scheduled at {format_schedule_time(s['dt'])}. Double scheduling is not allowed.")
                     return
             # Get movie title and duration from playlist (on demand)
             playlist = self.vlc.get_playlist()
@@ -124,8 +134,9 @@ class Scheduler(commands.Cog):
             )
             embed.add_field(name="Number", value=f"#{number}", inline=True)
             embed.add_field(name="Title", value=title, inline=True)
-            embed.add_field(name="Scheduled For", value=dt.strftime('%Y-%m-%d %H:%M %Z'), inline=False)
+            embed.add_field(name="Scheduled For", value=format_schedule_time(dt), inline=False)
             embed.add_field(name="Duration", value=dur_str, inline=True)
+            embed.add_field(name="Scheduled By", value=ctx.author.mention, inline=True)
             await ctx.send(embed=embed)
         except Exception as e:
             await ctx.send(f"❌ Invalid date/time format. Use: {format_cmd_inline('schedule <number> <YYYY-MM-DD> <HH:MM>')}")
@@ -138,7 +149,7 @@ class Scheduler(commands.Cog):
             return
         embed = discord.Embed(title="Upcoming Scheduled Movies", color=discord.Color.purple())
         for s in sorted(self.scheduled, key=lambda x: x["dt"]):
-            dt_str = s["dt"].strftime('%Y-%m-%d %H:%M %Z') if isinstance(s["dt"], datetime) else str(s["dt"])
+            dt_str = format_schedule_time(s["dt"])
             duration = s.get("duration")
             if duration == 'Loading...' or duration == 0:
                 dur_str = 'Loading...'
@@ -146,9 +157,10 @@ class Scheduler(commands.Cog):
                 dur_str = MediaUtils.format_time(duration)
             else:
                 dur_str = "Unknown"
+            scheduled_by = f"<@{s['user']}>" if s.get('user') else "Unknown"
             embed.add_field(
                 name=f"#{s['number']} — {s.get('title', 'Unknown')}",
-                value=f"Scheduled for {dt_str}\nDuration: {dur_str}",
+                value=f"Scheduled for {dt_str}\nDuration: {dur_str}\nScheduled by: {scheduled_by}",
                 inline=False
             )
         await ctx.send(embed=embed)

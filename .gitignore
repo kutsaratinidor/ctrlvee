@@ -1,5 +1,6 @@
 # Environment files
 .env
+.env.tmp
 *.env
 !template.env
 
@@ -35,6 +36,8 @@ queue_backup.json
 ctrlvee_playlist.xspf
 # VLC schedule backup
 schedule_backup.json
+# Movie request tracker store
+movie_requests.json
 
 # IDE specific files
 .idea/
@@ -43,5 +46,28 @@ schedule_backup.json
 *.swo
 .DS_Store
 
+# Claude Code local settings/cache and MCP config (machine-specific)
+.claude/
+.mcp.json
+
+# Repowise local index/cache
+.repowise/
+
+# Git worktrees for isolated feature work
+.worktrees/
+
 # Keep screenshots
 !screenshots/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
+
+# graphify knowledge graph output — regenerable (run /graphify).
+/graphify-out/
+
+# /brag launch-video output — regenerable (run /brag).
+/brag-output/
+
+# Local agent/tool files — not committed.
+/.ignore
+/CLAUDE.md
