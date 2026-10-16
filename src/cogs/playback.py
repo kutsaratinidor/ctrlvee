@@ -861,14 +861,14 @@ class PlaybackCommands(commands.Cog):
         if not scheduled:
             return None
         from datetime import datetime
-        from .scheduler import PH_TZ
+        from .scheduler import PH_TZ, format_schedule_time
         window = float(getattr(Config, 'SCHEDULE_PROXIMITY_WINDOW_SECONDS', 1800))
         now = datetime.now(PH_TZ)
         nearest = _find_nearby_schedule(scheduled, now, window)
         if not nearest:
             return None
         who = f"<@{nearest['user']}>" if nearest.get('user') else "someone"
-        when = nearest['dt'].strftime('%Y-%m-%d %H:%M %Z') if isinstance(nearest['dt'], datetime) else str(nearest['dt'])
+        when = format_schedule_time(nearest['dt'])
         return (
             f"📅 Heads up, {member.mention}: **#{nearest['number']} — {nearest.get('title', 'Unknown')}** "
             f"is scheduled to start at {when} by {who}. Playing something else may run into it."

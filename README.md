@@ -2,14 +2,14 @@
 
 A Discord bot that controls a local VLC player and exposes playback controls, playlist search, queueing, scheduling, watch-folder ingestion, and metadata lookups.
 
-Current app version: `1.17.4`.
+Current app version: `1.17.5`.
 
 ## What It Does
 
 - Controls VLC playback from Discord (`play`, `pause`, `next`, `rewind`, speed, shuffle, etc.)
 - Lets users browse/search the active VLC playlist with paginated embeds
 - Supports a soft queue system that works with VLC shuffle behavior
-- Schedules playlist items using Philippines time (`Asia/Manila`)
+- Schedules playlist items using Philippines time (`Asia/Manila`); schedule times are also shown in each viewer's local timezone
 - Watches folders for new media and enqueues files automatically
 - Enriches now-playing/status messages with TMDB movie/TV metadata
 - Optionally shows recent downloads from one or more Radarr instances

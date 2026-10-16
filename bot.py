@@ -431,7 +431,7 @@ _autosave_stop = threading.Event()
 # Import cogs
 from src.cogs.playback import PlaybackCommands
 from src.cogs.playlist import PlaylistCommands, PlaylistView, SearchResultsView
-from src.cogs.scheduler import Scheduler, PH_TZ
+from src.cogs.scheduler import Scheduler, PH_TZ, format_schedule_time
 from src.cogs.watch import WatchCommands, _write_env_watch_folders
 from src.version import __version__
 from changelog_helper import parse_changelog
@@ -3623,7 +3623,7 @@ async def schedule_add(
     for s in scheduler_cog.scheduled:
         if s["number"] == number and abs((s["dt"] - dt).total_seconds()) < 60:
             await interaction.response.send_message(
-                f"Movie #{number} is already scheduled at {s['dt'].strftime('%Y-%m-%d %H:%M %Z')}.",
+                f"Movie #{number} is already scheduled at {format_schedule_time(s['dt'])}.",
             )
             return
 
@@ -3662,7 +3662,7 @@ async def schedule_add(
     embed = discord.Embed(title="Movie Scheduled", color=discord.Color.green())
     embed.add_field(name="Number", value=f"#{number}", inline=True)
     embed.add_field(name="Title", value=title, inline=True)
-    embed.add_field(name="Scheduled For", value=dt.strftime('%Y-%m-%d %H:%M %Z'), inline=False)
+    embed.add_field(name="Scheduled For", value=format_schedule_time(dt), inline=False)
     embed.add_field(name="Duration", value=dur_str, inline=True)
     embed.add_field(name="Scheduled By", value=interaction.user.mention, inline=True)
     await interaction.response.send_message(embed=embed)
@@ -3681,7 +3681,7 @@ async def schedule_list(interaction: discord.Interaction):
 
     embed = discord.Embed(title="Upcoming Scheduled Movies", color=discord.Color.purple())
     for s in sorted(scheduler_cog.scheduled, key=lambda x: x["dt"]):
-        dt_str = s["dt"].strftime('%Y-%m-%d %H:%M %Z') if isinstance(s["dt"], datetime) else str(s["dt"])
+        dt_str = format_schedule_time(s["dt"])
         duration = s.get("duration")
         if duration == 'Loading...' or duration == 0:
             dur_str = 'Loading...'

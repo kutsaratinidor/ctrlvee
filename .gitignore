@@ -58,3 +58,6 @@ movie_requests.json
 
 # Keep screenshots
 !screenshots/
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/

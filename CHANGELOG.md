@@ -1,3 +1,8 @@
+## 1.17.5 - 2026-10-16
+
+### Changed
+- **Schedule times shown in each viewer's timezone**: Schedule confirmations, the schedule list, the "already scheduled" error, and the schedule-proximity prompt now show the time in Philippine time followed by a Discord timestamp, e.g. `2026-10-20 20:00 PST · <local date/time> (in 4 days)`. Each person's Discord app renders the timestamp in their own timezone and keeps the relative part counting down. Schedules are still entered and run in Philippine time.
+
 ## 1.17.4 - 2026-10-14
 
 ### Fixed
