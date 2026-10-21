@@ -1,5 +1,8 @@
 ## 1.17.7 - 2026-10-21
 
+### Added
+- **Original language in TMDB embeds**: Movie and TV info embeds (now playing, scheduled-start announcements) now include an **Original Language** field from TMDB, e.g. `Korean`. Shows the ISO code (e.g. `TL`) if TMDB doesn't provide a name for it.
+
 ### Changed
 - **Schedule proximity guard uses the real runtime**: Instead of a fixed 30-minute window, the Continue/Cancel prompt now fires when an upcoming scheduled movie would start before the item you're playing finishes, based on that item's runtime from VLC. A 2-hour movie started 90 minutes before a schedule now prompts, and a short clip that ends before the schedule no longer does. The prompt shows the item's runtime and when it would end. `queue add-next`/`!queue_next` count from when the queued item would actually start (after the current item and anything already queued). `SCHEDULE_PROXIMITY_WINDOW_SECONDS` is still used when the runtime isn't known: VLC hasn't parsed the file yet, `next` with nothing queued, `previous`, or a multi-result `/playlist play-search`.
 

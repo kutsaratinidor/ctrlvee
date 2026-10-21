@@ -179,6 +179,21 @@ class TMDBService:
             self.logger.error(f"Error searching TMDB movies for title='{title}': {e}")
             return []
 
+    @staticmethod
+    def _original_language(info: dict) -> str | None:
+        """Readable original language from a TMDB details dict, e.g. 'Korean'.
+
+        TMDB gives only an ISO 639-1 code in `original_language`; its English name
+        comes from the matching `spoken_languages` entry, else the bare code.
+        """
+        code = info.get('original_language')
+        if not code:
+            return None
+        for lang in info.get('spoken_languages') or []:
+            if lang.get('iso_639_1') == code and lang.get('english_name'):
+                return lang['english_name']
+        return code.upper()
+
     def _build_embed_from_movie_info(self, movie_info: dict) -> discord.Embed:
         """Build a Discord embed from a TMDB movie info dict."""
         embed = discord.Embed(
@@ -195,6 +210,8 @@ class TMDBService:
             embed.add_field(name="Rating", value=f"⭐ {movie_info['vote_average']:.1f}/10", inline=True)
         if movie_info.get('genres'):
             embed.add_field(name="Genre", value=', '.join([g['name'] for g in movie_info['genres']]), inline=True)
+        if language := self._original_language(movie_info):
+            embed.add_field(name="Original Language", value=language, inline=True)
         if movie_info.get('poster_path'):
             embed.set_thumbnail(url=f"https://image.tmdb.org/t/p/w500{movie_info['poster_path']}")
         return embed
@@ -402,6 +419,8 @@ class TMDBService:
             # Add genres if available
             if tv_info.get('genres'):
                 embed.add_field(name="Genre", value=', '.join([g['name'] for g in tv_info['genres']]), inline=True)
+            if language := self._original_language(tv_info):
+                embed.add_field(name="Original Language", value=language, inline=True)
 
             # Season-specific info
             if season is not None:
