@@ -2227,11 +2227,11 @@ async def _defer_if_needed(interaction: discord.Interaction) -> None:
         await interaction.response.defer()
 
 
-async def _confirm_nearby_schedule_for_interaction(playback_cog, interaction: discord.Interaction) -> bool:
+async def _confirm_nearby_schedule_for_interaction(playback_cog, interaction: discord.Interaction, item=None, starts_in: float = 0) -> bool:
     """Defer the interaction if a schedule-proximity prompt is needed, then gate on it."""
-    if playback_cog._nearby_schedule_notice(interaction.user):
-        await interaction.response.defer()
-    return await playback_cog._confirm_nearby_schedule(interaction.channel, interaction.user)
+    if playback_cog._nearby_schedule_notice(interaction.user, item, starts_in):
+        await _defer_if_needed(interaction)
+    return await playback_cog._confirm_nearby_schedule(interaction.channel, interaction.user, item, starts_in)
 
 
 async def _check_allowed_roles_for_interaction(interaction: discord.Interaction) -> bool:
@@ -2851,7 +2851,7 @@ async def playback_play_num(interaction: discord.Interaction, number: app_comman
         if not ok:
             await interaction.response.send_message(reason)
             return
-        if not await _confirm_nearby_schedule_for_interaction(playback_cog, interaction):
+        if not await _confirm_nearby_schedule_for_interaction(playback_cog, interaction, playback_cog._playlist_leaf(number)):
             return
 
     playlist = vlc.get_playlist()
@@ -3155,8 +3155,6 @@ async def playlist_play_search(interaction: discord.Interaction, query: str):
         if not ok:
             await interaction.response.send_message(reason)
             return
-        if not await _confirm_nearby_schedule_for_interaction(playback_cog, interaction):
-            return
 
     playlist_cog = bot.get_cog("PlaylistCommands")
     if not playlist_cog or not hasattr(playlist_cog, '_search_items'):
@@ -3172,6 +3170,12 @@ async def playlist_play_search(interaction: discord.Interaction, query: str):
         except Exception:
             reply = None
         await _log_no_results_search(interaction, "/playlist play-search", query, message=reply)
+        return
+
+    # Single match: check against its runtime. Multiple: the pick isn't known yet,
+    # so fall back to the fixed proximity window.
+    target = results[0][1] if len(results) == 1 else None
+    if playback_cog and not await _confirm_nearby_schedule_for_interaction(playback_cog, interaction, target):
         return
 
     if len(results) == 1:
@@ -3228,10 +3232,12 @@ async def queue_add_next(interaction: discord.Interaction, number: app_commands.
         if not ok:
             await interaction.response.send_message(reason, ephemeral=True)
             return
-        if not await _confirm_nearby_schedule_for_interaction(playback_cog, interaction):
-            return
 
     await _defer_if_needed(interaction)
+    if playback_cog and not await _confirm_nearby_schedule_for_interaction(
+        playback_cog, interaction, playback_cog._playlist_leaf(number), playback_cog._queue_next_starts_in()
+    ):
+        return
     playlist = vlc.get_playlist()
     if not playlist:
         await _reply(interaction, "Could not access VLC playlist.")

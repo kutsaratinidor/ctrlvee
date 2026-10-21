@@ -2,7 +2,7 @@
 
 A Discord bot that controls a local VLC player and exposes playback controls, playlist search, queueing, scheduling, watch-folder ingestion, and metadata lookups.
 
-Current app version: `1.17.6`.
+Current app version: `1.17.7`.
 
 ## What It Does
 
@@ -229,7 +229,11 @@ the watcher's own `next` free the slot.
 
 The **schedule proximity guard** (`ENABLE_SCHEDULE_PROXIMITY_GUARD`, default `true`)
 prompts whoever runs `play-item`/`play-search`, `next`/`previous`, or `queue
-add-next`/`!queue_next` when an **upcoming** scheduled movie is due to start within
+add-next`/`!queue_next` when an **upcoming** scheduled movie would start before the
+item being played finishes, using that item's runtime from VLC (for queue add-next, counted
+from when it would actually start: after the current item and anything already queued).
+When the runtime isn't known — VLC hasn't parsed the file yet, `next` without a queued item,
+`previous`, or a multi-result `play-search` — it falls back to
 `SCHEDULE_PROXIMITY_WINDOW_SECONDS` (default `1800`, i.e. 30 minutes). A schedule that
 has already started does not trigger it. The prompt names the scheduled movie and who
 scheduled it, with **Continue**/**Cancel** buttons — pick Continue to play anyway, Cancel

@@ -32,6 +32,20 @@ def _find_nearby_schedule(scheduled: list, now, window_seconds: float):
     return nearest
 
 
+def _schedule_overlap_window(item=None, starts_in: float = 0) -> float:
+    """Seconds from now that the target item would still be playing.
+
+    Uses the item's VLC-reported runtime when known (plus `starts_in`, the wait
+    before it starts, e.g. for queue-next). Falls back to the fixed
+    Config.SCHEDULE_PROXIMITY_WINDOW_SECONDS when there is no target or VLC hasn't
+    parsed its duration yet.
+    """
+    duration = MediaUtils.get_media_duration(item) if item is not None else None
+    if isinstance(duration, int):
+        return starts_in + duration
+    return float(getattr(Config, 'SCHEDULE_PROXIMITY_WINDOW_SECONDS', 1800))
+
+
 def _decide_playback_allow(
     room_resolved: bool,
     requester_in_room: bool,
@@ -846,13 +860,15 @@ class PlaybackCommands(commands.Cog):
         self._playback_owner_id = member.id
         self._playback_owner_item_id = item_id
 
-    def _nearby_schedule_notice(self, member: discord.Member) -> str | None:
+    def _nearby_schedule_notice(self, member: discord.Member, item=None, starts_in: float = 0) -> str | None:
         """Non-blocking advisory for play-start commands: is an upcoming schedule close?
 
         Unlike `_playback_guard`, this never blocks the request — it only returns a
         heads-up message (movie info + who scheduled it) when a scheduled item is due
-        to start within Config.SCHEDULE_PROXIMITY_WINDOW_SECONDS from now. A schedule
-        that has already started does not trigger this — see `_find_nearby_schedule`.
+        to start before the target `item` would finish (see `_schedule_overlap_window`;
+        without a known runtime, within Config.SCHEDULE_PROXIMITY_WINDOW_SECONDS). A
+        schedule that has already started does not trigger this — see
+        `_find_nearby_schedule`.
         """
         if not bool(getattr(Config, 'ENABLE_SCHEDULE_PROXIMITY_GUARD', True)):
             return None
@@ -862,26 +878,58 @@ class PlaybackCommands(commands.Cog):
             return None
         from datetime import datetime
         from .scheduler import PH_TZ, format_schedule_time
-        window = float(getattr(Config, 'SCHEDULE_PROXIMITY_WINDOW_SECONDS', 1800))
+        window = _schedule_overlap_window(item, starts_in)
         now = datetime.now(PH_TZ)
         nearest = _find_nearby_schedule(scheduled, now, window)
         if not nearest:
             return None
         who = f"<@{nearest['user']}>" if nearest.get('user') else "someone"
         when = format_schedule_time(nearest['dt'])
+        duration = MediaUtils.get_media_duration(item) if item is not None else None
+        if isinstance(duration, int):
+            end = int(now.timestamp() + window)
+            clash = f"This one runs {MediaUtils.format_time(duration)} and would end <t:{end}:t>, overlapping it."
+        else:
+            clash = "Playing something else may run into it."
         return (
             f"📅 Heads up, {member.mention}: **#{nearest['number']} — {nearest.get('title', 'Unknown')}** "
-            f"is scheduled to start at {when} by {who}. Playing something else may run into it."
+            f"is scheduled to start at {when} by {who}. {clash}"
         )
 
-    async def _confirm_nearby_schedule(self, sendable, member: discord.Member) -> bool:
+    def _playlist_leaf(self, number: int | None = None, item_id: str | None = None):
+        """Look up a playlist item by 1-based number or VLC id; None if not found."""
+        playlist = self.vlc.get_playlist()
+        items = playlist.findall('.//leaf') if playlist is not None else []
+        if number is not None:
+            return items[number - 1] if 1 <= number <= len(items) else None
+        return next((leaf for leaf in items if leaf.get('id') == item_id), None)
+
+    def _queue_next_starts_in(self) -> float:
+        """Seconds until a newly queued item would start: the rest of the current item
+        plus everything already queued ahead of it."""
+        total = 0.0
+        status = self.vlc.get_status()
+        try:
+            total += max(0, int(status.find('length').text) - int(status.find('time').text))
+        except Exception:
+            pass
+        playlist = self.vlc.get_playlist()
+        by_id = {leaf.get('id'): leaf for leaf in playlist.findall('.//leaf')} if playlist is not None else {}
+        for queued_id in self.vlc.get_queue_status().get('queued_items', {}):
+            # ponytail: unknown runtimes count as 0, so the window can come up short; fine until queues get long
+            duration = MediaUtils.get_media_duration(by_id[queued_id]) if queued_id in by_id else None
+            if isinstance(duration, int):
+                total += duration
+        return total
+
+    async def _confirm_nearby_schedule(self, sendable, member: discord.Member, item=None, starts_in: float = 0) -> bool:
         """Gate a play-start command behind the schedule-proximity prompt.
 
         Returns True to proceed. When there's nothing nearby (or nowhere to prompt),
         proceeds immediately with no message. Otherwise sends the notice with
         Continue/Cancel buttons and waits; Cancel or a timeout returns False.
         """
-        notice = self._nearby_schedule_notice(member)
+        notice = self._nearby_schedule_notice(member, item, starts_in)
         if not notice or sendable is None:
             return True
         timeout = float(getattr(Config, 'SCHEDULE_PROXIMITY_CONFIRM_TIMEOUT_SECONDS', 30))
@@ -2122,7 +2170,7 @@ class PlaybackCommands(commands.Cog):
             if not ok:
                 await ctx.send(reason)
                 return
-            if not await self._confirm_nearby_schedule(ctx, ctx.author):
+            if not await self._confirm_nearby_schedule(ctx, ctx.author, self._playlist_leaf(number)):
                 return
 
             playlist = self.vlc.get_playlist()
@@ -2189,11 +2237,11 @@ class PlaybackCommands(commands.Cog):
         if not ok:
             await ctx.send(reason)
             return
-        if not await self._confirm_nearby_schedule(ctx, ctx.author):
+        next_queued = self.vlc.get_next_queued_item()
+        if not await self._confirm_nearby_schedule(ctx, ctx.author, self._playlist_leaf(item_id=next_queued['item_id']) if next_queued else None):
             return
 
         # First check if there are any queued items to play
-        next_queued = self.vlc.get_next_queued_item()
         if next_queued:
             logger.info(f"Playing next queued item: {next_queued['item_name']}")
             result = self.vlc.play_next_queued_item()
@@ -2647,7 +2695,7 @@ class PlaybackCommands(commands.Cog):
             if not ok:
                 await ctx.send(reason)
                 return
-            if not await self._confirm_nearby_schedule(ctx, ctx.author):
+            if not await self._confirm_nearby_schedule(ctx, ctx.author, self._playlist_leaf(number), self._queue_next_starts_in()):
                 return
 
             playlist = self.vlc.get_playlist()

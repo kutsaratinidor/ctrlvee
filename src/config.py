@@ -249,9 +249,10 @@ class Config:
     # prevent another user from hijacking the currently playing item while its
     # requester is still in the room. (default: true)
     ENABLE_VOICE_ROOM_RULES: bool = os.getenv('ENABLE_VOICE_ROOM_RULES', 'true').strip().lower() in {'1','true','yes','y'}
-    # Warn (non-blocking) the issuer of a play-start command when an upcoming
-    # scheduled movie is due to start within SCHEDULE_PROXIMITY_WINDOW_SECONDS,
-    # so playing something else doesn't quietly run into it. A schedule that has
+    # Prompt the issuer of a play-start command when an upcoming scheduled movie
+    # would start before the target item finishes (its VLC runtime), so playing
+    # something else doesn't quietly run into it. SCHEDULE_PROXIMITY_WINDOW_SECONDS
+    # is the fallback when that runtime is unknown. A schedule that has
     # already started does not trigger this. (default: true)
     ENABLE_SCHEDULE_PROXIMITY_GUARD: bool = os.getenv('ENABLE_SCHEDULE_PROXIMITY_GUARD', 'true').strip().lower() in {'1','true','yes','y'}
     SCHEDULE_PROXIMITY_WINDOW_SECONDS: int = int(os.getenv('SCHEDULE_PROXIMITY_WINDOW_SECONDS', '1800'))

@@ -9,7 +9,10 @@ from datetime import datetime, timedelta, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src.cogs.playback import _find_nearby_schedule  # noqa: E402
+import xml.etree.ElementTree as ET  # noqa: E402
+
+from src.cogs.playback import _find_nearby_schedule, _schedule_overlap_window  # noqa: E402
+from src.config import Config  # noqa: E402
 
 NOW = datetime(2026, 1, 1, 21, 0, tzinfo=timezone.utc)
 
@@ -64,6 +67,22 @@ def main():
     malformed = [{"number": 10, "title": "Bad"}, _entry(11, minutes_from_now=1)]
     result = _find_nearby_schedule(malformed, NOW, 1800)
     assert result is not None and result["number"] == 11
+
+    # Known runtime -> window is exactly how long the target plays (plus any wait before it)
+    movie = ET.fromstring('<leaf id="1" name="m.mkv" duration="7200"/>')
+    assert _schedule_overlap_window(movie) == 7200
+    assert _schedule_overlap_window(movie, starts_in=600) == 7800
+    # A 2h movie overlaps a schedule 90 min out that the old fixed 30-min window missed
+    assert _find_nearby_schedule(far, NOW, _schedule_overlap_window(movie)) is not None
+    # A 20-min short ending before a schedule 25 min out doesn't trigger
+    short = ET.fromstring('<leaf id="2" name="s.mkv" duration="1200"/>')
+    assert _find_nearby_schedule(just_inside, NOW, _schedule_overlap_window(short)) is None
+
+    # Unknown runtime (no target, VLC not parsed yet, or -1) -> fixed fallback window
+    fallback = float(Config.SCHEDULE_PROXIMITY_WINDOW_SECONDS)
+    assert _schedule_overlap_window() == fallback
+    assert _schedule_overlap_window(ET.fromstring('<leaf id="3" duration="0"/>')) == fallback
+    assert _schedule_overlap_window(ET.fromstring('<leaf id="4" duration="-1"/>')) == fallback
 
     print(f"OK  ({os.path.basename(__file__)}): all schedule-proximity guard cases pass")
 
