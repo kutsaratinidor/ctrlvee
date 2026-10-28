@@ -930,7 +930,8 @@ class PlaybackCommands(commands.Cog):
         proceeds immediately with no message. Otherwise sends the notice with
         Continue/Cancel buttons and waits; Cancel or a timeout returns False.
         """
-        notice = self._nearby_schedule_notice(member, item, starts_in)
+        # Off the event loop: the notice may probe a file's runtime (MediaUtils.probe_duration)
+        notice = await asyncio.to_thread(self._nearby_schedule_notice, member, item, starts_in)
         if not notice or sendable is None:
             return True
         timeout = float(getattr(Config, 'SCHEDULE_PROXIMITY_CONFIRM_TIMEOUT_SECONDS', 30))
@@ -2696,7 +2697,7 @@ class PlaybackCommands(commands.Cog):
             if not ok:
                 await ctx.send(reason)
                 return
-            if not await self._confirm_nearby_schedule(ctx, ctx.author, self._playlist_leaf(number), self._queue_next_starts_in()):
+            if not await self._confirm_nearby_schedule(ctx, ctx.author, self._playlist_leaf(number), await asyncio.to_thread(self._queue_next_starts_in)):
                 return
 
             playlist = self.vlc.get_playlist()

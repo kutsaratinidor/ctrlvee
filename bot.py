@@ -2228,9 +2228,12 @@ async def _defer_if_needed(interaction: discord.Interaction) -> None:
 
 
 async def _confirm_nearby_schedule_for_interaction(playback_cog, interaction: discord.Interaction, item=None, starts_in: float = 0) -> bool:
-    """Defer the interaction if a schedule-proximity prompt is needed, then gate on it."""
-    if playback_cog._nearby_schedule_notice(interaction.user, item, starts_in):
-        await _defer_if_needed(interaction)
+    """Defer the interaction, then gate on the schedule-proximity prompt.
+
+    Defers first because building the notice can probe a file's runtime
+    (MediaUtils.probe_duration), which may outlast Discord's 3-second deadline.
+    """
+    await _defer_if_needed(interaction)
     return await playback_cog._confirm_nearby_schedule(interaction.channel, interaction.user, item, starts_in)
 
 
@@ -3235,7 +3238,7 @@ async def queue_add_next(interaction: discord.Interaction, number: app_commands.
 
     await _defer_if_needed(interaction)
     if playback_cog and not await _confirm_nearby_schedule_for_interaction(
-        playback_cog, interaction, playback_cog._playlist_leaf(number), playback_cog._queue_next_starts_in()
+        playback_cog, interaction, playback_cog._playlist_leaf(number), await asyncio.to_thread(playback_cog._queue_next_starts_in)
     ):
         return
     playlist = vlc.get_playlist()

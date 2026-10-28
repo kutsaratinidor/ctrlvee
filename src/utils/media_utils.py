@@ -79,7 +79,7 @@ class MediaUtils:
             flags = vlc.MediaParseFlag(vlc.MediaParseFlag.local.value | vlc.MediaParseFlag.network.value)
             media.parse_with_options(flags, timeout_ms)
             deadline = time.monotonic() + timeout_ms / 1000 + 0.5
-            # ponytail: blocking poll (instant for local files, up to timeout_ms on slow shares); move to a thread if that bites
+            # Blocks up to timeout_ms on slow shares; callers run this off the event loop (asyncio.to_thread)
             while media.get_parsed_status() == 0 and time.monotonic() < deadline:
                 time.sleep(0.05)
             ms = media.get_duration()
