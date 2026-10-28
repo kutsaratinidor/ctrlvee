@@ -1,3 +1,15 @@
+## 1.17.10 - 2026-10-28
+
+### Fixed
+- **Relative playlist autosave path saved outside the project**: A relative `PLAYLIST_AUTOSAVE_FILE` (such as the `template.env` default `ctrlvee_playlist.xspf`) was written two folders above the project. It's now saved next to `bot.py`. Absolute paths are unaffected. If you used a relative path, an old copy may still be sitting two folders up.
+- **Truncated playlist autosave on crash**: Autosave now writes to a temporary file and renames it into place, so a crash or power loss mid-save can't leave a half-written playlist.
+- **One startup failure skipped the rest**: If starting the watch folder failed, the movie request tracker, playlist autosave, and voice join were skipped too, and the log only said "Failed to start WatchFolderService". Each now starts independently and logs its own error.
+- **Startup crash on an unexpected VLC status**: The startup VLC check no longer fails when VLC's status has no playback state; it logs `unknown` instead.
+
+### Changed
+- **Reconnects no longer repeat startup work**: Discord reconnects re-ran the startup sequence (config and command logs, VLC check, role check, notifier setup). Now only voice join and presence are refreshed on a reconnect.
+- **Startup doesn't stall the bot**: The startup VLC check and the wait for the initial watch-folder scan now run in the background.
+
 ## 1.17.9 - 2026-10-28
 
 ### Fixed

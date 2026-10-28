@@ -4,6 +4,7 @@ import asyncio
 import logging
 import threading
 import re
+import json
 import time
 from datetime import datetime, timezone
 from typing import Optional
@@ -1120,388 +1121,306 @@ def _build_watch_announcement_embed(paths: list, is_initial: bool, max_items: in
     return embed
 
 
-@bot.event
-async def on_ready():
-    """Called when the bot is ready."""
-    _log_slash_channel_policy()
-    # Log voice join/reconnect configuration to confirm loaded values
+async def _resolve_announce_channels() -> list:
+    """Configured announce channels, from cache or fetched; unresolvable ones are logged and skipped."""
+    channels = []
+    for cid in Config.get_announce_channel_ids():
+        ch = bot.get_channel(cid)
+        if not ch:
+            try:
+                ch = await bot.fetch_channel(cid)
+            except Exception as e:
+                logger.warning(f"Could not resolve announce channel {cid}: {e}")
+                continue
+        channels.append(ch)
+    return channels
+
+
+def _schedule_on_bot_loop(coro, label: str) -> None:
+    """Run `coro` on the bot's event loop from a service thread, logging if it fails."""
     try:
-        logger.info(
-            "Voice join config: enabled=%s, auto_on_start=%s, channel_id=%s",
-            getattr(Config, 'ENABLE_VOICE_JOIN', False),
-            getattr(Config, 'VOICE_AUTO_JOIN_ON_START', True),
-            getattr(Config, 'VOICE_JOIN_CHANNEL_ID', 0),
-        )
-        logger.info(
-            "Voice reconnect config: max=%s, window=%ss, cooldown=%ss",
-            _MAX_RECONNECTS,
-            _RECONNECT_WINDOW,
-            _RECONNECT_COOLDOWN,
-        )
-        logger.info(
-            "Voice connect config: timeout=%ss, retry_delay=%ss, error_retry_delay=%ss, initial_retries=%s",
-            _VOICE_CONNECT_TIMEOUT,
-            _VOICE_CONNECT_RETRY_DELAY,
-            _VOICE_ERROR_RETRY_DELAY,
-            getattr(Config, 'VOICE_INITIAL_RETRIES', 2),
-        )
-    except Exception:
-        pass
-    async def send_startup_announcement():
-        global _startup_announced
-        if _startup_announced:
-            return
-        announce_ids = Config.get_announce_channel_ids()
-        if not announce_ids:
-            return
+        future = asyncio.run_coroutine_threadsafe(coro, bot.loop)
+    except Exception as e:
+        coro.close()
+        logger.error(f"Failed to schedule {label} task: {e}", exc_info=True)
+        return
 
-        prefix_enabled = bool(getattr(Config, 'ENABLE_PREFIX_COMMANDS', True))
-        slash_enabled = bool(getattr(Config, 'ENABLE_SLASH_COMMANDS', False))
-
-        if prefix_enabled and slash_enabled:
-            command_mode_line = "Command mode: Prefix + Slash"
-            command_hint_line = f"Prefix: `{Config.DISCORD_COMMAND_PREFIX}` • Try `{Config.DISCORD_COMMAND_PREFIX}controls` or `/system help`"
-        elif prefix_enabled:
-            command_mode_line = "Command mode: Prefix"
-            command_hint_line = f"Prefix: `{Config.DISCORD_COMMAND_PREFIX}` • Try `{Config.DISCORD_COMMAND_PREFIX}controls`"
-        else:
-            command_mode_line = "Command mode: Slash"
-            command_hint_line = "Try `/system help`"
-
-        embed = discord.Embed(
-            title="🤖 CtrlVee Bot is Online!",
-            description=(
-                f"Version: {__version__}\n"
-                f"{command_mode_line}\n"
-                f"{command_hint_line}\n"
-                "Ready to receive commands."
-            ),
-            color=discord.Color.green()
-        )
-        embed.set_footer(text="Thank you for using CtrlVee!")
-        # If a Ko-fi URL is configured, make it clearly visible and clickable
+    def _log_result(fut):
         try:
-            if Config.KOFI_URL:
-                # Set the embed URL so the title becomes clickable
-                try:
-                    embed.url = Config.KOFI_URL
-                except Exception:
-                    pass
+            fut.result()
+        except Exception as e:
+            logger.error(f"{label} task failed: {e}", exc_info=True)
 
-                # Add a visible field with the clickable link (angle brackets ensure a clean URL)
-                try:
-                    embed.add_field(name="Support kutsaratinidor by supporting CtrlVee", value=f"☕ {f'<{Config.KOFI_URL}>'}", inline=False)
-                except Exception:
-                    pass
+    future.add_done_callback(_log_result)
 
 
-        except Exception:
-            # Non-fatal: don't block startup announcement on footer issues
-            pass
-        # Prepare local avatar attachment if available
-        avatar_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'screenshots', 'avatar.png')
-        has_avatar_file = os.path.exists(avatar_path)
-        if has_avatar_file:
-            try:
-                embed.set_thumbnail(url='attachment://avatar.png')
-            except Exception:
-                pass
+async def _send_startup_announcement() -> None:
+    """Post the "CtrlVee Bot is Online!" embed to the announce channels, once per process."""
+    global _startup_announced
+    if _startup_announced or not Config.get_announce_channel_ids():
+        return
 
-        for cid in announce_ids:
-            channel = bot.get_channel(cid)
-            if not channel:
-                try:
-                    channel = await bot.fetch_channel(cid)
-                except Exception as e:
-                    logger.warning(f"Could not resolve announce channel {cid}: {e}")
-                    continue
-            try:
-                if has_avatar_file:
-                    # Send the avatar image as an attachment so embed thumbnail displays
-                    await channel.send(embed=embed, file=discord.File(avatar_path, filename='avatar.png'))
-                else:
-                    await channel.send(embed=embed)
-                logger.info(f"Sent startup message to channel {cid}")
-            except Exception as e:
-                logger.warning(f"Failed to send startup message to channel {cid}: {e}")
-
-        # Mark startup announcement complete
-        _startup_announced = True
-
-    # If initial enqueue on start is enabled, delay the announcement until after initial scan completes
-    if Config.WATCH_ENQUEUE_ON_START and watch_service:
-        logger.info("Delaying startup announcement until watch folder initial scan completes...")
-        loop = asyncio.get_event_loop()
-        def wait_and_announce():
-            try:
-                # Wait up to 2 minutes for the initial scan to finish
-                done = watch_service.wait_initial_scan_done(timeout=120)
-                logger.info(f"Initial scan completion wait result: {done}")
-            except Exception as e:
-                logger.error(f"Error while waiting for initial scan: {e}")
-            finally:
-                asyncio.run_coroutine_threadsafe(send_startup_announcement(), loop)
-        # Run the waiting in a lightweight thread so we don't block the event loop
-        threading.Thread(target=wait_and_announce, name="AnnounceAfterInitialScan", daemon=True).start()
+    prefix = Config.DISCORD_COMMAND_PREFIX
+    prefix_enabled = bool(getattr(Config, 'ENABLE_PREFIX_COMMANDS', True))
+    slash_enabled = bool(getattr(Config, 'ENABLE_SLASH_COMMANDS', False))
+    if prefix_enabled and slash_enabled:
+        command_mode_line = "Command mode: Prefix + Slash"
+        command_hint_line = f"Prefix: `{prefix}` • Try `{prefix}controls` or `/system help`"
+    elif prefix_enabled:
+        command_mode_line = "Command mode: Prefix"
+        command_hint_line = f"Prefix: `{prefix}` • Try `{prefix}controls`"
     else:
-        await send_startup_announcement()
-    logger.info(f'{bot.user} has connected to Discord!')
+        command_mode_line = "Command mode: Slash"
+        command_hint_line = "Try `/system help`"
 
-    # Startup sanity check for role configuration across joined guilds.
-    _warn_unknown_allowed_roles_on_startup()
-    
-    # Log all loaded commands and their checks
+    embed = discord.Embed(
+        title="🤖 CtrlVee Bot is Online!",
+        description=(
+            f"Version: {__version__}\n"
+            f"{command_mode_line}\n"
+            f"{command_hint_line}\n"
+            "Ready to receive commands."
+        ),
+        color=discord.Color.green()
+    )
+    embed.set_footer(text="Thank you for using CtrlVee!")
+    if Config.KOFI_URL:
+        # Clickable title plus a visible link field
+        embed.url = Config.KOFI_URL
+        embed.add_field(name="Support kutsaratinidor by supporting CtrlVee", value=f"☕ <{Config.KOFI_URL}>", inline=False)
+    avatar_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'screenshots', 'avatar.png')
+    has_avatar_file = os.path.exists(avatar_path)
+    if has_avatar_file:
+        embed.set_thumbnail(url='attachment://avatar.png')
+
+    for channel in await _resolve_announce_channels():
+        try:
+            if has_avatar_file:
+                # The avatar goes as an attachment so the embed thumbnail can reference it
+                await channel.send(embed=embed, file=discord.File(avatar_path, filename='avatar.png'))
+            else:
+                await channel.send(embed=embed)
+            logger.info(f"Sent startup message to channel {channel.id}")
+        except Exception as e:
+            logger.warning(f"Failed to send startup message to channel {channel.id}: {e}")
+    _startup_announced = True
+
+
+async def _announce_startup_after_initial_scan() -> None:
+    """Hold the startup announcement until the watch folder's initial enqueue finishes
+    (up to 2 minutes), so it lands before that scan's "New Media Added" posts."""
+    try:
+        done = await asyncio.to_thread(watch_service.wait_initial_scan_done, timeout=120)
+        logger.info(f"Initial scan completion wait result: {done}")
+    except Exception as e:
+        logger.error(f"Error while waiting for initial scan: {e}")
+    await _send_startup_announcement()
+
+
+async def _send_watch_announcement(paths: list, is_initial: bool) -> None:
+    # Let the startup announcement go first (up to 5s)
+    await bot.wait_until_ready()
+    for _ in range(20):
+        if _startup_announced:
+            break
+        await asyncio.sleep(0.25)
+    channels = await _resolve_announce_channels()
+    logger.info(f"Announcing to channels: {[ch.id for ch in channels]}")
+    if not channels:
+        logger.warning("No announce channels resolved. Announcement skipped.")
+        return
+    max_items = max(1, Config.WATCH_ANNOUNCE_MAX_ITEMS)
+    try:
+        # Off the event loop: TMDB lookups and the VLC playlist fetch block
+        embed = await asyncio.to_thread(_build_watch_announcement_embed, paths, is_initial, max_items)
+    except Exception as e:
+        logger.error(f"Error preparing announcement embed: {e}", exc_info=True)
+        embed = discord.Embed(
+            title="✨ New Media Added",
+            description=f"**{os.path.basename(paths[0])}** has been added to the library.",
+            color=discord.Color.purple()
+        )
+    if embed is None:
+        return
+    for ch in channels:
+        try:
+            logger.info(f"Sending announcement to channel {ch.id}")
+            await ch.send(embed=embed)
+        except discord.Forbidden:
+            logger.warning(f"Missing permission to send announcements in channel {ch.id}.")
+        except Exception as e:
+            logger.error(f"Failed to send announcement to channel {ch.id}: {e}")
+
+
+def _watch_notifier(paths, is_initial=False):
+    """WatchFolderService callback (on its thread) for newly enqueued files."""
+    logger.info(f"Notifier called with {len(paths)} new files: {paths}")
+    _schedule_on_bot_loop(_send_watch_announcement(paths, is_initial), "Announcement")
+
+
+async def _send_availability_announcement(record: dict) -> None:
+    channel_id = Config.REQUEST_ANNOUNCE_CHANNEL_ID or Config.REQUEST_CHANNEL_ID
+    if not channel_id:
+        return
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(channel_id)
+        except Exception as e:
+            logger.error(f"Failed to fetch movie request announce channel {channel_id}: {e}")
+            return
+    embed = discord.Embed(
+        title="🎬 Now Available",
+        description=f"**{record.get('title')}**" + (f" ({record.get('year')})" if record.get('year') else "") + " is now available to watch.",
+        color=discord.Color.green(),
+    )
+    if record.get('overview'):
+        embed.add_field(name="Overview", value=record['overview'][:1024], inline=False)
+    if record.get('poster_path'):
+        embed.set_thumbnail(url=f"https://image.tmdb.org/t/p/w500{record['poster_path']}")
+    try:
+        await channel.send(
+            content=f"<@{record.get('requested_by_id')}> your requested movie is now available!",
+            embed=embed,
+        )
+    except discord.Forbidden:
+        logger.warning(f"Missing permission to send movie request announcement in channel {channel_id}.")
+    except Exception as e:
+        logger.error(f"Failed to send movie request announcement: {e}")
+
+
+def _movie_request_notifier(record: dict) -> None:
+    """MovieRequestTracker callback (on its thread) when a requested movie becomes available."""
+    _schedule_on_bot_loop(_send_availability_announcement(record), "Movie request announcement")
+
+
+def _resolve_autosave_path(filename: str) -> str:
+    """Relative autosave paths are taken from bot.py's directory (the project root)."""
+    if os.path.isabs(filename):
+        return filename
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+
+
+def _autosave_playlist_once(path: str) -> None:
+    """Save VLC's playlist to `path` (XSPF for .xspf, else JSON) if it has entries. Blocking."""
+    playlist_xml = vlc.get_playlist()
+    if playlist_xml is None:
+        logger.debug("Playlist autosave skipped: VLC HTTP interface not reachable")
+        return
+    if not playlist_xml.findall('.//leaf'):
+        logger.debug("Playlist autosave skipped: playlist is empty or has no entries")
+        return
+    if path.lower().endswith('.xspf'):
+        fmt, content = 'XSPF', vlc.export_playlist_xspf()
+    else:
+        data = vlc.export_playlist()
+        fmt, content = 'JSON', json.dumps({'saved_at': time.time(), 'items': data}, indent=2) if data else None
+    if not content:
+        logger.debug(f"Playlist autosave skipped (no {fmt} data returned)")
+        return
+    # Write then rename, so a crash mid-write can't leave a truncated playlist
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, 'w', encoding='utf-8') as f:
+        f.write(content)
+    os.replace(tmp_path, path)
+    logger.info(f"Playlist autosaved ({fmt}) -> {path}")
+
+
+def _autosave_worker(path: str, interval: int) -> None:
+    logger.info(f"Playlist autosave enabled -> file='{path}', interval={interval}s")
+    while not _autosave_stop.is_set():
+        try:
+            _autosave_playlist_once(path)
+        except Exception as e:
+            logger.error(f"Playlist autosave error: {e}")
+        _autosave_stop.wait(interval)
+
+
+def _check_vlc_connection() -> None:
+    """Log whether VLC's HTTP interface is reachable, with setup steps if not. Blocking."""
+    status = vlc.get_status()
+    if status is not None:
+        logger.info(f"Successfully connected to VLC's HTTP interface (Current state: {status.findtext('state') or 'unknown'})")
+        return
+    logger.warning("Could not connect to VLC. Please make sure VLC is running with the HTTP interface enabled")
+    logger.info("\nTo enable VLC HTTP interface:")
+    logger.info("1. Open VLC")
+    logger.info("2. Go to Preferences (Cmd+,)")
+    logger.info("3. Click 'Show All' at the bottom left")
+    logger.info("4. Go to Interface → Main Interfaces")
+    logger.info("5. Check 'Web'")
+    logger.info("6. Go to Interface → Main Interfaces → Lua")
+    logger.info("7. Set password as 'vlc'")
+    logger.info("8. Restart VLC")
+    logger.warning("Starting bot anyway - will retry connection when needed...")
+
+
+def _log_startup_config() -> None:
+    _log_slash_channel_policy()
+    logger.info(
+        "Voice join config: enabled=%s, auto_on_start=%s, channel_id=%s",
+        getattr(Config, 'ENABLE_VOICE_JOIN', False),
+        getattr(Config, 'VOICE_AUTO_JOIN_ON_START', True),
+        getattr(Config, 'VOICE_JOIN_CHANNEL_ID', 0),
+    )
+    logger.info(
+        "Voice reconnect config: max=%s, window=%ss, cooldown=%ss",
+        _MAX_RECONNECTS, _RECONNECT_WINDOW, _RECONNECT_COOLDOWN,
+    )
+    logger.info(
+        "Voice connect config: timeout=%ss, retry_delay=%ss, error_retry_delay=%ss, initial_retries=%s",
+        _VOICE_CONNECT_TIMEOUT, _VOICE_CONNECT_RETRY_DELAY, _VOICE_ERROR_RETRY_DELAY,
+        getattr(Config, 'VOICE_INITIAL_RETRIES', 2),
+    )
     logger.info("Loaded commands:")
     for command in bot.commands:
         logger.info(f"Command: {command.name}")
         if command.checks:
-            logger.info(f"  Checks: {[check.__name__ if hasattr(check, '__name__') else str(check) for check in command.checks]}")
+            logger.info(f"  Checks: {[getattr(check, '__name__', str(check)) for check in command.checks]}")
         if hasattr(command, 'cog_name'):
             logger.info(f"  Cog: {command.cog_name}")
-    
-    # Test VLC connection
-    logger.info("Testing VLC connection...")
-    status = vlc.get_status()
-    if status is not None:
-        state = status.find('state').text
-        logger.info(f"Successfully connected to VLC's HTTP interface (Current state: {state})")
-    else:
-        logger.warning("Could not connect to VLC. Please make sure VLC is running with the HTTP interface enabled")
-        logger.info("\nTo enable VLC HTTP interface:")
-        logger.info("1. Open VLC")
-        logger.info("2. Go to Preferences (Cmd+,)")
-        logger.info("3. Click 'Show All' at the bottom left")
-        logger.info("4. Go to Interface → Main Interfaces")
-        logger.info("5. Check 'Web'")
-        logger.info("6. Go to Interface → Main Interfaces → Lua")
-        logger.info("7. Set password as 'vlc'")
-        logger.info("8. Restart VLC")
-        logger.warning("Starting bot anyway - will retry connection when needed...")
 
-    # If presence updates are globally disabled, clear any existing presence immediately
-    try:
-        if not getattr(Config, 'ENABLE_PRESENCE', True):
-            try:
-                await bot.change_presence(activity=None)
-                logger.info("Presence cleared at startup because ENABLE_PRESENCE=false")
-            except Exception as e:
-                logger.debug(f"Failed to clear presence at startup: {e}")
-    except Exception:
-        # Guard: any failure here is non-fatal
-        pass
 
-    # Start watch service if configured
+def _start_background_services() -> None:
+    """Start the watch folder, movie request tracker and playlist autosave threads.
+    Each is independent: one failing to start doesn't stop the others."""
+    global _autosave_thread
     try:
-        # Set announcement notifier for multiple channels if configured
         ids = Config.get_announce_channel_ids()
         logger.info(f"Configured announce channel IDs: {list(ids) if ids else 'None'}")
         if ids:
-            async def get_channels():
-                channels = []
-                for cid in Config.get_announce_channel_ids():
-                    ch = bot.get_channel(cid)
-                    logger.debug(f"Attempting to resolve channel ID {cid}: bot.get_channel -> {ch}")
-                    if not ch:
-                        try:
-                            ch = await bot.fetch_channel(cid)
-                            logger.debug(f"Fetched channel {cid} via fetch_channel: {ch}")
-                        except Exception as e:
-                            logger.error(f"Failed to fetch channel {cid}: {e}")
-                            ch = None
-                    if ch:
-                        channels.append(ch)
-                logger.info(f"Resolved announce channels: {[ch.id for ch in channels]}")
-                return channels
-
-            def notifier(paths, is_initial=False):
-                logger.info(f"Notifier called with {len(paths)} new files: {paths}")
-                async def _send_announcement():
-                    # Ensure startup announcement is sent first
-                    try:
-                        await bot.wait_until_ready()
-                        tries = 0
-                        while not _startup_announced and tries < 20:
-                            await asyncio.sleep(0.25)
-                            tries += 1
-                    except Exception:
-                        pass
-                    channels = await get_channels()
-                    logger.info(f"Announcing to channels: {[ch.id for ch in channels]}")
-                    if not channels:
-                        logger.warning("No announce channels resolved. Announcement skipped.")
-                        return
-                    max_items = max(1, Config.WATCH_ANNOUNCE_MAX_ITEMS)
-                    try:
-                        # Off the event loop: TMDB lookups and the VLC playlist fetch block
-                        final_embed = await asyncio.to_thread(_build_watch_announcement_embed, paths, is_initial, max_items)
-                    except Exception as e:
-                        logger.error(f"Error preparing announcement embed: {e}", exc_info=True)
-                        final_embed = discord.Embed(
-                            title="✨ New Media Added",
-                            description=f"**{os.path.basename(paths[0])}** has been added to the library.",
-                            color=discord.Color.purple()
-                        )
-                    if final_embed is None:
-                        return
-                    for ch in channels:
-                        try:
-                            logger.info(f"Sending announcement to channel {ch.id}")
-                            await ch.send(embed=final_embed)
-                        except discord.Forbidden:
-                            logger.warning(f"Missing permission to send announcements in channel {ch.id}.")
-                        except Exception as e:
-                            logger.error(f"Failed to send announcement to channel {ch.id}: {e}")
-
-                # Schedule the announcement and log if it fails
-                try:
-                    future = asyncio.run_coroutine_threadsafe(_send_announcement(), bot.loop)
-                    # Add a callback to log if the task raised an exception
-                    def _log_result(fut):
-                        try:
-                            fut.result()  # Will raise if the coroutine failed
-                            logger.info("Announcement task completed successfully")
-                        except Exception as e:
-                            logger.error(f"Announcement task failed with exception: {e}", exc_info=True)
-                    future.add_done_callback(_log_result)
-                except Exception as e:
-                    logger.error(f"Failed to schedule announcement coroutine: {e}", exc_info=True)
-
-            watch_service.set_notifier(notifier)
-
-        started = watch_service.start()
-        if started:
+            watch_service.set_notifier(_watch_notifier)
+        if watch_service.start():
             logger.info("WatchFolderService started")
         else:
             logger.info("WatchFolderService not started (disabled or already running)")
+    except Exception as e:
+        logger.error(f"Failed to start WatchFolderService: {e}")
 
-        def movie_request_notifier(record: dict) -> None:
-            async def _send_availability_announcement():
-                channel_id = Config.REQUEST_ANNOUNCE_CHANNEL_ID or Config.REQUEST_CHANNEL_ID
-                if not channel_id:
-                    return
-                channel = bot.get_channel(channel_id)
-                if channel is None:
-                    try:
-                        channel = await bot.fetch_channel(channel_id)
-                    except Exception as e:
-                        logger.error(f"Failed to fetch movie request announce channel {channel_id}: {e}")
-                        return
-                embed = discord.Embed(
-                    title="🎬 Now Available",
-                    description=f"**{record.get('title')}**" + (f" ({record.get('year')})" if record.get('year') else "") + " is now available to watch.",
-                    color=discord.Color.green(),
-                )
-                if record.get('overview'):
-                    embed.add_field(name="Overview", value=record['overview'][:1024], inline=False)
-                if record.get('poster_path'):
-                    embed.set_thumbnail(url=f"https://image.tmdb.org/t/p/w500{record['poster_path']}")
-                try:
-                    await channel.send(
-                        content=f"<@{record.get('requested_by_id')}> your requested movie is now available!",
-                        embed=embed,
-                    )
-                except discord.Forbidden:
-                    logger.warning(f"Missing permission to send movie request announcement in channel {channel_id}.")
-                except Exception as e:
-                    logger.error(f"Failed to send movie request announcement: {e}")
-
-            try:
-                future = asyncio.run_coroutine_threadsafe(_send_availability_announcement(), bot.loop)
-
-                def _log_result(fut):
-                    try:
-                        fut.result()
-                    except Exception as e:
-                        logger.error(f"Movie request announcement task failed: {e}", exc_info=True)
-
-                future.add_done_callback(_log_result)
-            except Exception as e:
-                logger.error(f"Failed to schedule movie request announcement: {e}", exc_info=True)
-
-        movie_request_tracker.set_notifier(movie_request_notifier)
-        request_tracker_started = movie_request_tracker.start()
-        if request_tracker_started:
+    try:
+        movie_request_tracker.set_notifier(_movie_request_notifier)
+        if movie_request_tracker.start():
             logger.info("MovieRequestTracker started")
         else:
             logger.info("MovieRequestTracker not started (no REQUEST_STORE_FILE configured)")
+    except Exception as e:
+        logger.error(f"Failed to start MovieRequestTracker: {e}")
 
-        # Start autosave thread if configured
-        if Config.PLAYLIST_AUTOSAVE_FILE:
-            def _resolve_autosave_path(filename: str) -> str:
-                if os.path.isabs(filename):
-                    return filename
-                # Save to same directory as bot.py
-                base_dir = os.path.dirname(os.path.abspath(__file__))
-                # __file__ is in src/, go up one level to project root
-                project_root = os.path.abspath(os.path.join(base_dir, os.pardir, os.pardir))
-                return os.path.join(project_root, filename)
-
-            autosave_path = _resolve_autosave_path(Config.PLAYLIST_AUTOSAVE_FILE)
+    if Config.PLAYLIST_AUTOSAVE_FILE and not (_autosave_thread and _autosave_thread.is_alive()):
+        try:
+            path = _resolve_autosave_path(Config.PLAYLIST_AUTOSAVE_FILE)
             interval = max(10, int(Config.PLAYLIST_AUTOSAVE_INTERVAL))
+            _autosave_stop.clear()
+            _autosave_thread = threading.Thread(target=_autosave_worker, args=(path, interval), name="PlaylistAutosave", daemon=True)
+            _autosave_thread.start()
+        except Exception as e:
+            logger.error(f"Failed to start playlist autosave: {e}")
 
-            def autosave_worker():
-                logger.info(f"Playlist autosave enabled -> file='{autosave_path}', interval={interval}s")
-                while not _autosave_stop.is_set():
-                    try:
-                        # Verify VLC is reachable and playlist has entries before saving
-                        status = vlc.get_status()
-                        if status is None:
-                            logger.debug("Playlist autosave skipped: VLC HTTP interface not reachable")
-                        else:
-                            # Check playlist entries
-                            playlist_xml = vlc.get_playlist()
-                            has_entries = False
-                            try:
-                                if playlist_xml is not None:
-                                    leaves = playlist_xml.findall('.//leaf')
-                                    if leaves and len(leaves) > 0:
-                                        has_entries = True
-                            except Exception:
-                                # If parsing playlist fails, be conservative and skip saving
-                                has_entries = False
 
-                            if not has_entries:
-                                logger.debug("Playlist autosave skipped: playlist is empty or has no entries")
-                            else:
-                                if autosave_path.lower().endswith('.xspf'):
-                                    xspf = vlc.export_playlist_xspf()
-                                    if xspf:
-                                        logger.info(f"Saving playlist (XSPF) -> {autosave_path}")
-                                        with open(autosave_path, 'w', encoding='utf-8') as f:
-                                            f.write(xspf)
-                                        logger.debug(f"Playlist autosaved (XSPF) to {autosave_path}")
-                                    else:
-                                        logger.debug("Playlist autosave skipped (no XSPF data returned)")
-                                else:
-                                    data = vlc.export_playlist()
-                                    if data:
-                                        logger.info(f"Saving playlist (JSON) -> {autosave_path}")
-                                        with open(autosave_path, 'w', encoding='utf-8') as f:
-                                            import json
-                                            json.dump({
-                                                'saved_at': __import__('time').time(),
-                                                'items': data
-                                            }, f, indent=2)
-                                        try:
-                                            item_count = len(data) if hasattr(data, '__len__') else 'unknown'
-                                        except Exception:
-                                            item_count = 'unknown'
-                                        logger.debug(f"Playlist autosaved to {autosave_path} ({item_count} items)")
-                                    else:
-                                        logger.debug("Playlist autosave skipped (no playlist data returned)")
-                    except Exception as e:
-                        logger.error(f"Playlist autosave error: {e}")
-                    finally:
-                        _autosave_stop.wait(interval)
-
-            global _autosave_thread
-            if not _autosave_thread or not _autosave_thread.is_alive():
-                _autosave_stop.clear()
-                _autosave_thread = threading.Thread(target=autosave_worker, name="PlaylistAutosave", daemon=True)
-                _autosave_thread.start()
-
-        # Join voice channel after all startup tasks are done
-        global _voice_guard_task, _voice_retry_task
+async def _start_voice() -> None:
+    """Initial voice join, plus the retry and guard tasks (each started only if not already running)."""
+    global _voice_guard_task, _voice_retry_task
+    try:
         joined = await join_voice_channel()
         if not joined and getattr(Config, 'ENABLE_VOICE_JOIN', False):
             # Don't permanently give up if the initial join failed — see
@@ -1509,17 +1428,54 @@ async def on_ready():
             # reconnect handler can't recover this on its own.
             if _voice_retry_task is None or _voice_retry_task.done():
                 _voice_retry_task = bot.loop.create_task(_retry_initial_voice_join())
-        # Start voice connection guard if enabled
-        try:
-            if getattr(Config, 'ENABLE_VOICE_GUARD', False):
-                if _voice_guard_task is None or _voice_guard_task.done():
-                    _voice_guard_task = bot.loop.create_task(_voice_connection_guard())
-            else:
-                logger.info("Voice guard is disabled (ENABLE_VOICE_GUARD=false)")
-        except Exception as e:
-            logger.debug(f"Could not start voice connection guard: {e}")
     except Exception as e:
-        logger.error(f"Failed to start WatchFolderService: {e}")
+        logger.error(f"Initial voice join failed: {e}")
+    try:
+        if getattr(Config, 'ENABLE_VOICE_GUARD', False):
+            if _voice_guard_task is None or _voice_guard_task.done():
+                _voice_guard_task = bot.loop.create_task(_voice_connection_guard())
+        else:
+            logger.info("Voice guard is disabled (ENABLE_VOICE_GUARD=false)")
+    except Exception as e:
+        logger.debug(f"Could not start voice connection guard: {e}")
+
+
+_startup_done = False
+_startup_announce_task = None
+
+
+@bot.event
+async def on_ready():
+    """Called when the bot is ready, and again after each gateway reconnect.
+
+    One-time startup (announcement, config logs, VLC check, background services)
+    runs only on the first call; presence and voice join run every time.
+    """
+    global _startup_done, _startup_announce_task
+    logger.info(f'{bot.user} has connected to Discord!')
+    if not _startup_done:
+        _startup_done = True
+        _log_startup_config()
+        if Config.WATCH_ENQUEUE_ON_START and watch_service:
+            logger.info("Delaying startup announcement until watch folder initial scan completes...")
+            _startup_announce_task = bot.loop.create_task(_announce_startup_after_initial_scan())
+        else:
+            await _send_startup_announcement()
+        _warn_unknown_allowed_roles_on_startup()
+        logger.info("Testing VLC connection...")
+        await asyncio.to_thread(_check_vlc_connection)
+        _start_background_services()
+
+    if not getattr(Config, 'ENABLE_PRESENCE', True):
+        try:
+            await bot.change_presence(activity=None)
+            logger.info("Presence cleared at startup because ENABLE_PRESENCE=false")
+        except Exception as e:
+            logger.debug(f"Failed to clear presence at startup: {e}")
+
+    # Join voice channel after all startup tasks are done
+    await _start_voice()
+
 
 class CommandChannelContext(commands.Context):
     """Custom context that redirects bot responses to a dedicated command channel when configured.
