@@ -1,3 +1,12 @@
+## 1.17.9 - 2026-10-28
+
+### Fixed
+- **Duplicate "Total Size" in watch-folder announcements**: A batch of new files that didn't match a TMDB season showed the **Total Size** field twice. It now appears once.
+- **Unneeded TMDB lookups for new-media announcements**: A single new movie was looked up on TMDB twice (the first result was discarded). Files found on the initial scan were still looked up once even though the announcement doesn't use TMDB, and single TV episodes hidden by `SUPPRESS_SINGLE_TV` were looked up before being suppressed. Each now does only the lookups it needs.
+
+### Changed
+- **New-media announcements no longer stall the bot**: The TMDB lookups and VLC playlist read for a watch-folder announcement now run in the background, so other commands and voice handling keep responding while it's being built.
+
 ## 1.17.8 - 2026-10-28
 
 ### Changed

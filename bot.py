@@ -911,6 +911,215 @@ async def setup_hook():
         logger.error(f"Error loading cogs: {e}")
         sys.exit(1)
 
+def _detect_season(paths_list):
+    """Season number and its folder from the first path that names one (S01E02, 1x02, or a 'Season 1' folder)."""
+    for p in paths_list:
+        bn = os.path.basename(p)
+        par = os.path.dirname(p)
+        m = (re.search(r'[sS]?(\d{1,2})[xXeE](\d{1,2})', bn)
+             or re.search(r'(?<!\d)(\d{1,2})[xX](\d{1,2})(?!\d)', bn)
+             or re.search(r'[sS]eason[\s_\-]?(\d{1,2})', par))
+        if m:
+            return int(m.group(1)), par
+    return None, None
+
+
+def _announce_list_line(path: str) -> str:
+    name = os.path.basename(path)
+    try:
+        return f"• {MediaUtils.get_media_icon(name)} {MediaUtils.clean_filename_for_display(name)}"
+    except Exception as e:
+        logger.error(f"Error formatting announcement line for {path}: {e}")
+        return f"• {name}"
+
+
+def _lookup_season_embed(paths: list, season_num: int, season_parent: str | None):
+    """TMDB season embed for a batch, naming the series after the folder above 'Season N'."""
+    try:
+        series_name, series_year = None, None
+        if season_parent:
+            show_dir = os.path.dirname(season_parent)
+            series_name = os.path.basename(show_dir) if show_dir else None
+        if not series_name:
+            first = os.path.basename(paths[0])
+            s_title, _, _, series_year = MediaUtils.parse_tv_filename(first)
+            series_name = s_title or MediaUtils.clean_movie_title(first)
+        if series_name:
+            logger.info(f"Announcement TV parse: series='{series_name}' year={series_year} season={season_num}")
+            return tmdb_service.get_tv_metadata(series_name, season_num, series_year)
+    except Exception as e:
+        logger.debug(f"TV metadata lookup failed: {e}")
+    return None
+
+
+def _lookup_single_embed(fname: str, tv: tuple, has_explicit_episode: bool):
+    """(embed, is_movie) for one file: an explicit episode prefers TV; otherwise the
+    better-scoring of the movie and TV matches. Falls back to a TV lookup by the movie title."""
+    tv_title, tv_season, _, tv_year = tv
+    clean_title, year = MediaUtils.parse_movie_filename(fname)
+    logger.info(f"Announcement single parse (Movie): title='{clean_title}' year={year} from '{fname}'")
+    if has_explicit_episode:
+        if tv_title:
+            embed = tmdb_service.get_tv_metadata(tv_title, tv_season, tv_year)
+        elif clean_title:
+            embed = tmdb_service.get_movie_metadata(clean_title, year)
+            if embed:
+                return embed, True
+        else:
+            embed = None
+    else:
+        movie_embed, movie_score = None, 0.0
+        tv_embed, tv_score = None, 0.0
+        if clean_title:
+            movie_embed = tmdb_service.get_movie_metadata(clean_title, year)
+            movie_score = getattr(tmdb_service, '_last_match_score', 0.0)
+            logger.info(f"Movie lookup score: {movie_score:.1f}")
+        if tv_title:
+            tv_embed = tmdb_service.get_tv_metadata(tv_title, tv_season, tv_year)
+            tv_score = getattr(tmdb_service, '_last_match_score', 0.0)
+            logger.info(f"TV lookup score: {tv_score:.1f}")
+        if movie_embed and not (tv_embed and tv_score > movie_score):
+            logger.info(f"Chose movie (score {movie_score:.1f}) over TV (score {tv_score:.1f})")
+            return movie_embed, True
+        embed = tv_embed
+    if not embed and clean_title:
+        embed = tmdb_service.get_tv_metadata(clean_title)
+    return embed, False
+
+
+def _media_added_embed(paths: list, is_initial: bool, max_items: int) -> discord.Embed | None:
+    """The "New Media Added" embed for files the watch folder just enqueued.
+
+    A batch gets the TMDB season embed when a season is detected, a single file the
+    better movie/TV match; otherwise the plain file list. No TMDB lookups on the
+    initial scan. None when SUPPRESS_SINGLE_TV suppresses a single episode.
+    """
+    sizes = {}
+    for p in paths:
+        try:
+            sizes[p] = os.path.getsize(p)
+        except Exception:
+            sizes[p] = None
+    total_size = sum(s for s in sizes.values() if s)
+    shown = paths[:max_items]
+    file_list = "\n".join(_announce_list_line(p) for p in shown)
+    purple = discord.Color.purple()
+
+    if len(paths) > 1:
+        if len(paths) > len(shown):
+            file_list += f"\n… and {len(paths) - len(shown)} more"
+        season_num, season_parent = _detect_season(paths)
+        tv_embed = None
+        if not is_initial and season_num is not None and tmdb_service:
+            tv_embed = _lookup_season_embed(paths, season_num, season_parent)
+        if tv_embed:
+            tv_embed.title = f"✨ New Media Added: {tv_embed.title}"
+            overview = (tv_embed.description or '').strip()
+            tv_embed.description = f"{overview}\n\n{file_list}" if overview else file_list
+            tv_embed.color = purple
+            tv_embed.add_field(name="Total Size", value=_format_bytes(total_size), inline=True)
+            return tv_embed
+        embed = discord.Embed(title="✨ New Media Added", description=file_list, color=purple)
+        embed.add_field(name="Total Size", value=_format_bytes(total_size), inline=True)
+        if Config.KOFI_URL:
+            embed.add_field(name="Support kutsaratinidor by supporting CtrlVee", value=f"☕ <{Config.KOFI_URL}>", inline=False)
+        return embed
+
+    path = paths[0]
+    fname = os.path.basename(path)
+    edition_tag = MediaUtils.extract_edition_tag(path)
+    size = sizes.get(path)
+    tmdb_embed, is_movie = None, False
+    if tmdb_service:
+        try:
+            tv = MediaUtils.parse_tv_filename(fname)
+            if tv[0]:
+                logger.info(f"Announcement single parse (TV): series='{tv[0]}' year={tv[3]} season={tv[1]} episode={tv[2]} from '{fname}'")
+            # Only an explicit episode marker (S01E02 / 1x02) counts as a TV episode for suppression
+            has_explicit_episode = bool(tv[2]) or bool(re.search(r"(?i)(s\d{1,2}e\d{1,2}|\d{1,2}x\d{1,2})", fname))
+            if tv[0] and has_explicit_episode and bool(getattr(Config, 'SUPPRESS_SINGLE_TV', True)):
+                logger.info("Single TV episode announcement suppressed by rule (set SUPPRESS_SINGLE_TV=false to send)")
+                return None
+            if not is_initial:
+                tmdb_embed, is_movie = _lookup_single_embed(fname, tv, has_explicit_episode)
+        except Exception as e:
+            logger.error(f"Error preparing TMDB embed for announcement: {e}")
+            tmdb_embed = None
+
+    if tmdb_embed:
+        tmdb_embed.title = f"✨ New Media Added: {tmdb_embed.title}"
+        pretty = MediaUtils.clean_filename_for_display(fname)
+        overview = (tmdb_embed.description or '').strip()
+        added = f"**{pretty}** has been added to the library."
+        tmdb_embed.description = f"{added}\n\n{overview}" if overview else added
+        tmdb_embed.color = purple
+        if edition_tag and is_movie:
+            tmdb_embed.add_field(name="Edition", value=edition_tag, inline=True)
+        if size is not None:
+            tmdb_embed.add_field(name="File Size", value=_format_bytes(size), inline=True)
+        return tmdb_embed
+    embed = discord.Embed(title="✨ New Media Added", description=file_list, color=purple)
+    if size is not None:
+        embed.add_field(name="File Size", value=_format_bytes(size), inline=True)
+    if edition_tag:
+        embed.add_field(name="Edition", value=edition_tag, inline=True)
+    return embed
+
+
+def _add_playlist_positions(embed: discord.Embed, paths: list, max_items: int) -> None:
+    """Add each announced file's playlist number (1-based leaf order, matching
+    play_num / /playback play-item) so users can play it right away."""
+    pos_map = {}
+    try:
+        playlist = vlc.get_playlist()
+        if playlist is not None:
+            for idx, leaf in enumerate(playlist.findall('.//leaf'), 1):
+                p = vlc._uri_to_path(leaf.get('uri'))
+                if p:
+                    pos_map[os.path.normpath(p)] = idx
+    except Exception as e:
+        logger.debug(f"Could not map playlist positions for announcement: {e}")
+    if not pos_map:
+        return
+    # Command hint matches whichever command mode is active.
+    if Config.ENABLE_PREFIX_COMMANDS:
+        play_cmd = f"{Config.DISCORD_COMMAND_PREFIX}play_num {{n}}"
+    else:
+        play_cmd = "/playback play-item {n}"
+    if len(paths) == 1:
+        num = pos_map.get(os.path.normpath(paths[0]))
+        if num:
+            embed.add_field(
+                name="Playback",
+                value=f"**#{num}** in the playlist — run `{play_cmd.format(n=num)}` to play it",
+                inline=False,
+            )
+        return
+    lines = []
+    for p in paths[:max_items]:
+        num = pos_map.get(os.path.normpath(p))
+        if num:
+            pretty = MediaUtils.clean_filename_for_display(os.path.basename(p), max_length=60)
+            lines.append(f"`#{num}` {pretty}")
+    remaining = len(paths) - max_items
+    if remaining > 0:
+        lines.append(f"… and {remaining} more (see `/playlist list`)")
+    if lines:
+        embed.add_field(name="Playlist Positions", value="\n".join(lines), inline=False)
+        embed.set_footer(text=f"Run `{play_cmd.format(n='<number>')}` to play a specific one")
+
+
+def _build_watch_announcement_embed(paths: list, is_initial: bool, max_items: int) -> discord.Embed | None:
+    """Announcement embed with playlist positions, or None if suppressed. Blocking (TMDB, VLC, filesystem)."""
+    embed = _media_added_embed(paths, is_initial, max_items)
+    if embed is not None:
+        try:
+            _add_playlist_positions(embed, paths, max_items)
+        except Exception as e:
+            logger.debug(f"Could not add playlist numbers to announcement: {e}")
+    return embed
+
+
 @bot.event
 async def on_ready():
     """Called when the bot is ready."""
@@ -1122,414 +1331,27 @@ async def on_ready():
                         logger.warning("No announce channels resolved. Announcement skipped.")
                         return
                     max_items = max(1, Config.WATCH_ANNOUNCE_MAX_ITEMS)
-                    # Helper: detect a season number from filenames or parent folder
-                    def _detect_season(paths_list):
-                        season = None
-                        parent = None
-                        for p in paths_list:
-                            try:
-                                bn = os.path.basename(p)
-                                par = os.path.dirname(p)
-                                # Look for S01E02 or s01e02
-                                m = re.search(r'[sS]?(\d{1,2})[xXeE](\d{1,2})', bn)
-                                if m:
-                                    season = int(m.group(1))
-                                    parent = par
-                                    break
-                                # 1x02 pattern
-                                m2 = re.search(r'(?<!\d)(\d{1,2})[xX](\d{1,2})(?!\d)', bn)
-                                if m2:
-                                    season = int(m2.group(1))
-                                    parent = par
-                                    break
-                                # Parent folder named 'Season 1' or similar
-                                m3 = re.search(r'[sS]eason[\s_\-]?(\d{1,2})', par)
-                                if m3:
-                                    season = int(m3.group(1))
-                                    parent = par
-                                    break
-                            except Exception:
-                                continue
-                        return season, parent
-
-                    shown = paths[:max_items]
-                    remaining = len(paths) - len(shown)
-
-                    tmdb_embed = None
-                    # Compute sizes safely from filesystem, not playlist
-                    sizes = {}
-                    total_size = 0
-                    for p in paths:
-                        try:
-                            s = os.path.getsize(p)
-                            sizes[p] = s
-                            total_size += s
-                        except Exception:
-                            sizes[p] = None
-                    edition_tag = None
-                    # Multi-episode batch: try to create a compact season summary
-                    if len(paths) > 1:
-                        season_num, season_parent = _detect_season(paths)
-                        if season_num is not None:
-                            title = f"📥 Added Season {season_num} — {len(paths)} episode(s)"
-                        else:
-                            title = f"📥 {len(paths)} new file(s) added to VLC playlist"
-
-                        desc_lines = []
-                        for p in shown:
-                            try:
-                                name = os.path.basename(p)
-                                pretty = MediaUtils.clean_filename_for_display(name)
-                                icon = MediaUtils.get_media_icon(name)
-                                desc_lines.append(f"• {icon} {pretty}")
-                            except Exception as e:
-                                logger.error(f"Error formatting announcement line for {p}: {e}")
-                                try:
-                                    desc_lines.append(f"• {os.path.basename(p)}")
-                                except Exception:
-                                    desc_lines.append("• <new media>")
-
-                        if remaining > 0:
-                            desc_lines.append(f"… and {remaining} more")
-
-                        embed = discord.Embed(title=title, description="\n".join(desc_lines), color=discord.Color.green())
-                        # Add total batch size
-                        try:
-                            embed.add_field(name="Total Size", value=_format_bytes(total_size), inline=True)
-                        except Exception:
-                            pass
-                        # Add Support/Kofi field when configured
-                        try:
-                            if Config.KOFI_URL:
-                                embed.add_field(name="Support kutsaratinidor by supporting CtrlVee", value=f"☕ {f'<{Config.KOFI_URL}>'}", inline=False)
-                        except Exception:
-                            pass
-                        # If initial scan, suppress TMDB lookups and show only compact list
-                        if is_initial:
-                            tv_embed = None
-                        else:
-                            # If we detected a season number and TMDB is available, fetch TV/season embed
-                            tv_embed = None
-                            try:
-                                if season_num is not None and tmdb_service:
-                                    # Try to derive a series title from the first path's folder or filename
-                                    # Prefer parent folder name (likely the series title)
-                                    series_name = None
-                                    try:
-                                        # If season_parent is '/.../Show/Season 2', take its parent basename
-                                        if season_parent:
-                                            show_dir = os.path.dirname(season_parent)
-                                            series_name = os.path.basename(show_dir) if show_dir else None
-                                    except Exception:
-                                        series_name = None
-                                    # Fallback to cleaning filename
-                                    series_year = None
-                                    if not series_name and paths:
-                                        try:
-                                            # Prefer TV parser to strip SxxExx and noise
-                                            s_title, s_season, _, s_year = MediaUtils.parse_tv_filename(os.path.basename(paths[0]))
-                                            series_name = s_title or MediaUtils.clean_movie_title(os.path.basename(paths[0]))
-                                            series_year = s_year
-                                            # If season not detected earlier, use from filename
-                                            if season_num is None:
-                                                season_num = s_season
-                                        except Exception:
-                                            series_name = None
-
-                                    if series_name:
-                                        logger.info(f"Announcement TV parse: series='{series_name}' year={series_year} season={season_num}")
-                                        tv_embed = tmdb_service.get_tv_metadata(series_name, season_num, series_year)
-                            except Exception as e:
-                                logger.debug(f"TV metadata lookup failed: {e}")
-
-                    else:
-                        # Single item: keep previous behavior and attempt TMDB metadata
-                        title = f"📥 {len(paths)} new file(s) added to VLC playlist"
-                        desc_lines = []
-                        for p in shown:
-                            try:
-                                name = os.path.basename(p)
-                                pretty = MediaUtils.clean_filename_for_display(name)
-                                icon = MediaUtils.get_media_icon(name)
-                                desc_lines.append(f"• {icon} {pretty}")
-                            except Exception as e:
-                                logger.error(f"Error formatting announcement line for {p}: {e}")
-                                try:
-                                    desc_lines.append(f"• {os.path.basename(p)}")
-                                except Exception:
-                                    desc_lines.append("• <new media>")
-
-                        embed = discord.Embed(title=title, description="\n".join(desc_lines), color=discord.Color.green())
-                        if paths:
-                            edition_tag = MediaUtils.extract_edition_tag(paths[0])
-
-                        try:
-                            if len(paths) == 1 and tmdb_service:
-                                fname = os.path.basename(paths[0])
-                                clean_title, year = MediaUtils.parse_movie_filename(fname)
-                                if clean_title:
-                                    logger.info(f"Fetching TMDB metadata for single added item: '{clean_title}' year={year}")
-                                    tmdb_embed = tmdb_service.get_movie_metadata(clean_title, year)
-                        except Exception as e:
-                            logger.error(f"Failed to prepare TMDB embed for single-item announcement: {e}")
-
-                    # Build the final embed: prefer TV season embed for multi-episode batches
-                    final_embed = None
                     try:
-                        if len(paths) > 1:
-                            # If we created a season embed (tv_embed), augment it with the episode list
-                            if 'tv_embed' in locals() and tv_embed:
-                                tv_embed.title = f"✨ New Media Added: {tv_embed.title}"
-                                # Always include the episode list in the description
-                                episode_list = (embed.description if (embed and embed.description) else '').strip()
-                                base_desc = (tv_embed.description or '').strip()
-                                if base_desc and episode_list:
-                                    tv_embed.description = f"{base_desc}\n\n{episode_list}"
-                                elif episode_list:
-                                    tv_embed.description = episode_list
-                                else:
-                                    # Ensure some content exists
-                                    tv_embed.description = f"{len(paths)} new episode(s) added."
-                                tv_embed.color = discord.Color.purple()
-                                # Add size field
-                                try:
-                                    tv_embed.add_field(name="Total Size", value=_format_bytes(total_size), inline=True)
-                                except Exception:
-                                    pass
-                                final_embed = tv_embed
-                            else:
-                                # Fallback to the compact list embed if TV lookup not available
-                                if embed:
-                                    embed.title = f"✨ New Media Added"
-                                    embed.color = discord.Color.purple()
-                                    # Ensure description not empty
-                                    if not embed.description:
-                                        embed.description = f"{len(paths)} new file(s) added to VLC playlist"
-                                    try:
-                                        embed.add_field(name="Total Size", value=_format_bytes(total_size), inline=True)
-                                    except Exception:
-                                        pass
-                                    final_embed = embed
-                                else:
-                                    final_embed = discord.Embed(
-                                        title="✨ New Media Added",
-                                        description=f"{len(paths)} new file(s) added to VLC playlist",
-                                        color=discord.Color.purple()
-                                    )
-                                    try:
-                                        final_embed.add_field(name="Total Size", value=_format_bytes(total_size), inline=True)
-                                    except Exception:
-                                        pass
-                        else:
-                            # Single file: attempt movie first, then TV metadata from filename
-                            suppress_single_tv = False
-                            suppress_cfg = bool(getattr(Config, 'SUPPRESS_SINGLE_TV', True))
-                            if tmdb_service:
-                                fname = os.path.basename(paths[0])
-                                # Try TV parser first
-                                tv_title, tv_season, tv_episode, tv_year = MediaUtils.parse_tv_filename(fname)
-                                if tv_title:
-                                    logger.info(f"Announcement single parse (TV): series='{tv_title}' year={tv_year} season={tv_season} episode={tv_episode} from '{fname}'")
-                                # Tighten TV suppression: only suppress if an explicit episode is detected
-                                # e.g., S01E02 or 1x02 patterns (tv_episode parsed) or a clear season number with episode-like pattern
-                                has_explicit_episode = bool(tv_episode) or bool(re.search(r"(?i)(s\d{1,2}e\d{1,2}|\d{1,2}x\d{1,2})", fname))
-                                if tv_title and suppress_cfg and has_explicit_episode:
-                                    suppress_single_tv = True
-                                clean_title, year = MediaUtils.parse_movie_filename(fname)
-                                logger.info(f"Announcement single parse (Movie): title='{clean_title}' year={year} from '{fname}'")
-                                tmdb_embed = None
-                                is_movie_embed = False
-                                # When no explicit episode marker: try both movie and TV, use the better match
-                                if not is_initial:
-                                    if not has_explicit_episode:
-                                        # No explicit episode: try both and compare scores
-                                        movie_embed = None
-                                        tv_embed = None
-                                        movie_score = 0.0
-                                        tv_score = 0.0
-                                        
-                                        if not suppress_single_tv and clean_title:
-                                            movie_embed = tmdb_service.get_movie_metadata(clean_title, year)
-                                            movie_score = getattr(tmdb_service, '_last_match_score', 0.0)
-                                            logger.info(f"Movie lookup score: {movie_score:.1f}")
-                                        
-                                        if tv_title:
-                                            tv_embed = tmdb_service.get_tv_metadata(tv_title, tv_season, tv_year)
-                                            tv_score = getattr(tmdb_service, '_last_match_score', 0.0)
-                                            logger.info(f"TV lookup score: {tv_score:.1f}")
-                                        
-                                        # Choose the better match
-                                        if tv_embed and movie_embed:
-                                            if tv_score > movie_score:
-                                                logger.info(f"Chose TV (score {tv_score:.1f}) over movie (score {movie_score:.1f})\"")
-                                                tmdb_embed = tv_embed
-                                            else:
-                                                logger.info(f"Chose movie (score {movie_score:.1f}) over TV (score {tv_score:.1f})\"")
-                                                tmdb_embed = movie_embed
-                                                is_movie_embed = True
-                                        elif tv_embed:
-                                            tmdb_embed = tv_embed
-                                        elif movie_embed:
-                                            tmdb_embed = movie_embed
-                                            is_movie_embed = True
-                                        else:
-                                            # Both failed: try generic TV lookup as last resort
-                                            if clean_title:
-                                                tmdb_embed = tmdb_service.get_tv_metadata(clean_title)
-                                    else:
-                                        # Has explicit episode: prefer TV
-                                        if tv_title:
-                                            tmdb_embed = tmdb_service.get_tv_metadata(tv_title, tv_season, tv_year)
-                                        elif not suppress_single_tv and clean_title:
-                                            tmdb_embed = tmdb_service.get_movie_metadata(clean_title, year)
-                                            is_movie_embed = True
-                                        if not tmdb_embed and clean_title:
-                                            tmdb_embed = tmdb_service.get_tv_metadata(clean_title)
-                                    if tmdb_embed:
-                                        tmdb_embed.title = f"✨ New Media Added: {tmdb_embed.title}"
-                                        # Add the pretty filename line above TMDB overview
-                                        pretty = MediaUtils.clean_filename_for_display(os.path.basename(paths[0]))
-                                        overview = (tmdb_embed.description or '').strip()
-                                        if overview:
-                                            tmdb_embed.description = f"**{pretty}** has been added to the library.\n\n{overview}"
-                                        else:
-                                            tmdb_embed.description = f"**{pretty}** has been added to the library."
-                                        tmdb_embed.color = discord.Color.purple()
-                                        if edition_tag and is_movie_embed:
-                                            try:
-                                                tmdb_embed.add_field(name="Edition", value=edition_tag, inline=True)
-                                            except Exception:
-                                                pass
-                                        # Add file size
-                                        try:
-                                            sz = sizes.get(paths[0])
-                                            if sz is not None:
-                                                tmdb_embed.add_field(name="File Size", value=_format_bytes(sz), inline=True)
-                                        except Exception:
-                                            pass
-                                        final_embed = tmdb_embed
+                        # Off the event loop: TMDB lookups and the VLC playlist fetch block
+                        final_embed = await asyncio.to_thread(_build_watch_announcement_embed, paths, is_initial, max_items)
                     except Exception as e:
-                        logger.error(f"Error preparing TMDB embed for announcement: {e}")
-
-                    # If no rich embed, create a simple one
-                    if not final_embed and not (len(paths) == 1 and 'suppress_single_tv' in locals() and suppress_single_tv):
-                        # Generic fallback: use the constructed list embed (embed) if available
+                        logger.error(f"Error preparing announcement embed: {e}", exc_info=True)
+                        final_embed = discord.Embed(
+                            title="✨ New Media Added",
+                            description=f"**{os.path.basename(paths[0])}** has been added to the library.",
+                            color=discord.Color.purple()
+                        )
+                    if final_embed is None:
+                        return
+                    for ch in channels:
                         try:
-                            if embed:
-                                embed.title = "✨ New Media Added"
-                                embed.color = discord.Color.purple()
-                                # Add sizes to fallback
-                                try:
-                                    if len(paths) == 1:
-                                        sz = sizes.get(paths[0])
-                                        if sz is not None:
-                                            embed.add_field(name="File Size", value=_format_bytes(sz), inline=True)
-                                    else:
-                                        embed.add_field(name="Total Size", value=_format_bytes(total_size), inline=True)
-                                except Exception:
-                                    pass
-                                if len(paths) == 1 and edition_tag:
-                                    try:
-                                        embed.add_field(name="Edition", value=edition_tag, inline=True)
-                                    except Exception:
-                                        pass
-                                final_embed = embed
-                            else:
-                                # Last-resort minimal embed
-                                title_text = os.path.basename(paths[0]) if paths else "New Media"
-                                final_embed = discord.Embed(
-                                    title="✨ New Media Added",
-                                    description=f"**{title_text}** has been added to the library.",
-                                    color=discord.Color.purple()
-                                )
-                                try:
-                                    if len(paths) == 1:
-                                        sz = sizes.get(paths[0])
-                                        if sz is not None:
-                                            final_embed.add_field(name="File Size", value=_format_bytes(sz), inline=True)
-                                    else:
-                                        final_embed.add_field(name="Total Size", value=_format_bytes(total_size), inline=True)
-                                except Exception:
-                                    pass
-                                if len(paths) == 1 and edition_tag:
-                                    try:
-                                        final_embed.add_field(name="Edition", value=edition_tag, inline=True)
-                                    except Exception:
-                                        pass
-                        except Exception:
-                            title_text = os.path.basename(paths[0]) if paths else "New Media"
-                            final_embed = discord.Embed(
-                                title="✨ New Media Added",
-                                description=f"**{title_text}** has been added to the library.",
-                                color=discord.Color.purple()
-                            )
-                    # Map each announced path to its playlist position (1-based leaf order,
-                    # matching play_num / /playback play-item) so users can play right away.
-                    pos_map = {}
-                    try:
-                        playlist = vlc.get_playlist()
-                        if playlist is not None:
-                            for idx, leaf in enumerate(playlist.findall('.//leaf'), 1):
-                                p = vlc._uri_to_path(leaf.get('uri'))
-                                if p:
-                                    pos_map[os.path.normpath(p)] = idx
-                    except Exception as e:
-                        logger.debug(f"Could not map playlist positions for announcement: {e}")
-
-                    if final_embed and pos_map:
-                        try:
-                            # Command hint matches whichever command mode is active.
-                            prefix = Config.DISCORD_COMMAND_PREFIX
-                            if Config.ENABLE_PREFIX_COMMANDS:
-                                play_cmd = f"{prefix}play_num {{n}}"
-                            else:
-                                play_cmd = "/playback play-item {n}"
-                            if len(paths) == 1:
-                                num = pos_map.get(os.path.normpath(paths[0]))
-                                if num:
-                                    final_embed.add_field(
-                                        name="Playback",
-                                        value=f"**#{num}** in the playlist — run `{play_cmd.format(n=num)}` to play it",
-                                        inline=False,
-                                    )
-                            else:
-                                lines = []
-                                for p in paths[:max_items]:
-                                    num = pos_map.get(os.path.normpath(p))
-                                    if num:
-                                        pretty = MediaUtils.clean_filename_for_display(os.path.basename(p), max_length=60)
-                                        lines.append(f"`#{num}` {pretty}")
-                                remaining = len(paths) - max_items
-                                if remaining > 0:
-                                    lines.append(f"… and {remaining} more (see `/playlist list`)")
-                                if lines:
-                                    final_embed.add_field(
-                                        name="Playlist Positions",
-                                        value="\n".join(lines),
-                                        inline=False,
-                                    )
-                                    final_embed.set_footer(
-                                        text=f"Run `{play_cmd.format(n='<number>')}` to play a specific one"
-                                    )
+                            logger.info(f"Sending announcement to channel {ch.id}")
+                            await ch.send(embed=final_embed)
+                        except discord.Forbidden:
+                            logger.warning(f"Missing permission to send announcements in channel {ch.id}.")
                         except Exception as e:
-                            logger.debug(f"Could not add playlist numbers to announcement: {e}")
+                            logger.error(f"Failed to send announcement to channel {ch.id}: {e}")
 
-                    # Send the announcement to all configured channels
-                    if not (len(paths) == 1 and 'suppress_single_tv' in locals() and suppress_single_tv):
-                        for ch in channels:
-                            try:
-                                logger.info(f"Sending announcement to channel {ch.id}")
-                                await ch.send(embed=final_embed)
-                            except discord.Forbidden:
-                                logger.warning(f"Missing permission to send announcements in channel {ch.id}.")
-                            except Exception as e:
-                                logger.error(f"Failed to send announcement to channel {ch.id}: {e}")
-                    else:
-                        try:
-                            logger.info("Single TV episode announcement suppressed by rule (set SUPPRESS_SINGLE_TV=false to send)")
-                        except Exception:
-                            pass
-                
                 # Schedule the announcement and log if it fails
                 try:
                     future = asyncio.run_coroutine_threadsafe(_send_announcement(), bot.loop)
@@ -1982,6 +1804,60 @@ async def changelog(ctx):
         logger.error(f"changelog command error: {e}")
         await ctx.send(f"Error loading changelog: {e}")
 
+
+def _select_radarr_instances(instance) -> tuple[list, str | None]:
+    """Configured Radarr instances matching `instance` (a name, display name, or 'all'), or an error message."""
+    if not _radarr_services:
+        return [], "Radarr is not configured. Please set RADARR_* environment variables."
+    target = instance.strip().lower() if isinstance(instance, str) else 'all'
+    if target == 'all':
+        return _radarr_services, None
+    selected = [i for i in _radarr_services if i['name'].lower() == target or i['display'].lower() == target]
+    if not selected:
+        names = ", ".join([i['name'] for i in _radarr_services])
+        disp = ", ".join([i['display'] for i in _radarr_services])
+        return [], f"Unknown Radarr instance '{instance}'. Try one of: {names} (display: {disp}) or 'all'."
+    return selected, None
+
+
+async def _radarr_recent_embed(selected: list, days: int, limit: int, title: str) -> discord.Embed | None:
+    """Recent downloads from each selected instance, fetched concurrently; None if every instance failed."""
+    async def fetch_one(item):
+        name = item['display']
+        svc: RadarrService = item['service']
+        try:
+            return name, await svc.get_recent_downloads(days=days, limit=limit)
+        except Exception as e:
+            return name, {"success": False, "error": str(e)}
+
+    results = await asyncio.gather(*(fetch_one(i) for i in selected))
+
+    embed = discord.Embed(
+        title=title,
+        description=f"Time window: last {days} day(s).",
+        color=discord.Color.purple()
+    )
+    any_success = False
+    for display_name, res in results:
+        if res.get("success"):
+            any_success = True
+            movies = res.get("movies", [])
+            if not movies:
+                value = "No recent items found."
+            else:
+                lines = []
+                for m in movies[:limit]:
+                    title = m.get('title') or 'Untitled'
+                    year = m.get('year') or '—'
+                    lines.append(f"• {title} ({year})")
+                value = "\n".join(lines)
+            embed.add_field(name=display_name, value=value, inline=False)
+        else:
+            err = res.get("error", "Unknown error")
+            embed.add_field(name=f"{display_name} (error)", value=f"❌ {err}", inline=False)
+    return embed if any_success else None
+
+
 @bot.command(name="radarr_recent", aliases=["recent_movies", "recent_radarr"])
 async def radarr_recent(ctx, instance: str = 'all', days: int = 7, limit: int = 10):
     """Show recently downloaded movies from configured Radarr instance(s).
@@ -1992,67 +1868,20 @@ async def radarr_recent(ctx, instance: str = 'all', days: int = 7, limit: int = 
     - !radarr_recent all 3 5 -> all instances, last 3 days, max 5 each
     """
     try:
-        if not _radarr_services:
-            await ctx.send("Radarr is not configured. Please set RADARR_* environment variables.")
+        selected, error = _select_radarr_instances(instance)
+        if error:
+            await ctx.send(error)
             return
-
-        # Resolve instance filter
-        target = instance.strip().lower() if isinstance(instance, str) else 'all'
-        selected = _radarr_services
-        if target != 'all':
-            selected = [i for i in _radarr_services if i['name'].lower() == target or i['display'].lower() == target]
-            if not selected:
-                names = ", ".join([i['name'] for i in _radarr_services])
-                disp = ", ".join([i['display'] for i in _radarr_services])
-                await ctx.send(f"Unknown Radarr instance '{instance}'. Try one of: {names} (display: {disp}) or 'all'.")
-                return
 
         # Clamp days/limit
         days = max(1, int(days))
         limit = max(1, min(25, int(limit)))
 
-        # Fetch concurrently
-        async def fetch_one(item):
-            name = item['display']
-            svc: RadarrService = item['service']
-            try:
-                return name, await svc.get_recent_downloads(days=days, limit=limit)
-            except Exception as e:
-                return name, {"success": False, "error": str(e)}
-
-        results = await asyncio.gather(*(fetch_one(i) for i in selected))
-
-        # Build embed
-        embed = discord.Embed(
-            title="🎬 Recently Added Movies",
-            description=f"Time window: last {days} day(s).",
-            color=discord.Color.purple()
-        )
-        embed.set_footer(text=f"Use {Config.DISCORD_COMMAND_PREFIX}radarr_recent [instance|all] [days] [limit]")
-
-        any_success = False
-        for display_name, res in results:
-            if res.get("success"):
-                any_success = True
-                movies = res.get("movies", [])
-                if not movies:
-                    value = "No recent items found."
-                else:
-                    lines = []
-                    for m in movies[:limit]:
-                        title = m.get('title') or 'Untitled'
-                        year = m.get('year') or '—'
-                        lines.append(f"• {title} ({year})")
-                    value = "\n".join(lines)
-                embed.add_field(name=display_name, value=value, inline=False)
-            else:
-                err = res.get("error", "Unknown error")
-                embed.add_field(name=f"{display_name} (error)", value=f"❌ {err}", inline=False)
-
-        if not any_success:
+        embed = await _radarr_recent_embed(selected, days, limit, "🎬 Recently Added Movies")
+        if embed is None:
             await ctx.send("Could not retrieve recent movies from any Radarr instance.")
             return
-
+        embed.set_footer(text=f"Use {Config.DISCORD_COMMAND_PREFIX}radarr_recent [instance|all] [days] [limit]")
         await ctx.send(embed=embed)
     except Exception as e:
         logger.error(f"radarr_recent command error: {e}")
@@ -2597,61 +2426,16 @@ async def playlist_radarr_recent(
     days: app_commands.Range[int, 1, 365] = 7,
     limit: app_commands.Range[int, 1, 25] = 10,
 ):
-    if not _radarr_services:
-        await interaction.response.send_message("Radarr is not configured. Please set RADARR_* environment variables.")
+    selected, error = _select_radarr_instances(instance)
+    if error:
+        await interaction.response.send_message(error)
         return
-
-    target = instance.strip().lower() if isinstance(instance, str) else 'all'
-    selected = _radarr_services
-    if target != 'all':
-        selected = [i for i in _radarr_services if i['name'].lower() == target or i['display'].lower() == target]
-        if not selected:
-            names = ", ".join([i['name'] for i in _radarr_services])
-            disp = ", ".join([i['display'] for i in _radarr_services])
-            await interaction.response.send_message(f"Unknown Radarr instance '{instance}'. Try one of: {names} (display: {disp}) or 'all'.")
-            return
 
     await interaction.response.defer(thinking=True)
-
-    async def fetch_one(item):
-        name = item['display']
-        svc: RadarrService = item['service']
-        try:
-            return name, await svc.get_recent_downloads(days=days, limit=limit)
-        except Exception as e:
-            return name, {"success": False, "error": str(e)}
-
-    results = await asyncio.gather(*(fetch_one(i) for i in selected))
-
-    embed = discord.Embed(
-        title="Recently Added Movies",
-        description=f"Time window: last {days} day(s).",
-        color=discord.Color.purple()
-    )
-
-    any_success = False
-    for display_name, res in results:
-        if res.get("success"):
-            any_success = True
-            movies = res.get("movies", [])
-            if not movies:
-                value = "No recent items found."
-            else:
-                lines = []
-                for m in movies[:limit]:
-                    title = m.get('title') or 'Untitled'
-                    year = m.get('year') or '—'
-                    lines.append(f"• {title} ({year})")
-                value = "\n".join(lines)
-            embed.add_field(name=display_name, value=value, inline=False)
-        else:
-            err = res.get("error", "Unknown error")
-            embed.add_field(name=f"{display_name} (error)", value=f"❌ {err}", inline=False)
-
-    if not any_success:
+    embed = await _radarr_recent_embed(selected, days, limit, "Recently Added Movies")
+    if embed is None:
         await interaction.followup.send("Could not retrieve recent movies from any Radarr instance.")
         return
-
     await interaction.followup.send(embed=embed)
 
 
