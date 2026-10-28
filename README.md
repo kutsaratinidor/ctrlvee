@@ -232,8 +232,9 @@ prompts whoever runs `play-item`/`play-search`, `next`/`previous`, or `queue
 add-next`/`!queue_next` when an **upcoming** scheduled movie would start before the
 item being played finishes, using that item's runtime from VLC (for queue add-next, counted
 from when it would actually start: after the current item and anything already queued).
-When the runtime isn't known — VLC hasn't parsed the file yet, `next` without a queued item,
-`previous`, or a multi-result `play-search` — it falls back to
+If VLC hasn't parsed the file yet, the bot reads its runtime from the file directly.
+When the runtime still isn't known (the file can't be read, `next` without a queued item,
+`previous`, or a multi-result `play-search`), it falls back to
 `SCHEDULE_PROXIMITY_WINDOW_SECONDS` (default `1800`, i.e. 30 minutes). A schedule that
 has already started does not trigger it. The prompt names the scheduled movie and who
 scheduled it, with **Continue**/**Cancel** buttons — pick Continue to play anyway, Cancel

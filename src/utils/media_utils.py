@@ -56,6 +56,49 @@ class MediaUtils:
             except Exception as e:
                 logger.debug(f"Error parsing duration element: {e}")
         return None
+
+    _probed_durations: dict = {}
+
+    @staticmethod
+    def probe_duration(uri: str | None, timeout_ms: int = 2000) -> int | None:
+        """Read a file's runtime (seconds) by parsing it locally with libvlc.
+
+        For playlist entries VLC hasn't parsed yet. Successful results are cached
+        per URI; failures (no libvlc, unreachable file, timeout) return None and
+        are retried next time.
+        """
+        if not uri:
+            return None
+        cached = MediaUtils._probed_durations.get(uri)
+        if cached:
+            return cached
+        try:
+            import time
+            import vlc
+            media = vlc.Media(uri)
+            flags = vlc.MediaParseFlag(vlc.MediaParseFlag.local.value | vlc.MediaParseFlag.network.value)
+            media.parse_with_options(flags, timeout_ms)
+            deadline = time.monotonic() + timeout_ms / 1000 + 0.5
+            # ponytail: blocking poll (instant for local files, up to timeout_ms on slow shares); move to a thread if that bites
+            while media.get_parsed_status() == 0 and time.monotonic() < deadline:
+                time.sleep(0.05)
+            ms = media.get_duration()
+            media.release()
+        except Exception:
+            return None
+        if ms and ms > 0:
+            MediaUtils._probed_durations[uri] = ms // 1000
+            return ms // 1000
+        return None
+
+    @staticmethod
+    def resolve_duration(item) -> int | None:
+        """Runtime in seconds from VLC's playlist entry, else by probing the file."""
+        duration = MediaUtils.get_media_duration(item)
+        if isinstance(duration, int):
+            return duration
+        return MediaUtils.probe_duration(item.get('uri'))
+
     @staticmethod
     def parse_movie_filename(filename: str) -> Tuple[str, Optional[int]]:
         """Parse a movie filename into a clean title and optional release year.

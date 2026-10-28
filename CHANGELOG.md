@@ -1,3 +1,8 @@
+## 1.17.8 - 2026-10-28
+
+### Changed
+- **Schedule proximity guard reads runtimes VLC hasn't parsed yet**: When a playlist entry has no runtime in VLC (for example, a freshly added file that hasn't been played), the bot now reads the file's runtime itself using libvlc (the already-required `python-vlc`). The overlap check therefore uses the real runtime rather than the fixed `SCHEDULE_PROXIMITY_WINDOW_SECONDS`, including for items already queued ahead of a `queue add-next`. The fixed window is still used when the file can't be read (libvlc missing, unreachable share, or a 2-second timeout), and for `next` with nothing queued, `previous`, and a multi-result `/playlist play-search`.
+
 ## 1.17.7 - 2026-10-21
 
 ### Added

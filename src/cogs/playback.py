@@ -35,12 +35,13 @@ def _find_nearby_schedule(scheduled: list, now, window_seconds: float):
 def _schedule_overlap_window(item=None, starts_in: float = 0) -> float:
     """Seconds from now that the target item would still be playing.
 
-    Uses the item's VLC-reported runtime when known (plus `starts_in`, the wait
-    before it starts, e.g. for queue-next). Falls back to the fixed
-    Config.SCHEDULE_PROXIMITY_WINDOW_SECONDS when there is no target or VLC hasn't
-    parsed its duration yet.
+    Uses the item's runtime (plus `starts_in`, the wait before it starts, e.g. for
+    queue-next): VLC's reported duration, or the file probed locally when VLC
+    hasn't parsed it yet. Falls back to the fixed
+    Config.SCHEDULE_PROXIMITY_WINDOW_SECONDS when there is no target or the
+    runtime can't be read.
     """
-    duration = MediaUtils.get_media_duration(item) if item is not None else None
+    duration = MediaUtils.resolve_duration(item) if item is not None else None
     if isinstance(duration, int):
         return starts_in + duration
     return float(getattr(Config, 'SCHEDULE_PROXIMITY_WINDOW_SECONDS', 1800))
@@ -885,7 +886,7 @@ class PlaybackCommands(commands.Cog):
             return None
         who = f"<@{nearest['user']}>" if nearest.get('user') else "someone"
         when = format_schedule_time(nearest['dt'])
-        duration = MediaUtils.get_media_duration(item) if item is not None else None
+        duration = MediaUtils.resolve_duration(item) if item is not None else None
         if isinstance(duration, int):
             end = int(now.timestamp() + window)
             clash = f"This one runs {MediaUtils.format_time(duration)} and would end <t:{end}:t>, overlapping it."
@@ -916,8 +917,8 @@ class PlaybackCommands(commands.Cog):
         playlist = self.vlc.get_playlist()
         by_id = {leaf.get('id'): leaf for leaf in playlist.findall('.//leaf')} if playlist is not None else {}
         for queued_id in self.vlc.get_queue_status().get('queued_items', {}):
-            # ponytail: unknown runtimes count as 0, so the window can come up short; fine until queues get long
-            duration = MediaUtils.get_media_duration(by_id[queued_id]) if queued_id in by_id else None
+            # ponytail: runtimes that can't be read even by probing count as 0, so the window can come up short
+            duration = MediaUtils.resolve_duration(by_id[queued_id]) if queued_id in by_id else None
             if isinstance(duration, int):
                 total += duration
         return total

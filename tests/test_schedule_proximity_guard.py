@@ -84,6 +84,18 @@ def main():
     assert _schedule_overlap_window(ET.fromstring('<leaf id="3" duration="0"/>')) == fallback
     assert _schedule_overlap_window(ET.fromstring('<leaf id="4" duration="-1"/>')) == fallback
 
+    # Unknown in VLC's playlist but the file is readable -> probed runtime is used
+    import shutil, subprocess, tempfile, pathlib
+    if shutil.which("ffmpeg"):
+        with tempfile.TemporaryDirectory() as tmp:
+            clip = pathlib.Path(tmp) / "clip test.mp4"
+            subprocess.run(["ffmpeg", "-loglevel", "error", "-f", "lavfi", "-i",
+                            "testsrc=duration=95:size=160x120:rate=5", str(clip)], check=True)
+            unparsed = ET.Element("leaf", id="5", duration="-1", uri=clip.as_uri())
+            assert _schedule_overlap_window(unparsed, starts_in=60) == 155
+    else:
+        print("skip: ffmpeg not found, probe case not run")
+
     print(f"OK  ({os.path.basename(__file__)}): all schedule-proximity guard cases pass")
 
 
