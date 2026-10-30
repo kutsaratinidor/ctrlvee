@@ -1,5 +1,6 @@
 import os
 import re
+import asyncio
 import logging
 from typing import List
 
@@ -96,11 +97,131 @@ def _write_env_watch_folders(new_list: List[str]) -> bool:
         return False
 
 
+def remove_watch_folder(raw: str, watch_service, vlc, purge_playlist: bool) -> dict:
+    """Drop a folder from the watch list config, the running watcher, and (optionally)
+    the VLC playlist. Blocking; run via asyncio.to_thread.
+
+    Returns { 'error': str } or { 'folder', 'remaining', 'purge' (dict|None) }.
+    """
+    current_list = get_watch_folders_from_env()
+    # Match without requiring the folder to still exist on disk (it may be gone)
+    norm = os.path.normpath(os.path.abspath(os.path.expanduser(raw.strip())))
+    match = next((f for f in current_list if os.path.normcase(f) == os.path.normcase(norm)), None)
+    if not match:
+        return {'error': f"Folder not in watch list: {norm}"}
+
+    updated = [f for f in current_list if f != match]
+    if not _write_env_watch_folders(updated):
+        return {'error': "Failed to update watch folders configuration. Please check logs."}
+    if watch_service:
+        watch_service.sync_folders(updated)
+    purge = vlc.remove_playlist_items_under(match) if (purge_playlist and vlc) else None
+    return {'folder': match, 'remaining': len(updated), 'purge': purge}
+
+
+def build_watch_remove_embed(result: dict) -> discord.Embed:
+    lines = [f"Removed: {result['folder']}", f"Folders remaining: {result['remaining']}"]
+    purge = result['purge']
+    if purge is not None:
+        lines.append(f"Playlist items removed: {purge['removed']}")
+        if purge['skipped_current']:
+            lines.append("The currently playing item is from this folder and was left in place.")
+    return discord.Embed(title="Watch Folder Removed", description="\n".join(lines), color=discord.Color.orange())
+
+
+class WatchRemoveView(discord.ui.View):
+    """Dropdown of the current watch folders; picking one removes it."""
+
+    def __init__(self, author_id: int, folders: List[str], watch_service, vlc, purge_playlist: bool):
+        super().__init__(timeout=120)
+        self.author_id = author_id
+        self.folders = folders
+        self.watch_service = watch_service
+        self.vlc = vlc
+        self.purge_playlist = purge_playlist
+        # ponytail: Discord selects cap at 25 options; paginate if anyone watches more folders
+        select = discord.ui.Select(
+            placeholder="Select a folder to remove",
+            options=[
+                # Values are list indexes since paths can exceed Discord's 100-char limit
+                discord.SelectOption(label=f"{i}. {os.path.basename(f) or f}"[:100], description=f[-100:], value=str(i - 1))
+                for i, f in enumerate(folders[:25], start=1)
+            ],
+        )
+        select.callback = self._on_select
+        self.add_item(select)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.author_id:
+            await interaction.response.send_message("Only the person who ran this command can use it.", ephemeral=True)
+            return False
+        return True
+
+    async def _on_select(self, interaction: discord.Interaction):
+        folder = self.folders[int(interaction.data["values"][0])]
+        await interaction.response.defer()
+        try:
+            result = await asyncio.to_thread(remove_watch_folder, folder, self.watch_service, self.vlc, self.purge_playlist)
+        except Exception as e:
+            logger.error(f"watch remove error: {e}")
+            result = {'error': f"Error removing watch folder: {e}"}
+        if 'error' in result:
+            embed = discord.Embed(title="Watch Folder Not Removed", description=result['error'], color=discord.Color.red())
+        else:
+            embed = build_watch_remove_embed(result)
+        self.stop()
+        await interaction.edit_original_response(embed=embed, view=None)
+
+
+def build_watch_remove_picker(author_id: int, watch_service, vlc, purge_playlist: bool):
+    """Return (embed, view) listing the watch folders, or (embed, None) when there are none."""
+    folders = get_watch_folders_from_env()
+    if not folders:
+        return discord.Embed(title="Remove Watch Folder", description="No watch folders are configured."), None
+    lines = [f"`{i}.` {f}" for i, f in enumerate(folders, start=1)]
+    note = "Its files will also be removed from the playlist." if purge_playlist else "The playlist will be left untouched."
+    embed = discord.Embed(
+        title="Remove Watch Folder",
+        description="\n".join(lines)[:3900] + f"\n\nPick a folder below. {note}",
+        color=discord.Color.orange(),
+    )
+    return embed, WatchRemoveView(author_id, folders, watch_service, vlc, purge_playlist)
+
+
 class WatchCommands(commands.Cog):
     """Commands to manage watch folders without manually editing .env."""
 
-    def __init__(self, bot: commands.Bot):
+    def __init__(self, bot: commands.Bot, watch_service=None, vlc=None):
         self.bot = bot
+        self.watch_service = watch_service
+        self.vlc = vlc
+
+    @commands.command(name="watch_remove")
+    @commands.is_owner()
+    async def remove_watch_folder_cmd(self, ctx: commands.Context, *, path: str = ""):
+        """Remove a folder from the watch list and its files from the playlist.
+
+        Usage: !watch_remove            (pick from a list)
+               !watch_remove /absolute/path/to/folder
+        Append --keep to leave its files in the playlist.
+        """
+        keep = path.rstrip().endswith("--keep")
+        if keep:
+            path = path.rstrip()[:-len("--keep")]
+        if not path.strip():
+            embed, view = build_watch_remove_picker(ctx.author.id, self.watch_service, self.vlc, not keep)
+            await ctx.send(embed=embed, view=view)
+            return
+        try:
+            result = await asyncio.to_thread(remove_watch_folder, path, self.watch_service, self.vlc, not keep)
+        except Exception as e:
+            logger.error(f"watch_remove error: {e}")
+            await ctx.send(f"❌ Error removing watch folder: {e}")
+            return
+        if 'error' in result:
+            await ctx.send(f"❌ {result['error']}")
+            return
+        await ctx.send(embed=build_watch_remove_embed(result))
 
     @commands.command(name="watch_add")
     @commands.is_owner()

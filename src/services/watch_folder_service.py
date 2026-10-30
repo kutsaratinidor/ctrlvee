@@ -5,7 +5,7 @@ import threading
 import logging
 from typing import Iterable, Set, Optional, List, Callable
 
-from ..config import Config, get_watch_folders_from_env
+from ..config import Config, get_watch_folders_from_env, path_is_under
 from ..utils.media_utils import MediaUtils
 
 
@@ -119,6 +119,22 @@ class WatchFolderService:
                 time.sleep(0.5)
                 slept += 0.5
 
+    def sync_folders(self, folders: List[str]) -> List[str]:
+        """Replace the in-memory folder list. Files under dropped folders are forgotten,
+        so re-adding a folder later re-enqueues its contents. Returns the dropped folders."""
+        wanted = [os.path.normpath(os.path.abspath(p)) for p in folders if p]
+        added = [f for f in wanted if f not in self.folders]
+        removed = [f for f in self.folders if f not in wanted]
+        if added:
+            self.logger.info(f"Hot-loading new watch folders: {', '.join(added)}")
+        if removed:
+            self.logger.info(f"Dropping removed watch folders: {', '.join(removed)}")
+            # Rebuild then swap so the scan thread never sees a half-mutated set/dict
+            self._seen = {p for p in self._seen if not any(path_is_under(p, f) for f in removed)}
+            self._pending = {p: v for p, v in self._pending.items() if not any(path_is_under(p, f) for f in removed)}
+        self.folders = wanted
+        return removed
+
     def _iter_media_files(self, base: str) -> Iterable[str]:
         for root, dirs, files in os.walk(base, followlinks=True):
             # Skip hidden directories
@@ -180,7 +196,7 @@ class WatchFolderService:
 
         parsed_folders = get_watch_folders_from_env()
 
-        # Hot-reload folders from env (only add new ones)
+        # Hot-reload folders from env (adds new ones, drops removed ones)
         current_folders = set(os.path.normpath(os.path.abspath(p)) for p in self.folders)
         config_folders = set(parsed_folders)
 
@@ -195,12 +211,8 @@ class WatchFolderService:
                 self.logger.info(f"WATCH_FOLDERS changed: '{self._last_env_val or ''}' -> '{env_val}'")
             self._last_env_val = env_snapshot
 
-        new_folders = sorted(config_folders - current_folders)
-        if new_folders:
-            self.logger.info(f"Hot-loading new watch folders: {', '.join(new_folders)}")
-            for f in new_folders:
-                if f not in self.folders:
-                    self.folders.append(f)
+        if config_folders != current_folders:
+            self.sync_folders(parsed_folders)
 
         new_files = []
         pending_before = len(self._pending)

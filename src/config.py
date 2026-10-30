@@ -48,6 +48,13 @@ def _normalize_path(val: str) -> str:
     return os.path.normpath(os.path.abspath(os.path.expanduser(val)))
 
 
+def path_is_under(path: str, folder: str) -> bool:
+    """True if path is folder itself or anything inside it (case-insensitive on Windows)."""
+    p = os.path.normcase(os.path.normpath(path))
+    f = os.path.normcase(os.path.normpath(folder))
+    return p == f or p.startswith(f.rstrip(os.sep) + os.sep)
+
+
 def _split_watch_folders_value(val: str) -> List[str]:
     if not val:
         return []

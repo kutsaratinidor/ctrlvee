@@ -364,6 +364,30 @@ class VLCController:
             self.logger.error(f"remove_missing_playlist_items error: {e}")
             return result
 
+    def remove_playlist_items_under(self, folder: str) -> dict:
+        """Remove playlist items whose file lives under folder. The currently playing
+        item is left alone so playback isn't cut off.
+
+        Returns { 'removed': int, 'items': [ { 'id', 'name' } ], 'skipped_current': bool }
+        """
+        from ..config import path_is_under
+        result = {'removed': 0, 'items': [], 'skipped_current': False}
+        playlist = self.get_playlist()
+        if not playlist:
+            return result
+        for leaf in playlist.findall('.//leaf'):
+            path = self._uri_to_path(leaf.get('uri'))
+            item_id = leaf.get('id')
+            if not path or not item_id or not path_is_under(path, folder):
+                continue
+            if leaf.get('current') is not None:
+                result['skipped_current'] = True
+                continue
+            if self.delete_playlist_item(item_id):
+                result['removed'] += 1
+                result['items'].append({'id': item_id, 'name': leaf.get('name', '')})
+        return result
+
     def export_playlist_xspf(self) -> Optional[str]:
         """Export current playlist in XSPF format (as a UTF-8 XML string).
 

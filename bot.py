@@ -433,7 +433,7 @@ _autosave_stop = threading.Event()
 from src.cogs.playback import PlaybackCommands
 from src.cogs.playlist import PlaylistCommands, PlaylistView, SearchResultsView
 from src.cogs.scheduler import Scheduler, PH_TZ, format_schedule_time
-from src.cogs.watch import WatchCommands, _write_env_watch_folders
+from src.cogs.watch import WatchCommands, _write_env_watch_folders, build_watch_remove_picker
 from src.version import __version__
 from changelog_helper import parse_changelog
 from src.config import get_watch_folders_from_env
@@ -885,7 +885,7 @@ async def setup_hook():
         await bot.add_cog(PlaybackCommands(bot, vlc, tmdb_service, watch_service))
         await bot.add_cog(PlaylistCommands(bot, vlc, tmdb_service, watch_service))
         await bot.add_cog(Scheduler(bot, vlc))
-        await bot.add_cog(WatchCommands(bot))
+        await bot.add_cog(WatchCommands(bot, watch_service, vlc))
         logger.info("Cogs loaded successfully")
 
         # Sync slash commands (global or development guild).
@@ -2298,7 +2298,7 @@ def _build_system_help_embed() -> discord.Embed:
     )
     embed.add_field(
         name="Available /watch commands",
-        value="• `/watch add`",
+        value="• `/watch add`\n• `/watch remove`",
         inline=False,
     )
     embed.add_field(
@@ -3519,6 +3519,20 @@ async def watch_add(interaction: discord.Interaction, path: str):
         color=discord.Color.green(),
     )
     await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@watch_group.command(name="remove", description="Pick a watch folder to remove")
+@app_commands.describe(purge_playlist="Also remove the folder's files from the VLC playlist (default: yes)")
+async def watch_remove(interaction: discord.Interaction, purge_playlist: bool = True):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("This command is owner-only.", ephemeral=True)
+        return
+
+    embed, view = build_watch_remove_picker(interaction.user.id, watch_service, vlc, purge_playlist)
+    if view is None:
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    else:
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 
 @admin_group.command(name="list-guilds", description="Owner only: list joined guilds")

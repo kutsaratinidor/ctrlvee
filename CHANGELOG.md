@@ -1,3 +1,11 @@
+## 1.17.11 - 2026-10-30
+
+### Added
+- **Remove a watch folder**: New owner-only `!watch_remove <path>` and `/watch remove` take a folder out of the watch list, stop scanning it right away, and remove its files from the VLC playlist. The item that's currently playing is left in place. `/watch remove` (and `!watch_remove` with no path) shows the watched folders in an embed with a dropdown to pick from. Use `--keep` or `purge_playlist:False` to leave the playlist untouched.
+
+### Fixed
+- **Removed watch folders kept being scanned**: Taking a folder out of `WATCH_FOLDERS` (or `WATCH_FOLDERS_FILE`) while the bot was running had no effect until a restart, so a deleted folder logged "Watch folder not found" on every scan. The watcher now drops removed folders on its next scan.
+
 ## 1.17.10 - 2026-10-28
 
 ### Fixed

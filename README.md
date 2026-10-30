@@ -376,6 +376,7 @@ For public deployments, set these in `.env`:
 ### Watch Folders
 
 - `!watch_add <path>`
+- `!watch_remove [path]` (no path shows a folder picker; append `--keep` to leave its files in the playlist; slash: `/watch remove`)
 
 ### Radarr
 
