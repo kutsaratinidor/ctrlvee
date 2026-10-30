@@ -1,3 +1,9 @@
+## 1.17.13 - 2026-10-30
+
+### Fixed
+- **Year in square brackets was ignored for TMDB lookups**: A filename like `Red Sorghum (紅高粱) [1988].mkv` lost its year because every `[...]` tag was stripped, so the TMDB match couldn't tell the 1988 film from the 2014 TV series and picked the series. A bracketed year such as `[1988]` is now kept, and other bracketed tags are still removed.
+- **Non-Latin alternate titles polluted the TMDB search**: A parenthesized alternate title like `(紅高粱)` was searched as part of the title (`Red Sorghum 紅高粱`), which kept it from matching exactly. It is now dropped when there is a Latin title to search with. Latin parentheticals such as `(US)` are unchanged.
+
 ## 1.17.12 - 2026-10-30
 
 ### Fixed

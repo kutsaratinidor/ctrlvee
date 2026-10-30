@@ -100,6 +100,22 @@ class MediaUtils:
         return MediaUtils.probe_duration(item.get('uri'))
 
     @staticmethod
+    def _strip_brackets(name: str) -> str:
+        """Pre-clean a filename stem for title/year parsing.
+
+        - Keeps a bracketed year as a plain token: "Title [1988]" -> "Title 1988"
+        - Drops other [bracketed] tracker/release tags
+        - Drops a parenthesized non-Latin alternate title: "Red Sorghum (紅高粱)" -> "Red Sorghum",
+          unless that would leave no Latin title to search with
+        """
+        name = re.sub(r'\[\s*((?:19|20)\d{2})\s*\]', r' \1 ', name)
+        name = re.sub(r'\[[^\]]*\]', ' ', name)
+        without_alt = re.sub(r'\(\s*[^\x00-\x7F()]+\s*\)', ' ', name)
+        if re.search(r'[A-Za-z]', without_alt):
+            name = without_alt
+        return name
+
+    @staticmethod
     def parse_movie_filename(filename: str) -> Tuple[str, Optional[int]]:
         """Parse a movie filename into a clean title and optional release year.
         
@@ -120,8 +136,7 @@ class MediaUtils:
         # Remove only known video extensions (avoid splitext confusion with scene tags like [eztv.re]).
         name = re.sub(r'(?i)\.(mkv|mp4|avi|mov|m4v|ts|m2ts|wmv|flv|webm)$', '', basename)
 
-        # Remove bracketed tracker/release suffixes often appended by indexers.
-        name = re.sub(r'\[[^\]]*\]', ' ', name)
+        name = MediaUtils._strip_brackets(name)
 
         # Normalize separators and remove brackets to simplify tokenization
         normalized = name.replace('.', ' ').replace('_', ' ')
@@ -238,8 +253,7 @@ class MediaUtils:
         # Remove only known video extensions (avoid splitext() confusion with scene tags like [eztv.re]).
         name = re.sub(r'(?i)\.(mkv|mp4|avi|mov|m4v|ts|m2ts|wmv|flv|webm)$', '', base)
 
-        # Remove bracketed tracker/release suffixes and normalize separators.
-        name = re.sub(r'\[[^\]]*\]', ' ', name)
+        name = MediaUtils._strip_brackets(name)
         work = name.replace('.', ' ').replace('_', ' ')
         work = re.sub(r'\s+', ' ', work).strip()
         
