@@ -34,7 +34,16 @@ class TMDBService:
             A float score (higher is better, typically 0-200+)
         """
         def norm(s: str) -> str:
-            return ''.join(ch for ch in s.lower() if ch.isalnum())
+            # '&' and 'and' are interchangeable in release names ("Love & Death" vs "Love.and.Death")
+            s = s.lower().replace('&', ' and ')
+            return ''.join(ch for ch in s if ch.isalnum())
+
+        def partial(a: str, b: str) -> float:
+            # Scale by length so a short title buried in a long one ("Love and Death" in
+            # "10 Stories About Love and Death") doesn't score like a near-exact match
+            if a and b and (a in b or b in a):
+                return 50.0 * min(len(a), len(b)) / max(len(a), len(b))
+            return 0.0
 
         target = norm(search_title)
         n = norm(item_title)
@@ -45,10 +54,8 @@ class TMDBService:
         # Title matching: exact match is best, then check original_title (for anime/foreign content)
         if n == target or n_orig == target:
             score += 100.0  # Exact match bonus
-        elif target in n or n in target or target in n_orig or n_orig in target:
-            score += 50.0  # Partial match bonus
         else:
-            score += 0.0  # No match
+            score += max(partial(target, n), partial(target, n_orig))
         
         # Year matching: exact year match, then proximity
         if target_year and item_year:
@@ -103,44 +110,14 @@ class TMDBService:
         if not response or not response.get('results'):
             return None
 
-        def norm(s: str) -> str:
-            return ''.join(ch for ch in s.lower() if ch.isalnum())
-
-        target = norm(title)
         best = None
         for item in response['results']:
-            item_title = item.get('title') or ''
-            item_original_title = item.get('original_title') or ''
-            n = norm(item_title)
-            n_orig = norm(item_original_title)
-
-            item_year = None
-            rd = item.get('release_date')
-            if rd and len(rd) >= 4 and rd[:4].isdigit():
-                item_year = int(rd[:4])
-
-            score = 0.0
-            if n == target or n_orig == target:
-                score += 100.0
-            elif target in n or n in target or target in n_orig or n_orig in target:
-                score += 50.0
-
-            if year and item_year:
-                if item_year == year:
-                    score += 50.0
-                else:
-                    year_diff = abs(item_year - year)
-                    score += max(0, 50.0 - (year_diff * 10.0))
-            elif not year:
-                score += 5.0
-
-            popularity = item.get('popularity', 0.0)
-            vote_count = item.get('vote_count', 0)
-            if popularity > 0:
-                score += min(20.0, popularity * 0.5)
-            if vote_count > 100:
-                score += min(10.0, vote_count / 100)
-
+            rd = item.get('release_date') or ''
+            item_year = int(rd[:4]) if rd[:4].isdigit() else None
+            score = self._compute_title_score(
+                title, item.get('title') or '', item.get('original_title') or '',
+                year, item_year, item.get('popularity', 0.0), item.get('vote_count', 0),
+            )
             if best is None or score > best[0]:
                 best = (score, item)
 
@@ -343,53 +320,14 @@ class TMDBService:
                 self.logger.debug(f"No TV results found for: {norm_title}")
                 return None
 
-            def norm(s: str) -> str:
-                return ''.join(ch for ch in s.lower() if ch.isalnum())
-
-            target = norm(norm_title)
             best = None
             for item in response['results']:
-                item_name = item.get('name') or ''
-                item_original_name = item.get('original_name') or ''
-                n = norm(item_name)
-                n_orig = norm(item_original_name)
-                
-                # TV has 'first_air_date' which may include year
-                item_year = None
-                fd = item.get('first_air_date')
-                if fd and len(fd) >= 4 and fd[:4].isdigit():
-                    item_year = int(fd[:4])
-
-                # Compute score (higher is better)
-                score = 0.0
-                
-                # Title matching: exact match is best, check both name and original_name (for anime)
-                if n == target or n_orig == target:
-                    score += 100.0  # Exact match bonus
-                elif target in n or n in target or target in n_orig or n_orig in target:
-                    score += 50.0  # Partial match bonus
-                else:
-                    score += 0.0  # No match
-                
-                # Year matching: exact year match, then proximity
-                if year and item_year:
-                    if item_year == year:
-                        score += 50.0  # Exact year match
-                    else:
-                        # Penalize by year distance (max penalty at 5+ years)
-                        year_diff = abs(item_year - year)
-                        score += max(0, 50.0 - (year_diff * 10.0))
-                elif not year:
-                    # No year provided, slight bonus for recent shows
-                    score += 5.0
-                
-                # Popularity/quality indicators (helps differentiate similar titles)
-                popularity = item.get('popularity', 0.0)
-                vote_count = item.get('vote_count', 0)
-                if popularity > 0:
-                    score += min(20.0, popularity * 0.5)  # Cap at 20 points
-                if vote_count > 100:
-                    score += min(10.0, vote_count / 100)  # Cap at 10 points
+                fd = item.get('first_air_date') or ''
+                item_year = int(fd[:4]) if fd[:4].isdigit() else None
+                score = self._compute_title_score(
+                    norm_title, item.get('name') or '', item.get('original_name') or '',
+                    year, item_year, item.get('popularity', 0.0), item.get('vote_count', 0),
+                )
                 
                 if best is None or score > best[0]:
                     best = (score, item)

@@ -1,3 +1,9 @@
+## 1.17.12 - 2026-10-30
+
+### Fixed
+- **Wrong TMDB match for titles with `&` or short titles**: Now-playing and other TMDB lookups could pick an unrelated title. `&` was dropped during matching, so `Love & Death` matched `Love Death Dog`, and `Love.and.Death` didn't match the real `Love & Death`. A short title that merely appeared inside a longer one (`Love and Death` in `10 Stories About Love and Death`) also scored almost like an exact match. `&` and `and` are now treated as equal, and partial matches score by how much of the title they cover. Movie and TV lookups now share one scoring function.
+- **Stray `( )` in parsed TV titles**: A filename like `Show (2023).mkv` was parsed as the series `Show ( )`. The empty brackets are now removed.
+
 ## 1.17.11 - 2026-10-30
 
 ### Added

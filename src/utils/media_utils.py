@@ -271,6 +271,8 @@ class MediaUtils:
         work = re.sub(r'\b(?:nf|amzn|atvp|dsnp|hulu|max|hbo)\b', ' ', work, flags=re.IGNORECASE)
         # Remove trailing release-group style suffixes (e.g., -iKA)
         work = re.sub(r'\s*[-–]\s*[A-Za-z0-9]{2,}$', ' ', work)
+        # Drop brackets emptied by the removals above, e.g. "Show (2023)" -> "Show ( )"
+        work = re.sub(r'\(\s*\)', ' ', work)
         work = re.sub(r'\s+', ' ', work).strip()
         # Cleanup trailing separators like '-' or '–'
         work = re.sub(r'[\-–]+\s*$', '', work).strip()
