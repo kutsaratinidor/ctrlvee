@@ -106,10 +106,38 @@ Use `.env` values for connection:
 
 ## Discord Setup
 
-In Discord Developer Portal, ensure your bot has:
+### Privileged intents (Developer Portal → Bot)
 
-- `MESSAGE CONTENT INTENT` enabled
-- Permissions to read/send messages and embeds in the channels you use
+- **Message Content Intent**: only needed when `ENABLE_PREFIX_COMMANDS=true`. Slash-only setups can leave it off.
+- **Server Members** and **Presence** intents are not needed.
+
+### Invite scopes and permissions
+
+Invite with the `bot` and `applications.commands` scopes (the latter is required for slash commands).
+
+| Permission | Why | Needed? |
+|---|---|---|
+| View Channels | See the command, announcement, and voice channels | Required |
+| Send Messages | Prefix replies, now-playing, watch and schedule announcements | Required |
+| Embed Links | Nearly every reply is an embed; without it they show up blank | Required |
+| Attach Files | Announcements attach the bot avatar as a thumbnail | Required |
+| Connect | Voice auto-join | Required if voice auto-join is on |
+| Set Voice Channel Status | The `▶ Title (Year)` voice channel status (Manage Channels also works but is much broader) | Required for voice status |
+| Mention Everyone | Only so `WATCH_ANNOUNCE_ROLE_ID` pings land when that role isn't set to "Allow anyone to @mention" | Optional |
+
+Not needed: **Speak** (the bot joins self-muted and self-deafened; VLC plays locally), **Manage Messages** (the bot only deletes its own messages), **Read Message History**, **Add Reactions**.
+
+Permission integer: `281474977811456` (recommended), or `281474977942528` with Mention Everyone.
+
+```
+https://discord.com/oauth2/authorize?client_id=<APP_ID>&scope=bot+applications.commands&permissions=281474977811456
+```
+
+Per-server notes:
+
+- Channel-level overrides beat server-wide grants. Check the announcement and voice channels for denies.
+- Slash command replies work even where the bot can't post, but now-playing and watch announcements are regular messages and need the channel permissions above.
+- Roles in `ALLOWED_ROLES` must exist in the server; the bot logs a startup warning for any it can't find.
 
 For larger bots (including bots approaching or exceeding 10k servers), Discord may require stronger justification and transparency for privileged intents.
 CtrlVee requests Message Content Intent strictly for prefix command parsing, and includes an in-bot privacy statement via `!privacy`.
