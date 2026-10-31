@@ -1,3 +1,9 @@
+## 1.17.14 - 2026-10-31
+
+### Fixed
+- **Removed watch folder came back seconds later**: If a background watch scan read the folder list just before `/watch remove` (or `!watch_remove`) saved it, the scan re-added the folder. Its files were then queued again, because removal had cleared the record of files already seen. A scan already walking the folder could also queue its files again right after the playlist purge. Scans and removals now take turns, so the removed folder stays removed.
+- **Partial reads of the watch folder list**: `.env` and `WATCH_FOLDERS_FILE` are now written to a temporary file and renamed into place, so a scan can't read a half-written list. Background reloads also no longer clear the record of files already seen, so a folder that briefly drops out of the config isn't queued again in full when it returns. Only an explicit removal clears it.
+
 ## 1.17.13 - 2026-10-30
 
 ### Fixed

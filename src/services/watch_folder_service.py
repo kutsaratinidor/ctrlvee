@@ -26,6 +26,9 @@ class WatchFolderService:
         self._stop_event = threading.Event()
         self._thread = None
         self._seen = set()
+        # Held for a whole scan and by remove_watch_folder around its config write + sync,
+        # so a scan can never apply a folder list read before a removal
+        self.lock = threading.RLock()
         # Files being tracked for stability across scans: path -> (size, first_seen_time)
         self._pending = {}
         self._notifier = None
@@ -119,21 +122,26 @@ class WatchFolderService:
                 time.sleep(0.5)
                 slept += 0.5
 
-    def sync_folders(self, folders: List[str]) -> List[str]:
-        """Replace the in-memory folder list. Files under dropped folders are forgotten,
-        so re-adding a folder later re-enqueues its contents. Returns the dropped folders."""
-        wanted = [os.path.normpath(os.path.abspath(p)) for p in folders if p]
-        added = [f for f in wanted if f not in self.folders]
-        removed = [f for f in self.folders if f not in wanted]
-        if added:
-            self.logger.info(f"Hot-loading new watch folders: {', '.join(added)}")
-        if removed:
-            self.logger.info(f"Dropping removed watch folders: {', '.join(removed)}")
-            # Rebuild then swap so the scan thread never sees a half-mutated set/dict
-            self._seen = {p for p in self._seen if not any(path_is_under(p, f) for f in removed)}
-            self._pending = {p: v for p, v in self._pending.items() if not any(path_is_under(p, f) for f in removed)}
-        self.folders = wanted
-        return removed
+    def sync_folders(self, folders: List[str], forget_removed: bool = False) -> List[str]:
+        """Replace the in-memory folder list. Returns the dropped folders.
+
+        forget_removed=True (explicit removal) also forgets files seen under dropped
+        folders, so re-adding one later re-enqueues its contents. Background reloads
+        keep them, so a transient config glitch can't re-enqueue a whole folder.
+        """
+        with self.lock:
+            wanted = [os.path.normpath(os.path.abspath(p)) for p in folders if p]
+            added = [f for f in wanted if f not in self.folders]
+            removed = [f for f in self.folders if f not in wanted]
+            if added:
+                self.logger.info(f"Hot-loading new watch folders: {', '.join(added)}")
+            if removed:
+                self.logger.info(f"Dropping removed watch folders: {', '.join(removed)}")
+                if forget_removed:
+                    self._seen = {p for p in self._seen if not any(path_is_under(p, f) for f in removed)}
+                    self._pending = {p: v for p, v in self._pending.items() if not any(path_is_under(p, f) for f in removed)}
+            self.folders = wanted
+            return removed
 
     def _iter_media_files(self, base: str) -> Iterable[str]:
         for root, dirs, files in os.walk(base, followlinks=True):
@@ -183,6 +191,10 @@ class WatchFolderService:
         return False
 
     def _scan_all(self, add_to_playlist: bool):
+        with self.lock:
+            self._scan_all_locked(add_to_playlist)
+
+    def _scan_all_locked(self, add_to_playlist: bool):
         # Reload .env to pick up new folders
         try:
             from dotenv import load_dotenv

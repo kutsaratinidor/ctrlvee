@@ -1,6 +1,7 @@
 import os
 import re
 import asyncio
+import contextlib
 import logging
 from typing import List
 
@@ -33,11 +34,18 @@ def _parse_watch_folders(val: str) -> List[str]:
     return parse_watch_folders_value(val)
 
 
+def _atomic_write(path: str, content: str) -> None:
+    """Write then rename, so the watcher never reads a half-written folder list."""
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        f.write(content)
+    os.replace(tmp_path, path)
+
+
 def _write_watch_folders_file(file_path: str, new_list: List[str]) -> bool:
     try:
         lines = [p for p in new_list if p]
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines) + "\n")
+        _atomic_write(file_path, "\n".join(lines) + "\n")
         try:
             from dotenv import load_dotenv
             load_dotenv(override=True)
@@ -82,8 +90,7 @@ def _write_env_watch_folders(new_list: List[str]) -> bool:
             if out_lines and out_lines[-1] != "":
                 out_lines.append("")
             out_lines.append(key_line)
-        with open(env_file, "w", encoding="utf-8") as f:
-            f.write("\n".join(out_lines) + "\n")
+        _atomic_write(env_file, "\n".join(out_lines) + "\n")
         try:
             # Reload environment so services pick up changes immediately
             from dotenv import load_dotenv
@@ -103,18 +110,19 @@ def remove_watch_folder(raw: str, watch_service, vlc, purge_playlist: bool) -> d
 
     Returns { 'error': str } or { 'folder', 'remaining', 'purge' (dict|None) }.
     """
-    current_list = get_watch_folders_from_env()
-    # Match without requiring the folder to still exist on disk (it may be gone)
     norm = os.path.normpath(os.path.abspath(os.path.expanduser(raw.strip())))
-    match = next((f for f in current_list if os.path.normcase(f) == os.path.normcase(norm)), None)
-    if not match:
-        return {'error': f"Folder not in watch list: {norm}"}
-
-    updated = [f for f in current_list if f != match]
-    if not _write_env_watch_folders(updated):
-        return {'error': "Failed to update watch folders configuration. Please check logs."}
-    if watch_service:
-        watch_service.sync_folders(updated)
+    # Hold the watcher's lock from read to sync so no scan (or second removal) interleaves
+    with (watch_service.lock if watch_service else contextlib.nullcontext()):
+        current_list = get_watch_folders_from_env()
+        # Match without requiring the folder to still exist on disk (it may be gone)
+        match = next((f for f in current_list if os.path.normcase(f) == os.path.normcase(norm)), None)
+        if not match:
+            return {'error': f"Folder not in watch list: {norm}"}
+        updated = [f for f in current_list if f != match]
+        if not _write_env_watch_folders(updated):
+            return {'error': "Failed to update watch folders configuration. Please check logs."}
+        if watch_service:
+            watch_service.sync_folders(updated, forget_removed=True)
     purge = vlc.remove_playlist_items_under(match) if (purge_playlist and vlc) else None
     return {'folder': match, 'remaining': len(updated), 'purge': purge}
 
