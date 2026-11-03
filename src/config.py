@@ -160,11 +160,13 @@ class Config:
     # duplicate guild+global command entries in Discord's command picker during development.
     SYNC_GLOBAL_COMMANDS: bool = os.getenv('SYNC_GLOBAL_COMMANDS', 'false').strip().lower() in {'1','true','yes','y'}
 
-    # Optional dedicated channel for bot command responses.
-    # When set, all ctx.send() responses are redirected to this channel.
-    # Commands are still accepted from any channel (e.g. the voice channel text chat).
+    # Optional dedicated command channel(s), comma-separated.
+    # Slash commands are restricted to these channels. Prefix replies stay in the
+    # channel they were typed in when it is listed, otherwise go to the first one.
     # Set to 0 or leave empty to disable.
-    COMMAND_CHANNEL_ID: int = int(os.getenv('COMMAND_CHANNEL_ID', '0'))
+    COMMAND_CHANNEL_IDS: list[int] = [
+        int(c) for c in os.getenv('COMMAND_CHANNEL_ID', '0').split(',') if c.strip() and c.strip() != '0'
+    ]
 
     # Optional channel to log searches that returned no results (movie requests,
     # playlist search/play-search). Set to 0 to log to the terminal instead.
@@ -430,7 +432,7 @@ class Config:
             f"Slash Commands Enabled: {cls.ENABLE_SLASH_COMMANDS}",
             f"Slash Command Guild ID: {cls.SLASH_COMMAND_GUILD_ID if cls.SLASH_COMMAND_GUILD_ID else 'Global sync'}",
             f"Slash Global Sync Enabled: {cls.SYNC_GLOBAL_COMMANDS}",
-            f"Command Channel ID: {cls.COMMAND_CHANNEL_ID if cls.COMMAND_CHANNEL_ID else 'Not Configured (replies in-channel)'}",
+            f"Command Channel ID(s): {', '.join(map(str, cls.COMMAND_CHANNEL_IDS)) if cls.COMMAND_CHANNEL_IDS else 'Not Configured (replies in-channel)'}",
             f"Search Log Channel ID: {cls.SEARCH_LOG_CHANNEL_ID if cls.SEARCH_LOG_CHANNEL_ID else 'Not Configured (logs to terminal)'}",
             "Current Configuration:",
             "-" * 50,

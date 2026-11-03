@@ -148,12 +148,11 @@ def _get_slash_allowed_channel_ids() -> tuple[list[int], str]:
     """Return allowed channel IDs for slash commands and their policy source.
 
     Policy:
-    1. If COMMAND_CHANNEL_ID is set (>0), only that channel is allowed.
+    1. If COMMAND_CHANNEL_ID lists channels, only those are allowed.
     2. Otherwise, allow only channels in WATCH_ANNOUNCE_CHANNEL_ID.
     """
-    command_channel_id = int(getattr(Config, 'COMMAND_CHANNEL_ID', 0) or 0)
-    if command_channel_id > 0:
-        return [command_channel_id], "command"
+    if Config.COMMAND_CHANNEL_IDS:
+        return list(Config.COMMAND_CHANNEL_IDS), "command"
 
     announce_ids = [cid for cid in Config.get_announce_channel_ids() if int(cid) > 0]
     return announce_ids, "announce"
@@ -276,11 +275,10 @@ bot.tree.interaction_check = global_slash_channel_policy_check
 
 def _log_slash_channel_policy() -> None:
     """Log effective slash channel policy at startup for easier troubleshooting."""
-    command_channel_id = int(getattr(Config, 'COMMAND_CHANNEL_ID', 0) or 0)
     announce_ids = [cid for cid in Config.get_announce_channel_ids() if int(cid) > 0]
 
-    if command_channel_id > 0:
-        logger.info("Slash channel policy: restricted to COMMAND_CHANNEL_ID=%s", command_channel_id)
+    if Config.COMMAND_CHANNEL_IDS:
+        logger.info("Slash channel policy: restricted to COMMAND_CHANNEL_ID=%s", Config.COMMAND_CHANNEL_IDS)
         return
 
     if announce_ids:
@@ -1480,13 +1478,15 @@ async def on_ready():
 class CommandChannelContext(commands.Context):
     """Custom context that redirects bot responses to a dedicated command channel when configured.
 
-    Commands are still accepted from any channel. Only the response destination changes.
+    Commands are still accepted from any channel. Replies stay put when typed in one of
+    the command channels; otherwise they go to the first configured command channel.
     Falls back to the originating channel if the command channel cannot be resolved.
     """
 
     async def send(self, content=None, **kwargs):
-        cmd_channel_id = getattr(Config, 'COMMAND_CHANNEL_ID', 0)
-        if cmd_channel_id:
+        cmd_ids = Config.COMMAND_CHANNEL_IDS
+        if cmd_ids and self.channel.id not in cmd_ids:
+            cmd_channel_id = cmd_ids[0]
             channel = self.bot.get_channel(cmd_channel_id)
             if channel is None:
                 try:
@@ -3775,7 +3775,7 @@ def _build_admin_config_overview_embed(guild: discord.Guild) -> discord.Embed:
         else "Not configured"
     )
     channel_lines = [
-        f"Command channel: **{_resolve_guild_channel_name(guild, cfg.COMMAND_CHANNEL_ID)}**",
+        f"Command channel: **{', '.join(_resolve_guild_channel_name(guild, cid) for cid in cfg.COMMAND_CHANNEL_IDS) or 'Not configured'}**",
         f"Search log channel: **{_resolve_guild_channel_name(guild, cfg.SEARCH_LOG_CHANNEL_ID)}**",
         f"Voice channel: **{_resolve_guild_channel_name(guild, cfg.VOICE_JOIN_CHANNEL_ID)}**",
         f"Voice room rules (play presence/hijack guard): **{'on' if cfg.ENABLE_VOICE_ROOM_RULES else 'off'}**",

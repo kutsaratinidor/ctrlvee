@@ -194,7 +194,7 @@ Edit `.env` (starting from `template.env`).
 - `ENABLE_SLASH_COMMANDS` (default `true`)
 - `SLASH_COMMAND_GUILD_ID` (default `0`, global sync)
 - `SYNC_GLOBAL_COMMANDS` (default `false`; avoids duplicate guild+global entries in dev guild mode)
-- `COMMAND_CHANNEL_ID` (if set > 0, slash commands are restricted to this channel)
+- `COMMAND_CHANNEL_ID` (comma-separated; if set, slash commands are restricted to these channels, independent of where announcements go)
 - `WATCH_ANNOUNCE_CHANNEL_ID` (when `COMMAND_CHANNEL_ID=0`, slash commands are restricted to these channels)
 - If both are unset/0, guild slash commands are blocked until one is configured.
 - `SEARCH_LOG_CHANNEL_ID` (default `0`): channel to log searches that returned no results (movie requests, playlist search/play-search). Logs to the terminal instead when unset.

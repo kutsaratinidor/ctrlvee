@@ -1,3 +1,8 @@
+## 1.17.16 - 2026-11-03
+
+### Added
+- **Multiple command channels**: `COMMAND_CHANNEL_ID` now accepts a comma-separated list (e.g. `111,222`). Slash commands work in every listed channel, separately from `WATCH_ANNOUNCE_CHANNEL_ID`, so commands can run in two channels while announcements go to just one. Prefix-command replies stay in the channel they were typed in when that channel is listed, and otherwise go to the first listed channel. A single ID works as before.
+
 ## 1.17.15 - 2026-11-02
 
 ### Fixed
