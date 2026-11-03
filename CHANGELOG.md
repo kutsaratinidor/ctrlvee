@@ -1,3 +1,8 @@
+## 1.17.15 - 2026-11-02
+
+### Fixed
+- **Scheduled movies played the wrong item after playlist cleanup**: A schedule only used its playlist number when it fired. After `/admin cleanup-playlist` removed missing files, every later number shifted and the schedule played whatever item now had that number. A schedule now finds its movie by file path. If that file is gone, for example because Radarr replaced it with an upgrade, the schedule switches to the newest playlist item with the same title and year and updates its number. This also covers an old file that was deleted from disk before cleanup removed it from the playlist. This runs from 10 minutes before start, so the reminder shows the correct number. If nothing matches, the schedule is skipped and logged rather than playing a different movie.
+
 ## 1.17.14 - 2026-10-31
 
 ### Fixed

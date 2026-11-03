@@ -7,6 +7,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import logging
 import json
 import os
+import re
+from urllib.parse import unquote
 from ..utils.media_utils import MediaUtils
 
 # Cross-platform timezone handling for PH time
@@ -34,6 +36,36 @@ def format_schedule_time(dt) -> str:
     ts = int(dt.timestamp())
     return f"{dt.strftime('%Y-%m-%d %H:%M %Z')} · <t:{ts}:f> (<t:{ts}:R>)"
 logger = logging.getLogger(__name__)
+
+
+def _title_key(name: str):
+    title, year = MediaUtils.parse_movie_filename(unquote(name or ""))
+    norm = re.sub(r"\W+", " ", (title or "").lower()).strip()
+    return (norm, year) if norm else None
+
+
+def _resolve_schedule_index(entry: dict, items: list, exists=lambda uri: True):
+    """0-based playlist index for a schedule, or None.
+
+    Prefers the exact file (uri), so the schedule survives index shifts from
+    playlist cleanup. If that file is gone from the playlist or from disk (e.g.
+    replaced by an upgrade), falls back to the newest existing item with the same
+    parsed title + year. A missing-on-disk exact match is still returned when no
+    replacement exists, so an unreachable share doesn't silently skip the schedule.
+    """
+    uri = entry.get("uri")
+    if not uri:  # legacy entries only stored the number
+        idx = entry["number"] - 1
+        return idx if 0 <= idx < len(items) else None
+    exact = next((i for i, leaf in enumerate(items) if leaf.get("uri") == uri), None)
+    if exact is not None and exists(uri):
+        return exact
+    want = _title_key(uri.rsplit("/", 1)[-1])
+    matches = [
+        i for i, leaf in enumerate(items)
+        if want and i != exact and _title_key(leaf.get("name", "")) == want and exists(leaf.get("uri"))
+    ]
+    return matches[-1] if matches else exact
 
 
 SCHEDULE_BACKUP_FILE = "schedule_backup.json"
@@ -81,6 +113,33 @@ class Scheduler(commands.Cog):
             except Exception as e:
                 logger.error(f"Error loading schedule backup: {e}")
         return []
+
+    def _uri_exists(self, uri) -> bool:
+        path = self.vlc._uri_to_path(uri)
+        return bool(path) and self.vlc._file_exists_robust(path)
+
+    def _rebind_due_schedules(self, now) -> dict:
+        """Resolve schedules due within 10 minutes; update number/uri if the item moved."""
+        due = [s for s in self.scheduled if (s["dt"] - now).total_seconds() <= 600]
+        if not due:
+            return {}
+        playlist = self.vlc.get_playlist()
+        items = playlist.findall('.//leaf') if playlist is not None else []
+        resolved, changed = {}, False
+        for s in due:
+            idx = _resolve_schedule_index(s, items, self._uri_exists)
+            resolved[id(s)] = (idx, items[idx] if idx is not None else None)
+            if idx is None:
+                continue
+            leaf = items[idx]
+            if s["number"] != idx + 1 or (s.get("uri") and s["uri"] != leaf.get("uri")):
+                logger.info(f"Rebinding schedule '{s.get('title')}' #{s['number']} -> #{idx + 1} ({leaf.get('name')})")
+                s["number"] = idx + 1
+                s["uri"] = leaf.get("uri") or s.get("uri")
+                changed = True
+        if changed:
+            self._save_schedule_backup()
+        return resolved
 
     @commands.command(name="schedule")
     async def schedule_movie(self, ctx, number: int, date: str, time: str):
@@ -185,6 +244,11 @@ class Scheduler(commands.Cog):
         # Safeguard: ensure pre_announce_sent always exists
         if not hasattr(self, 'pre_announce_sent') or self.pre_announce_sent is None:
             self.pre_announce_sent = set()
+        try:
+            resolved = self._rebind_due_schedules(now)
+        except Exception as e:
+            logger.error(f"Error resolving scheduled items: {e}")
+            resolved = {}
         for s in self.scheduled:
             pre_announce_key = (s['number'], s['dt'])
             if pre_announce_key not in self.pre_announce_sent:
@@ -217,12 +281,9 @@ class Scheduler(commands.Cog):
         to_run = [s for s in self.scheduled if s["dt"] <= now]
         for s in to_run:
             try:
-                # Play by number (1-based index)
-                playlist = self.vlc.get_playlist()
-                items = playlist.findall('.//leaf') if playlist is not None else []
-                idx = s["number"] - 1
-                if 0 <= idx < len(items):
-                    item_id = items[idx].get('id')
+                idx, leaf = resolved.get(id(s), (None, None))
+                if leaf is not None:
+                    item_id = leaf.get('id')
                     self.vlc.play_item(item_id)
                     announce_ids = Config.get_announce_channel_ids()
                     channel_ids = set(announce_ids or [])
@@ -274,7 +335,7 @@ class Scheduler(commands.Cog):
                                     except Exception:
                                         pass
                 else:
-                    logger.warning(f"Scheduled movie number {s['number']} not found in playlist.")
+                    logger.warning(f"Scheduled movie #{s['number']} ({s.get('title')}) not found in playlist; no replacement match.")
             except Exception as e:
                 logger.error(f"Error running scheduled movie: {e}")
         # Remove all that have run
