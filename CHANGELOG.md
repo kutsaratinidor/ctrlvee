@@ -1,3 +1,11 @@
+## 1.19.0 - 2026-11-05
+
+### Added
+- **TV series requests**: `/request tv <title>` searches TMDB and requests every season through Overseerr/Jellyseerr, with the same picker, tracking and availability announcement as `/request movie`. `OVERSEERR_SONARR_SERVER_ID` sends these requests to a specific Sonarr instance, and blank uses Overseerr's default. A series that's already available can be requested again to pick up new seasons.
+
+### Fixed
+- **Duplicate check after a re-request**: The check read a title's oldest tracked request, so after a declined or failed request was retried, the title could be requested again while the retry was still live. It now reads the latest request.
+
 ## 1.18.0 - 2026-11-05
 
 ### Added

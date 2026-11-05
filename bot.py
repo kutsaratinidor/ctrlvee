@@ -70,7 +70,7 @@ from src.services.watch_folder_service import WatchFolderService
 from src.utils.media_utils import MediaUtils
 from src.services.radarr_service import RadarrService
 from src.services.overseerr_service import OverseerrService, STATUS_LABELS, REQUEST_STATUS_DECLINED, REQUEST_STATUS_FAILED
-from src.services.movie_request_tracker import MovieRequestTracker, RETRYABLE_STATUSES
+from src.services.movie_request_tracker import MovieRequestTracker
 from src.services.stats_service import StatsService
 
 vlc = VLCController(bot=bot)
@@ -1284,13 +1284,17 @@ async def _send_availability_announcement(record: dict) -> None:
         embed.set_thumbnail(url=f"https://image.tmdb.org/t/p/w500{record['poster_path']}")
     try:
         await channel.send(
-            content=f"<@{record.get('requested_by_id')}> your requested movie is now available!",
+            content=f"<@{record.get('requested_by_id')}> your requested {_request_noun(record.get('media_type', 'movie'))} is now available!",
             embed=embed,
         )
     except discord.Forbidden:
         logger.warning(f"Missing permission to send movie request announcement in channel {channel_id}.")
     except Exception as e:
         logger.error(f"Failed to send movie request announcement: {e}")
+
+
+def _request_noun(media_type: str) -> str:
+    return "TV series" if media_type == "tv" else "movie"
 
 
 def _movie_request_notifier(record: dict) -> None:
@@ -2099,7 +2103,7 @@ async def _check_request_channel_for_interaction(interaction: discord.Interactio
     """Return True when movie requests are configured and used in the right channel."""
     if not Config.REQUEST_CHANNEL_ID or not overseerr_service.is_configured():
         await interaction.response.send_message(
-            "Movie requests are not configured on this bot.", ephemeral=True
+            "Requests are not configured on this bot.", ephemeral=True
         )
         return False
     if interaction.channel_id != Config.REQUEST_CHANNEL_ID:
@@ -2123,9 +2127,10 @@ def _build_movie_request_embed(candidate: dict, *, title_prefix: str = "", descr
 
 
 class MovieRequestSelect(discord.ui.Select):
-    def __init__(self, candidates: list[dict], requester: discord.abc.User):
+    def __init__(self, candidates: list[dict], requester: discord.abc.User, media_type: str = "movie"):
         self.candidates_by_value = {str(c['tmdb_id']): c for c in candidates}
         self.requester = requester
+        self.media_type = media_type
         options = [
             discord.SelectOption(
                 label=f"{c['title']} ({c['year']})" if c.get('year') else c['title'],
@@ -2134,7 +2139,7 @@ class MovieRequestSelect(discord.ui.Select):
             )
             for c in candidates
         ]
-        super().__init__(placeholder="Select the correct movie...", options=options, min_values=1, max_values=1)
+        super().__init__(placeholder=f"Select the correct {_request_noun(media_type)}...", options=options, min_values=1, max_values=1)
 
     async def callback(self, interaction: discord.Interaction):
         if interaction.user.id != self.requester.id:
@@ -2143,8 +2148,8 @@ class MovieRequestSelect(discord.ui.Select):
 
         candidate = self.candidates_by_value[self.values[0]]
 
-        existing = movie_request_tracker.find_request_by_tmdb_id(candidate['tmdb_id'])
-        if existing and existing.get("status") not in RETRYABLE_STATUSES:
+        existing = movie_request_tracker.find_blocking_request(candidate['tmdb_id'], self.media_type)
+        if existing:
             label = STATUS_LABELS[5] if existing.get("status") == "available" else existing.get("status", "pending").title()
             duplicate_embed = _build_movie_request_embed(
                 candidate, title_prefix="ℹ️ Already requested: ",
@@ -2157,10 +2162,11 @@ class MovieRequestSelect(discord.ui.Select):
         submitting_embed = _build_movie_request_embed(candidate, title_prefix="Submitting request: ")
         await interaction.response.edit_message(embed=submitting_embed, view=None)
 
-        result = await overseerr_service.request_movie(candidate['tmdb_id'])
+        result = await overseerr_service.request_media(candidate['tmdb_id'], self.media_type)
         if result.get("success"):
             movie_request_tracker.add_request({
                 "tmdb_id": candidate['tmdb_id'],
+                "media_type": self.media_type,
                 "title": candidate['title'],
                 "year": candidate.get('year'),
                 "overview": candidate.get('overview') or "",
@@ -2189,11 +2195,11 @@ class MovieRequestSelect(discord.ui.Select):
 
 
 class MovieRequestSelectView(discord.ui.View):
-    def __init__(self, candidates: list[dict], requester: discord.abc.User):
+    def __init__(self, candidates: list[dict], requester: discord.abc.User, media_type: str = "movie"):
         super().__init__(timeout=60)
         self.message: Optional[discord.Message] = None
         self.requester = requester
-        self.add_item(MovieRequestSelect(candidates, requester))
+        self.add_item(MovieRequestSelect(candidates, requester, media_type))
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
     async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -2312,6 +2318,7 @@ def _build_system_help_embed() -> discord.Embed:
         name="Available /request commands",
         value=(
             "• `/request movie`\n"
+            "• `/request tv`\n"
             "• `/request status`\n"
             "• `/request clear`"
         ),
@@ -3835,9 +3842,7 @@ async def admin_show_config(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
-@request_group.command(name="movie", description="Request a movie via Overseerr/Jellyseerr")
-@app_commands.describe(title="Movie title to search for")
-async def request_movie(interaction: discord.Interaction, title: str):
+async def _start_request(interaction: discord.Interaction, title: str, media_type: str) -> None:
     if not await _check_request_channel_for_interaction(interaction):
         return
     if not await _check_allowed_roles_for_interaction(interaction):
@@ -3845,15 +3850,16 @@ async def request_movie(interaction: discord.Interaction, title: str):
 
     await interaction.response.defer(thinking=True)
 
-    candidates = tmdb_service.search_movies(title)
+    search = tmdb_service.search_tv if media_type == "tv" else tmdb_service.search_movies
+    candidates = search(title)
     if not candidates:
         reply = await interaction.followup.send(f"No results found for '{title}'.")
-        await _log_no_results_search(interaction, "/request movie", title, message=reply)
+        await _log_no_results_search(interaction, f"/request {media_type}", title, message=reply)
         return
 
-    view = MovieRequestSelectView(candidates, interaction.user)
+    view = MovieRequestSelectView(candidates, interaction.user, media_type)
     embed = discord.Embed(
-        title="Which movie did you mean?",
+        title=f"Which {_request_noun(media_type)} did you mean?",
         description="\n".join(
             f"**{c['title']}**" + (f" ({c['year']})" if c.get('year') else "") for c in candidates
         ),
@@ -3863,7 +3869,19 @@ async def request_movie(interaction: discord.Interaction, title: str):
     view.message = message
 
 
-@request_group.command(name="status", description="Check the status of your movie requests")
+@request_group.command(name="movie", description="Request a movie via Overseerr/Jellyseerr")
+@app_commands.describe(title="Movie title to search for")
+async def request_movie(interaction: discord.Interaction, title: str):
+    await _start_request(interaction, title, "movie")
+
+
+@request_group.command(name="tv", description="Request all seasons of a TV series via Overseerr/Jellyseerr")
+@app_commands.describe(title="TV series title to search for")
+async def request_tv(interaction: discord.Interaction, title: str):
+    await _start_request(interaction, title, "tv")
+
+
+@request_group.command(name="status", description="Check the status of your requests")
 async def request_status(interaction: discord.Interaction):
     if not await _check_request_channel_for_interaction(interaction):
         return
@@ -3900,10 +3918,11 @@ async def request_status(interaction: discord.Interaction):
                 # to the last known local status rather than showing an error.
                 label = status.title()
         year_text = f" ({record['year']})" if record.get('year') else ""
-        lines.append(f"**{record['title']}**{year_text} — {label}")
+        tv_tag = "📺 " if record.get("media_type") == "tv" else ""
+        lines.append(f"{tv_tag}**{record['title']}**{year_text} — {label}")
 
     embed = discord.Embed(
-        title="Your Movie Requests",
+        title="Your Requests",
         description="\n".join(lines),
         color=discord.Color.blue(),
     )

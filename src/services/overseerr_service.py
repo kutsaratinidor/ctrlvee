@@ -69,8 +69,8 @@ class OverseerrService:
             self.logger.warning(f"Overseerr request failed: {e}")
             return {"success": False, "error": describe_request_error("Overseerr", e)}
 
-    async def request_movie(self, tmdb_id: int) -> Dict:
-        """Submit a movie request to Overseerr/Jellyseerr by TMDB ID.
+    async def request_media(self, tmdb_id: int, media_type: str = "movie") -> Dict:
+        """Submit a movie or TV ("tv", all seasons) request to Overseerr/Jellyseerr by TMDB ID.
 
         Returns:
             Dict with 'success' boolean and 'request_id'/'media_id', or 'error' string
@@ -82,8 +82,11 @@ class OverseerrService:
             from ..config import Config
         except Exception:
             Config = None  # type: ignore
-        server_id = getattr(Config, 'OVERSEERR_RADARR_SERVER_ID', None) if Config else None
-        payload = {"mediaType": "movie", "mediaId": tmdb_id}
+        server_setting = 'OVERSEERR_SONARR_SERVER_ID' if media_type == "tv" else 'OVERSEERR_RADARR_SERVER_ID'
+        server_id = getattr(Config, server_setting, None) if Config else None
+        payload = {"mediaType": media_type, "mediaId": tmdb_id}
+        if media_type == "tv":
+            payload["seasons"] = "all"
         if server_id is not None:
             payload["serverId"] = server_id
         try:

@@ -124,9 +124,15 @@ class TMDBService:
         return best
 
     def search_movies(self, title: str, limit: int = 5) -> list[dict]:
-        """Search TMDB for movies matching a title, for user-facing pick lists.
+        """Search TMDB for movies matching a title, for user-facing pick lists."""
+        return self._search_candidates('movie', title, limit)
 
-        Unlike _find_best_movie_result (which collapses to a single best guess),
+    def search_tv(self, title: str, limit: int = 5) -> list[dict]:
+        """Search TMDB for TV series matching a title, for user-facing pick lists."""
+        return self._search_candidates('tv', title, limit)
+
+    def _search_candidates(self, media_type: str, title: str, limit: int) -> list[dict]:
+        """Unlike _find_best_movie_result (which collapses to a single best guess),
         this returns up to `limit` raw candidates in TMDB's own relevance order.
 
         Returns:
@@ -136,24 +142,25 @@ class TMDBService:
         if not self.api_key:
             self.logger.warning("No TMDB API key found")
             return []
+        is_tv = media_type == 'tv'
         try:
             search = tmdb.Search()
-            response = search.movie(query=title)
+            response = search.tv(query=title) if is_tv else search.movie(query=title)
             results = (response or {}).get('results') or []
             candidates = []
             for item in results[:limit]:
-                release_date = item.get('release_date') or ''
+                release_date = item.get('first_air_date' if is_tv else 'release_date') or ''
                 year = int(release_date[:4]) if len(release_date) >= 4 and release_date[:4].isdigit() else None
                 candidates.append({
                     'tmdb_id': item.get('id'),
-                    'title': item.get('title') or item.get('original_title') or 'Untitled',
+                    'title': (item.get('name') or item.get('original_name') if is_tv else item.get('title') or item.get('original_title')) or 'Untitled',
                     'year': year,
                     'overview': item.get('overview') or '',
                     'poster_path': item.get('poster_path'),
                 })
             return candidates
         except Exception as e:
-            self.logger.error(f"Error searching TMDB movies for title='{title}': {e}")
+            self.logger.error(f"Error searching TMDB {media_type} for title='{title}': {e}")
             return []
 
     @staticmethod

@@ -79,11 +79,19 @@ class MovieRequestTracker:
                 self._save()
         return removed
 
-    def find_request_by_tmdb_id(self, tmdb_id: int) -> Optional[dict]:
-        """Return the tracked record for this movie, if one already exists (any requester)."""
+    def find_blocking_request(self, tmdb_id: int, media_type: str = "movie") -> Optional[dict]:
+        """Return the latest record for this title (any requester) if it should stop a new request.
+
+        TMDB numbers movies and TV separately, so the same id can be two different titles.
+        An available series doesn't block, because a new season can still be requested.
+        """
         with self._lock:
-            for r in self._records:
-                if r.get("tmdb_id") == tmdb_id:
+            for r in reversed(self._records):
+                # Records from before TV requests have no media_type
+                if r.get("tmdb_id") == tmdb_id and r.get("media_type", "movie") == media_type:
+                    status = r.get("status")
+                    if status in RETRYABLE_STATUSES or (media_type == "tv" and status == "available"):
+                        return None
                     return dict(r)
         return None
 

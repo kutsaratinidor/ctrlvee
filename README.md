@@ -298,10 +298,10 @@ RADARR_ANIME_USE_SSL=true
 RADARR_ANIME_DISPLAY_NAME=Anime
 ```
 
-### Movie Requests (Overseerr/Jellyseerr, Optional)
+### Movie and TV Requests (Overseerr/Jellyseerr, Optional)
 
-Lets allowed users request movies via `/request movie <title>` (slash-only), tracked
-locally and announced when available. Availability is checked by polling — no
+Lets allowed users request movies via `/request movie <title>` and TV series via
+`/request tv <title>` (slash-only), tracked locally and announced when available. Availability is checked by polling — no
 inbound webhook is needed.
 
 ```bash
@@ -314,7 +314,12 @@ REQUEST_STORE_FILE=movie_requests.json
 # Optional: route every request to a specific Radarr instance configured in Overseerr
 # (Settings > Services > find its server ID). Blank uses Overseerr's own default instance.
 OVERSEERR_RADARR_SERVER_ID=
+# Same for /request tv, using the Sonarr instance's server ID. Sonarr has its own IDs.
+OVERSEERR_SONARR_SERVER_ID=
 ```
+
+`/request tv` asks for every season. A series is announced once Overseerr marks the
+whole request available, and can be requested again later to pick up new seasons.
 
 ## Commands
 
@@ -375,9 +380,10 @@ A title counts as finished once a person has been present for 85% of its minutes
 
 To keep an account off the board, such as the one you stream from, add its Discord user ID to `STATS_EXCLUDED_USER_IDS` (comma-separated) and restart. It's hidden from both ladders, including anything it already earned. Removing the ID brings it back with its totals.
 
-### Movie Requests (Slash Only)
+### Movie and TV Requests (Slash Only)
 
 - `/request movie <title>` — search and request a movie via Overseerr/Jellyseerr
+- `/request tv <title>` — search and request every season of a TV series
 - `/request status` — check the status of your own requests
 - `/request clear` — remove your own declined/failed/removed requests from tracking
 

@@ -207,6 +207,15 @@ class Config:
     except ValueError:
         OVERSEERR_RADARR_SERVER_ID = None
 
+    # Same for TV requests: the Overseerr server id of the Sonarr instance (Sonarr has its own ids).
+    _overseerr_sonarr_server_id_raw: str = os.getenv('OVERSEERR_SONARR_SERVER_ID', '').strip()
+    try:
+        OVERSEERR_SONARR_SERVER_ID: Optional[int] = (
+            int(_overseerr_sonarr_server_id_raw) if _overseerr_sonarr_server_id_raw else None
+        )
+    except ValueError:
+        OVERSEERR_SONARR_SERVER_ID = None
+
     # Queue Settings
     QUEUE_BACKUP_FILE: str = os.getenv('QUEUE_BACKUP_FILE', 'queue_backup.json')
     # Optional: periodically save current VLC playlist to a file (relative to bot dir if not absolute)
@@ -420,6 +429,8 @@ class Config:
             errors.append("REQUEST_POLL_INTERVAL must be a valid integer")
         if cls._overseerr_radarr_server_id_raw and cls.OVERSEERR_RADARR_SERVER_ID is None:
             errors.append("OVERSEERR_RADARR_SERVER_ID must be a valid integer")
+        if cls._overseerr_sonarr_server_id_raw and cls.OVERSEERR_SONARR_SERVER_ID is None:
+            errors.append("OVERSEERR_SONARR_SERVER_ID must be a valid integer")
 
         return errors
     
@@ -483,6 +494,7 @@ class Config:
             f"Request Channel: {cls.REQUEST_CHANNEL_ID if cls.REQUEST_CHANNEL_ID else 'Not Configured'}",
             f"Request Announce Channel: {cls.REQUEST_ANNOUNCE_CHANNEL_ID if cls.REQUEST_ANNOUNCE_CHANNEL_ID else 'Falls back to Request Channel'}",
             f"Overseerr Radarr Server ID: {cls.OVERSEERR_RADARR_SERVER_ID if cls.OVERSEERR_RADARR_SERVER_ID is not None else 'Overseerr default'}",
+            f"Overseerr Sonarr Server ID: {cls.OVERSEERR_SONARR_SERVER_ID if cls.OVERSEERR_SONARR_SERVER_ID is not None else 'Overseerr default'}",
             f"Discord Token: {'Configured' if cls.DISCORD_TOKEN else 'Not Configured'}",
             f"Ko-fi URL: {cls.KOFI_URL if cls.KOFI_URL else 'Not Configured'}",
             f"Privacy Policy URL: {cls.PRIVACY_POLICY_URL if cls.PRIVACY_POLICY_URL else 'Not Configured'}",
