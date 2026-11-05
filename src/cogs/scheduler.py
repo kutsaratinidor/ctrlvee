@@ -9,6 +9,7 @@ import json
 import os
 import re
 from urllib.parse import unquote
+from ..config import Config
 from ..utils.media_utils import MediaUtils
 
 # Cross-platform timezone handling for PH time
@@ -142,6 +143,7 @@ class Scheduler(commands.Cog):
         return resolved
 
     @commands.command(name="schedule")
+    @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def schedule_movie(self, ctx, number: int, date: str, time: str):
         """Schedule a movie by playlist number and PH time.
 
@@ -201,6 +203,7 @@ class Scheduler(commands.Cog):
             await ctx.send(f"❌ Invalid date/time format. Use: {format_cmd_inline('schedule <number> <YYYY-MM-DD> <HH:MM>')}")
 
     @commands.command(name="schedules")
+    @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def list_schedules(self, ctx):
         """List all upcoming scheduled movies."""
         if not self.scheduled:
@@ -225,6 +228,7 @@ class Scheduler(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.command(name="unschedule")
+    @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def unschedule(self, ctx, number: int):
         """Remove all schedules for a given movie number."""
         before = len(self.scheduled)

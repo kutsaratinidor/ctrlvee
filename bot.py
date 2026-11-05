@@ -267,6 +267,11 @@ async def _enforce_slash_channel_policy(interaction: discord.Interaction) -> boo
 
 # Global CommandTree check for all slash commands.
 async def global_slash_channel_policy_check(interaction: discord.Interaction) -> bool:
+    if interaction.type is discord.InteractionType.application_command and interaction.command is not None:
+        logger.info(
+            f"Command /{interaction.command.qualified_name}: user={interaction.user} ({interaction.user.id}) "
+            f"channel={interaction.channel_id}"
+        )
     return await _enforce_slash_channel_policy(interaction)
 
 
@@ -348,6 +353,17 @@ def _build_privacy_embed() -> discord.Embed:
 
     embed.set_footer(text=f"Use {prefix}privacy anytime to view this statement")
     return embed
+
+
+def _warn_voice_room_rules_on_startup() -> None:
+    """Say so when the voice room rules can't do their job, since the effect is otherwise silent."""
+    if not getattr(Config, 'ENABLE_VOICE_ROOM_RULES', True):
+        return
+    channel_id = int(getattr(Config, 'VOICE_JOIN_CHANNEL_ID', 0) or 0)
+    if channel_id <= 0:
+        logger.warning("Voice room rules are on but VOICE_JOIN_CHANNEL_ID is not set, so anyone with an allowed role can control playback from anywhere.")
+    elif not isinstance(bot.get_channel(channel_id), discord.VoiceChannel):
+        logger.warning(f"VOICE_JOIN_CHANNEL_ID={channel_id} is not a voice channel the bot can see, so playback commands will be refused until this is fixed.")
 
 
 def _warn_unknown_allowed_roles_on_startup() -> None:
@@ -1470,6 +1486,7 @@ async def on_ready():
         else:
             await _send_startup_announcement()
         _warn_unknown_allowed_roles_on_startup()
+        _warn_voice_room_rules_on_startup()
         logger.info("Testing VLC connection...")
         await asyncio.to_thread(_check_vlc_connection)
         _start_background_services()
@@ -1530,6 +1547,11 @@ async def on_message(message):
 
     ctx = await bot.get_context(message, cls=CommandChannelContext)
     await bot.invoke(ctx)
+
+@bot.event
+async def on_command(ctx):
+    logger.info(f"Command !{ctx.command.qualified_name}: user={ctx.author} ({ctx.author.id}) channel={ctx.channel.id}")
+
 
 @bot.event
 async def on_command_error(ctx, error):
@@ -2023,6 +2045,18 @@ async def _defer_if_needed(interaction: discord.Interaction) -> None:
         await interaction.response.defer()
 
 
+async def _check_room_for_interaction(interaction: discord.Interaction) -> bool:
+    """Presence gate for slash commands, after the role check; replies with the reason when denied."""
+    playback_cog = bot.get_cog("PlaybackCommands")
+    if not playback_cog:
+        await _reply(interaction, "Playback controls are unavailable right now.", ephemeral=True)
+        return False
+    ok, reason = playback_cog._playback_guard(interaction.user, presence_only=True)
+    if not ok:
+        await _reply(interaction, reason, ephemeral=True)
+    return ok
+
+
 async def _confirm_nearby_schedule_for_interaction(playback_cog, interaction: discord.Interaction, item=None, starts_in: float = 0) -> bool:
     """Defer the interaction, then gate on the schedule-proximity prompt.
 
@@ -2500,6 +2534,8 @@ async def system_clear_global_slash(interaction: discord.Interaction):
 async def playback_play(interaction: discord.Interaction):
     if not await _check_allowed_roles_for_interaction(interaction):
         return
+    if not await _check_room_for_interaction(interaction):
+        return
 
     if vlc.play():
         await interaction.response.send_message("Playback resumed.")
@@ -2522,6 +2558,8 @@ async def playback_pause(interaction: discord.Interaction):
 async def playback_stop(interaction: discord.Interaction):
     if not await _check_allowed_roles_for_interaction(interaction):
         return
+    if not await _check_room_for_interaction(interaction):
+        return
 
     if vlc.stop():
         await interaction.response.send_message("Playback stopped.")
@@ -2532,6 +2570,8 @@ async def playback_stop(interaction: discord.Interaction):
 @playback_group.command(name="restart", description="Restart current item from beginning")
 async def playback_restart(interaction: discord.Interaction):
     if not await _check_allowed_roles_for_interaction(interaction):
+        return
+    if not await _check_room_for_interaction(interaction):
         return
 
     if vlc.seek("0"):
@@ -2545,6 +2585,8 @@ async def playback_restart(interaction: discord.Interaction):
 async def playback_rewind(interaction: discord.Interaction, seconds: app_commands.Range[int, 1, 3600] = 10):
     if not await _check_allowed_roles_for_interaction(interaction):
         return
+    if not await _check_room_for_interaction(interaction):
+        return
 
     if vlc.seek(f"-{seconds}"):
         await interaction.response.send_message(f"Rewound {seconds} seconds.")
@@ -2556,6 +2598,8 @@ async def playback_rewind(interaction: discord.Interaction, seconds: app_command
 @app_commands.describe(seconds="Number of seconds to fast forward")
 async def playback_forward(interaction: discord.Interaction, seconds: app_commands.Range[int, 1, 3600] = 10):
     if not await _check_allowed_roles_for_interaction(interaction):
+        return
+    if not await _check_room_for_interaction(interaction):
         return
 
     if vlc.seek(f"+{seconds}"):
@@ -2764,6 +2808,9 @@ async def playback_speed(interaction: discord.Interaction, target: str | None = 
         )
         return
 
+    if not await _check_room_for_interaction(interaction):
+        return
+
     ok = vlc.set_rate(rate)
     if ok:
         if rate == 1.0:
@@ -2789,6 +2836,9 @@ async def playback_shuffle(interaction: discord.Interaction, action: str = "stat
     current = vlc.get_shuffle_state()
     if action == "status":
         await interaction.response.send_message(f"Shuffle is currently {'enabled' if current else 'disabled'}.")
+        return
+
+    if not await _check_room_for_interaction(interaction):
         return
 
     if action == "on":
@@ -3090,6 +3140,8 @@ async def queue_status(interaction: discord.Interaction):
 async def queue_clear(interaction: discord.Interaction):
     if not await _check_allowed_roles_for_interaction(interaction):
         return
+    if not await _check_room_for_interaction(interaction):
+        return
 
     vlc.clear_queue_tracking()
     embed = discord.Embed(
@@ -3109,6 +3161,8 @@ async def queue_clear(interaction: discord.Interaction):
 @app_commands.describe(ref="Queue order (e.g. 1) or playlist reference (e.g. #10)")
 async def queue_remove(interaction: discord.Interaction, ref: str):
     if not await _check_allowed_roles_for_interaction(interaction):
+        return
+    if not await _check_room_for_interaction(interaction):
         return
 
     await _defer_if_needed(interaction)
@@ -3394,6 +3448,8 @@ async def schedule_add(
     date: str,
     time_24h: str,
 ):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
     scheduler_cog = bot.get_cog("Scheduler")
     if not scheduler_cog:
         await interaction.response.send_message("Scheduler is unavailable.")
@@ -3460,6 +3516,8 @@ async def schedule_add(
 
 @schedule_group.command(name="list", description="List upcoming scheduled movies")
 async def schedule_list(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
     scheduler_cog = bot.get_cog("Scheduler")
     if not scheduler_cog:
         await interaction.response.send_message("Scheduler is unavailable.")
@@ -3492,6 +3550,8 @@ async def schedule_list(interaction: discord.Interaction):
 @schedule_group.command(name="remove", description="Remove all schedules for a playlist number")
 @app_commands.describe(number="Playlist item number")
 async def schedule_remove(interaction: discord.Interaction, number: app_commands.Range[int, 1, 99999]):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
     scheduler_cog = bot.get_cog("Scheduler")
     if not scheduler_cog:
         await interaction.response.send_message("Scheduler is unavailable.")

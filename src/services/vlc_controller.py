@@ -443,8 +443,8 @@ class VLCController:
         return self.send_command("pl_play")
         
     def pause(self):
-        """Pause playback"""
-        return self.send_command("pl_pause")
+        """Pause playback. pl_pause is a toggle that also resumes or starts it, so never use that here."""
+        return self.send_command("pl_forcepause")
         
     def stop(self):
         """Stop playback"""

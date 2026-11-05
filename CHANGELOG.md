@@ -1,3 +1,18 @@
+## 1.20.0 - 2026-11-05
+
+### Changed
+- **Schedule commands need an allowed role**: `/schedule add`, `list` and `remove`, plus `!schedule`, `!schedules` and `!unschedule`, had no role check, so anyone could schedule a movie to start a minute later or remove a schedule. They don't require being in the voice room.
+- **More playback commands need you in the voice room**: `play`, `stop`, `restart`, `rewind`, `forward`, changing `speed` or `shuffle`, and clearing or removing queue items now follow the voice room rules. `pause` and status-only commands stay open.
+- **A configured voice room that can't be found now blocks playback commands**: A wrong `VOICE_JOIN_CHANNEL_ID`, or one that isn't a voice channel, used to turn the rules off for everyone without warning. A startup warning now also covers this, and a room that isn't set at all.
+
+### Fixed
+- **Playback could be skipped from outside the voice room**: `forward` (also `!skip`) had no room check, and seeking past the end of an item moves VLC to the next one.
+- **Leaving voice during the schedule prompt still worked**: The room check only ran before the Continue/Cancel prompt. It now runs again after Continue, which also stops the click replacing something another user started during the wait.
+- **`/playback pause` could resume or start playback**: VLC's `pl_pause` is a toggle. Pause now only pauses.
+
+### Added
+- **Command and guard logging**: Every command and voice room decision is logged with the user who ran it, so reports can be traced.
+
 ## 1.19.1 - 2026-11-05
 
 ### Fixed

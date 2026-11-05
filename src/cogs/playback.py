@@ -817,20 +817,35 @@ class PlaybackCommands(commands.Cog):
         except Exception:
             return None
 
-    def _playback_guard(self, member: discord.Member) -> tuple[bool, str]:
-        """Presence + hijack gate for play-start commands. Call after the role check.
+    def _playback_guard(self, member: discord.Member, presence_only: bool = False) -> tuple[bool, str]:
+        """Presence + hijack gate for commands that change playback. Call after the role check.
+
+        presence_only skips the hijack check, for commands that don't switch the item
+        (stop, seek, speed, ...).
 
         Per-track ownership: a requester's claim lives only on the exact item they
         started. Once that item is no longer 'current' (auto-advance, watch folder,
         next/stop), the claim is gone and the next play request reseats ownership.
         """
+        allowed, reason = self._evaluate_playback_guard(member, presence_only)
+        logger.info(
+            f"Playback guard {'allowed' if allowed else 'denied'}: user={member} ({member.id})"
+            + (f" reason={reason}" if reason else "")
+        )
+        return allowed, reason
+
+    def _evaluate_playback_guard(self, member: discord.Member, presence_only: bool) -> tuple[bool, str]:
         if not bool(getattr(Config, 'ENABLE_VOICE_ROOM_RULES', True)):
             return True, ""
         room = self._resolve_room_channel(member.guild)
+        if room is None and int(getattr(Config, 'VOICE_JOIN_CHANNEL_ID', 0) or 0) > 0:
+            # Only an unset channel means "no room". A set one that can't be found must
+            # not open playback to everyone.
+            return False, "Playback control is unavailable: the voice room can't be found. Ask the bot owner to check `VOICE_JOIN_CHANNEL_ID`."
         voice = getattr(member, 'voice', None)
         requester_in_room = bool(voice and voice.channel and room is not None and voice.channel.id == room.id)
-        current_id = self._current_stream_item_id()
-        owner_id = self._playback_owner_id
+        current_id = None if presence_only else self._current_stream_item_id()
+        owner_id = None if presence_only else self._playback_owner_id
 
         owner_in_room = False
         owner = None
@@ -853,6 +868,13 @@ class PlaybackCommands(commands.Cog):
             return False, f"You must be in **{room.name}** to control playback."
         name = getattr(owner, 'display_name', 'This user') if owner else 'This user'
         return False, f"⏳ **{name}** is watching this one — ask before switching the playback."
+
+    async def _check_room(self, ctx) -> bool:
+        """Presence gate for prefix commands; replies with the reason when denied."""
+        ok, reason = self._playback_guard(ctx.author, presence_only=True)
+        if not ok:
+            await ctx.send(reason)
+        return ok
 
     def _seat_playback_owner(self, member: discord.Member, item_id: str | None) -> None:
         """Claim ownership of the item just started, for the hijack guard."""
@@ -938,7 +960,13 @@ class PlaybackCommands(commands.Cog):
         view = ScheduleConfirmView(member.id, timeout=timeout)
         view.message = await sendable.send(notice, view=view)
         await view.wait()
-        return bool(view.decision)
+        if not view.decision:
+            return False
+        # The prompt can wait a while: they may have left, or someone else may have started something.
+        ok, reason = await asyncio.to_thread(self._playback_guard, member)
+        if not ok:
+            await sendable.send(reason)
+        return ok
 
     async def _check_cooldown(self, ctx):
         """Check if enough time has passed since last state change"""
@@ -984,6 +1012,9 @@ class PlaybackCommands(commands.Cog):
                 )
                 embed.add_field(name="Aliases", value="spd, speed15, speednorm", inline=True)
                 await ctx.send(embed=embed)
+                return
+
+            if not await self._check_room(ctx):
                 return
 
             t = target.strip().lower()
@@ -2023,6 +2054,9 @@ class PlaybackCommands(commands.Cog):
         if not await self._check_cooldown(ctx):
             return
 
+        if not await self._check_room(ctx):
+            return
+
         status = self.vlc.get_status()
         if not status:
             await ctx.send('Error: Could not access VLC')
@@ -2075,6 +2109,9 @@ class PlaybackCommands(commands.Cog):
     @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def stop(self, ctx):
         """Stop playback"""
+        if not await self._check_room(ctx):
+            return
+
         if self.vlc.stop():
             logger.info("Playback stopped")
             embed = discord.Embed(
@@ -2096,6 +2133,9 @@ class PlaybackCommands(commands.Cog):
     @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def restart(self, ctx):
         """Restart current file from the beginning"""
+        if not await self._check_room(ctx):
+            return
+
         if self.vlc.seek("0"):
             logger.info("Restarted current file from beginning")
             await ctx.send('Restarted current file from the beginning')
@@ -2107,6 +2147,9 @@ class PlaybackCommands(commands.Cog):
     @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def rewind(self, ctx, seconds: int = 10):
         """Rewind playback by specified number of seconds"""
+        if not await self._check_room(ctx):
+            return
+
         if seconds <= 0:
             embed = discord.Embed(
                 title="⏪ Rewind failed",
@@ -2135,6 +2178,9 @@ class PlaybackCommands(commands.Cog):
     @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def forward(self, ctx, seconds: int = 10):
         """Fast forward playback by specified number of seconds"""
+        if not await self._check_room(ctx):
+            return
+
         if seconds <= 0:
             embed = discord.Embed(
                 title="⏩ Fast-forward failed",
@@ -2824,6 +2870,9 @@ class PlaybackCommands(commands.Cog):
     @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def clear_queue(self, ctx):
         """Clear all queue tracking (useful for reset)"""
+        if not await self._check_room(ctx):
+            return
+
         try:
             self.vlc.clear_queue_tracking()
             embed = discord.Embed(
@@ -2854,6 +2903,9 @@ class PlaybackCommands(commands.Cog):
 
         (Commands are shown with the configured prefix in the help output.)
         """
+        if not await self._check_room(ctx):
+            return
+
         try:
             if ref.startswith('#'):
                 num = int(ref[1:])
@@ -2883,6 +2935,9 @@ class PlaybackCommands(commands.Cog):
     @commands.command(name='shuffle_on', aliases=['shuffle_enable'])
     async def shuffle_on(self, ctx):
         """Enable shuffle mode"""
+        if not await self._check_room(ctx):
+            return
+
         try:
             current_shuffle = self.vlc.get_shuffle_state()
             
@@ -2912,6 +2967,9 @@ class PlaybackCommands(commands.Cog):
     @commands.command(name='shuffle_off', aliases=['shuffle_disable'])
     async def shuffle_off(self, ctx):
         """Disable shuffle mode"""
+        if not await self._check_room(ctx):
+            return
+
         try:
             current_shuffle = self.vlc.get_shuffle_state()
             
@@ -2941,6 +2999,9 @@ class PlaybackCommands(commands.Cog):
     @commands.command(name='shuffle_toggle', aliases=['shuffle'])
     async def shuffle_toggle(self, ctx):
         """Toggle shuffle mode on/off"""
+        if not await self._check_room(ctx):
+            return
+
         try:
             current_shuffle = self.vlc.get_shuffle_state()
             

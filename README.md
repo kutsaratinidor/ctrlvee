@@ -255,6 +255,14 @@ skip or queue an item past the current watcher. Ownership resets automatically
 when the item actually changes — auto-advanced/watch-folder screens, `stop`, or
 the watcher's own `next` free the slot.
 
+The other playback commands also require being in the room: `play`, `stop`, `restart`,
+`rewind`, `forward`, changing `speed` or `shuffle`, and clearing or removing queue items.
+`pause` stays open to anyone with an allowed role, and only ever pauses.
+Commands that just show status are also open. If `VOICE_JOIN_CHANNEL_ID` is `0` these rules do
+nothing, and if it's set to a channel the bot can't find, guarded commands are refused until
+that's fixed. Either case logs a startup warning. Every command and guard decision is logged
+with the user who ran it.
+
 The **schedule proximity guard** (`ENABLE_SCHEDULE_PROXIMITY_GUARD`, default `true`)
 prompts whoever runs `play-item`/`play-search`, `next`/`previous`, or `queue
 add-next`/`!queue_next` when an **upcoming** scheduled movie would start before the
@@ -358,6 +366,8 @@ Prefix shown as `!` below; replace with your configured `DISCORD_COMMAND_PREFIX`
 - `!remove_queue <N|#N>`
 
 ### Scheduling
+
+Scheduling commands need an allowed role, but you don't need to be in the voice room.
 
 - `!schedule <number> <YYYY-MM-DD> <HH:MM>`
 - `!schedules`
