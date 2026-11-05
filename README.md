@@ -365,6 +365,15 @@ Prefix shown as `!` below; replace with your configured `DISCORD_COMMAND_PREFIX`
 - `!privacy` (aliases: `policy`, `data_policy`)
 - `!changelog` (aliases: `changes`, `whatsnew`)
 - `!controls`
+- `!stats` (alias: `leaderboard`), or `/stats` — open to everyone
+
+### Watch Leaderboard
+
+`/stats` and `!stats` show the top 10 by hours watched and by titles finished. Everyone in `VOICE_JOIN_CHANNEL_ID`, apart from bots, is credited every 30 seconds while VLC is playing, so this measures presence in the room, not attention. Nothing is tracked if that channel isn't set.
+
+A title counts as finished once a person has been present for 85% of its minutes, across as many sittings as it takes. Each title counts once per person, and each TV episode is its own title. Rewatching still adds hours. Totals are kept in `watch_stats.json`.
+
+To keep an account off the board, such as the one you stream from, add its Discord user ID to `STATS_EXCLUDED_USER_IDS` (comma-separated) and restart. It's hidden from both ladders, including anything it already earned. Removing the ID brings it back with its totals.
 
 ### Movie Requests (Slash Only)
 

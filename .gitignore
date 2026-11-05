@@ -38,6 +38,9 @@ ctrlvee_playlist.xspf
 schedule_backup.json
 # Movie request tracker store
 movie_requests.json
+# Watch leaderboard store
+watch_stats.json
+watch_stats.json.corrupt
 
 # IDE specific files
 .idea/

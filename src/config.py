@@ -168,6 +168,11 @@ class Config:
         int(c) for c in os.getenv('COMMAND_CHANNEL_ID', '0').split(',') if c.strip() and c.strip() != '0'
     ]
 
+    # Discord user IDs left off the /stats leaderboard, comma-separated (e.g. the streaming account).
+    STATS_EXCLUDED_USER_IDS: list[int] = [
+        int(u) for u in os.getenv('STATS_EXCLUDED_USER_IDS', '').split(',') if u.strip()
+    ]
+
     # Optional channel to log searches that returned no results (movie requests,
     # playlist search/play-search). Set to 0 to log to the terminal instead.
     SEARCH_LOG_CHANNEL_ID: int = int(os.getenv('SEARCH_LOG_CHANNEL_ID', '0'))
@@ -453,6 +458,7 @@ class Config:
             ),
             f"Voice Join Enabled: {cls.ENABLE_VOICE_JOIN}",
             f"Voice Channel ID: {cls.VOICE_JOIN_CHANNEL_ID if cls.VOICE_JOIN_CHANNEL_ID else 'Not Configured'}",
+            f"Stats Excluded Users: {', '.join(map(str, cls.STATS_EXCLUDED_USER_IDS)) or 'None'}",
             f"Auto Join On Start: {cls.VOICE_AUTO_JOIN_ON_START}",
             f"Voice Max Reconnects: {cls.VOICE_MAX_RECONNECTS}",
             f"Voice Reconnect Window: {cls.VOICE_RECONNECT_WINDOW}s",

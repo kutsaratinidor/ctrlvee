@@ -1,3 +1,11 @@
+## 1.18.0 - 2026-11-05
+
+### Added
+- **Watch leaderboard**: `/stats` and `!stats` show the top 10 by hours watched and by titles finished, and anyone can use them. Everyone in the voice room is credited while VLC is playing. A title counts as finished at 85% of its minutes, even across several sittings, and only once per person. Each TV episode counts as its own title, and a Radarr upgrade stays the same title. Totals are kept in `watch_stats.json`. Tracking needs `VOICE_JOIN_CHANNEL_ID` and starts from zero. Set `STATS_EXCLUDED_USER_IDS` to keep accounts such as the streaming account off the board.
+
+### Fixed
+- **`/help` disappeared after a global slash cleanup**: `/system clear-global-slash` and `!clearglobalslash` removed `/help` until the bot restarted, because only the command groups were restored afterwards. `/help` is now restored with them.
+
 ## 1.17.16 - 2026-11-03
 
 ### Added

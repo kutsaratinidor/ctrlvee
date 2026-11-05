@@ -71,11 +71,13 @@ from src.utils.media_utils import MediaUtils
 from src.services.radarr_service import RadarrService
 from src.services.overseerr_service import OverseerrService, STATUS_LABELS, REQUEST_STATUS_DECLINED, REQUEST_STATUS_FAILED
 from src.services.movie_request_tracker import MovieRequestTracker, RETRYABLE_STATUSES
+from src.services.stats_service import StatsService
 
 vlc = VLCController(bot=bot)
 tmdb_service = TMDBService()
 watch_service = WatchFolderService(vlc)
 overseerr_service = OverseerrService()
+stats_service = StatsService(excluded=Config.STATS_EXCLUDED_USER_IDS)
 movie_request_tracker = MovieRequestTracker(overseerr_service)
 _radarr_services = []
 try:
@@ -432,6 +434,7 @@ from src.cogs.playback import PlaybackCommands
 from src.cogs.playlist import PlaylistCommands, PlaylistView, SearchResultsView
 from src.cogs.scheduler import Scheduler, PH_TZ, format_schedule_time
 from src.cogs.watch import WatchCommands, _write_env_watch_folders, build_watch_remove_picker
+from src.cogs.stats import StatsCommands, build_stats_embed
 from src.version import __version__
 from changelog_helper import parse_changelog
 from src.config import get_watch_folders_from_env
@@ -774,6 +777,8 @@ def _register_app_command_groups() -> None:
         watch_group,
         admin_group,
         request_group,
+        root_help,
+        root_stats,
     ]
     for group in groups:
         try:
@@ -884,6 +889,7 @@ async def setup_hook():
         await bot.add_cog(PlaylistCommands(bot, vlc, tmdb_service, watch_service))
         await bot.add_cog(Scheduler(bot, vlc))
         await bot.add_cog(WatchCommands(bot, watch_service, vlc))
+        await bot.add_cog(StatsCommands(bot, vlc, stats_service))
         logger.info("Cogs loaded successfully")
 
         # Sync slash commands (global or development guild).
@@ -1628,6 +1634,7 @@ async def controls(ctx):
 `{prefix}schedules` - List all upcoming scheduled movies
 `{prefix}unschedule <number>` - Remove all schedules for a movie number
     `{prefix}privacy` - Show data use and privacy statement
+`{prefix}stats` - Show the watch leaderboard
         """
         embed.add_field(name="ℹ️ Status & Scheduling", value=status_commands, inline=False)
 
@@ -2310,6 +2317,7 @@ def _build_system_help_embed() -> discord.Embed:
         ),
         inline=False,
     )
+    embed.add_field(name="Watch leaderboard", value="• `/stats`", inline=False)
     if getattr(Config, 'ENABLE_PREFIX_COMMANDS', True):
         embed.add_field(
             name="Prefix mode",
@@ -2333,6 +2341,12 @@ async def system_help(interaction: discord.Interaction):
 @bot.tree.command(name="help", description="Show available CtrlVee commands")
 async def root_help(interaction: discord.Interaction):
     await interaction.response.send_message(embed=_build_system_help_embed())
+
+
+@bot.tree.command(name="stats", description="Show the watch leaderboard")
+@app_commands.guild_only()
+async def root_stats(interaction: discord.Interaction):
+    await interaction.response.send_message(embed=build_stats_embed(stats_service))
 
 
 @system_group.command(name="version", description="Show CtrlVee version and configuration summary")
