@@ -4,10 +4,14 @@ import asyncio
 import logging
 import threading
 import re
+import json
 import time
+from datetime import datetime, timezone
+from typing import Optional
 from src.config import Config
 from discord.ext import commands
 import discord
+from discord import app_commands
 
 # Get logger for this module
 logger = logging.getLogger(__name__)
@@ -53,10 +57,11 @@ Config.print_config()
 
 # Bot setup
 intents = discord.Intents.default()
-intents.message_content = True
+intents.message_content = bool(getattr(Config, 'ENABLE_PREFIX_COMMANDS', True))
 intents.voice_states = True  # Needed for voice events
 intents.guilds = True        # Needed for channel resolution
-bot = commands.Bot(command_prefix=Config.DISCORD_COMMAND_PREFIX, intents=intents)
+command_prefix = Config.DISCORD_COMMAND_PREFIX if getattr(Config, 'ENABLE_PREFIX_COMMANDS', True) else commands.when_mentioned
+bot = commands.Bot(command_prefix=command_prefix, intents=intents)
 
 # Initialize services
 from src.services.vlc_controller import VLCController
@@ -64,10 +69,16 @@ from src.services.tmdb_service import TMDBService
 from src.services.watch_folder_service import WatchFolderService
 from src.utils.media_utils import MediaUtils
 from src.services.radarr_service import RadarrService
+from src.services.overseerr_service import OverseerrService, STATUS_LABELS, REQUEST_STATUS_DECLINED, REQUEST_STATUS_FAILED
+from src.services.movie_request_tracker import MovieRequestTracker
+from src.services.stats_service import StatsService
 
 vlc = VLCController(bot=bot)
 tmdb_service = TMDBService()
 watch_service = WatchFolderService(vlc)
+overseerr_service = OverseerrService()
+stats_service = StatsService(excluded=Config.STATS_EXCLUDED_USER_IDS)
+movie_request_tracker = MovieRequestTracker(overseerr_service)
 _radarr_services = []
 try:
     # Build Radarr service instances from config (multi or single)
@@ -110,15 +121,176 @@ def _format_bytes(n: int) -> str:
         return "-"
 
 
-def _format_allowed_roles_for_display() -> str:
-    """Format ALLOWED_ROLES for logs/help text, supporting names and IDs."""
+def _format_allowed_roles_for_display(guild=None) -> str:
+    """Format ALLOWED_ROLES for logs/help/denial text.
+
+    Resolves role IDs to their role names in the given guild (falling back to
+    the raw ID when the role isn't present there) and keeps configured role
+    names as-is. Duplicate names — e.g. the same role listed once by name and
+    once by ID — collapse to a single entry.
+    """
     parts = []
+    seen = set()
     for role in Config.ALLOWED_ROLES:
-        if isinstance(role, int):
-            parts.append(f"ID:{role}")
-        else:
-            parts.append(f"'{role}'")
+        display = role if isinstance(role, str) else None
+        if isinstance(role, int) and guild is not None:
+            resolved = guild.get_role(role)
+            if resolved is not None:
+                display = resolved.name
+        if display is None:
+            display = f"ID:{role}"  # unresolved role ID
+        key = display.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        parts.append(display)
     return ", ".join(parts)
+    
+def _get_slash_allowed_channel_ids() -> tuple[list[int], str]:
+    """Return allowed channel IDs for slash commands and their policy source.
+
+    Policy:
+    1. If COMMAND_CHANNEL_ID lists channels, only those are allowed.
+    2. Otherwise, allow only channels in WATCH_ANNOUNCE_CHANNEL_ID.
+    """
+    if Config.COMMAND_CHANNEL_IDS:
+        return list(Config.COMMAND_CHANNEL_IDS), "command"
+
+    announce_ids = [cid for cid in Config.get_announce_channel_ids() if int(cid) > 0]
+    return announce_ids, "announce"
+
+
+def _filter_allowed_channel_ids_for_guild(allowed_ids: list[int], guild: discord.Guild) -> list[int]:
+    """Return only allowed channel IDs that belong to the provided guild."""
+    in_guild: list[int] = []
+    for cid in allowed_ids:
+        ch = guild.get_channel(cid)
+        if ch is None:
+            ch = bot.get_channel(cid)
+        if ch is None:
+            continue
+        if getattr(ch, 'guild', None) and ch.guild.id == guild.id:
+            in_guild.append(cid)
+    return in_guild
+
+
+async def _enforce_slash_channel_policy(interaction: discord.Interaction) -> bool:
+    """Enforce configured slash-command channel policy for guild interactions."""
+    # This policy is intended for server channels only.
+    if interaction.guild is None:
+        return True
+
+    # /request commands enforce their own channel restriction against
+    # Config.REQUEST_CHANNEL_ID via _check_request_channel_for_interaction —
+    # skip the global gate entirely for this group so a dedicated request
+    # channel doesn't have to also be COMMAND_CHANNEL_ID.
+    command = interaction.command
+    if command is not None and getattr(command, 'root_parent', None) is request_group:
+        return True
+
+    allowed_ids, source = _get_slash_allowed_channel_ids()
+    if not allowed_ids:
+        msg = (
+            "Slash commands are currently restricted by configuration, but no allowed channels are set. "
+            "Set `COMMAND_CHANNEL_ID` or configure `WATCH_ANNOUNCE_CHANNEL_ID`."
+        )
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except Exception:
+            logger.debug("Failed to send slash channel policy warning", exc_info=True)
+        return False
+
+    allowed_ids_guild = _filter_allowed_channel_ids_for_guild(allowed_ids, interaction.guild)
+    if not allowed_ids_guild:
+        msg = (
+            "Slash commands are restricted, but no allowed command channels are configured for this server. "
+            "Ask the bot owner to configure a channel in this guild."
+        )
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except Exception:
+            logger.debug("Failed to send slash channel policy warning", exc_info=True)
+        logger.info(
+            "Slash channel policy deny (no in-guild channels): guild=%s source=%s configured=%s user=%s",
+            getattr(interaction.guild, 'id', None),
+            source,
+            allowed_ids,
+            getattr(interaction.user, 'id', None),
+        )
+        return False
+
+    current_channel_id = int(interaction.channel_id or 0)
+    if current_channel_id in allowed_ids_guild:
+        logger.debug(
+            "Slash channel policy allow: guild=%s channel=%s source=%s allowed=%s",
+            getattr(interaction.guild, 'id', None),
+            current_channel_id,
+            source,
+            allowed_ids_guild,
+        )
+        return True
+
+    if source == "command" and len(allowed_ids_guild) == 1:
+        msg = (
+            f"Slash commands are restricted to <#{allowed_ids_guild[0]}>. "
+            "Please run this command there."
+        )
+    else:
+        allowed_mentions = ", ".join(f"<#{cid}>" for cid in allowed_ids_guild)
+        msg = (
+            f"Slash commands are restricted to these channels: {allowed_mentions}. "
+            "Please run this command there."
+        )
+
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(msg, ephemeral=True)
+        else:
+            await interaction.response.send_message(msg, ephemeral=True)
+    except Exception:
+        logger.debug("Failed to send slash channel policy warning", exc_info=True)
+    logger.info(
+        "Slash channel policy deny: guild=%s channel=%s source=%s allowed=%s user=%s",
+        getattr(interaction.guild, 'id', None),
+        current_channel_id,
+        source,
+        allowed_ids_guild,
+        getattr(interaction.user, 'id', None),
+    )
+    return False
+
+# Global CommandTree check for all slash commands.
+async def global_slash_channel_policy_check(interaction: discord.Interaction) -> bool:
+    return await _enforce_slash_channel_policy(interaction)
+
+
+# Some discord.py versions do not expose CommandTree.check decorator.
+# Assigning interaction_check directly keeps this compatible.
+bot.tree.interaction_check = global_slash_channel_policy_check
+
+
+def _log_slash_channel_policy() -> None:
+    """Log effective slash channel policy at startup for easier troubleshooting."""
+    announce_ids = [cid for cid in Config.get_announce_channel_ids() if int(cid) > 0]
+
+    if Config.COMMAND_CHANNEL_IDS:
+        logger.info("Slash channel policy: restricted to COMMAND_CHANNEL_ID=%s", Config.COMMAND_CHANNEL_IDS)
+        return
+
+    if announce_ids:
+        logger.info("Slash channel policy: restricted to WATCH_ANNOUNCE_CHANNEL_ID=%s", announce_ids)
+        return
+
+    logger.warning(
+        "Slash channel policy: no allowed channels configured. "
+        "Guild slash commands will be blocked until COMMAND_CHANNEL_ID or WATCH_ANNOUNCE_CHANNEL_ID is set."
+    )
 
 
 def _build_privacy_embed() -> discord.Embed:
@@ -151,6 +323,7 @@ def _build_privacy_embed() -> discord.Embed:
         name="What data may be stored",
         value=(
             "• Queue backup and schedule backup files (local bot storage)\n"
+            "• Movie request records (requester user ID/username, kept indefinitely to notify on availability)\n"
             "• Optional playlist autosave output files\n"
             "• Operational logs for troubleshooting"
         ),
@@ -258,11 +431,13 @@ _autosave_stop = threading.Event()
 
 # Import cogs
 from src.cogs.playback import PlaybackCommands
-from src.cogs.playlist import PlaylistCommands
-from src.cogs.scheduler import Scheduler
-from src.cogs.watch import WatchCommands
+from src.cogs.playlist import PlaylistCommands, PlaylistView, SearchResultsView
+from src.cogs.scheduler import Scheduler, PH_TZ, format_schedule_time
+from src.cogs.watch import WatchCommands, _write_env_watch_folders, build_watch_remove_picker
+from src.cogs.stats import StatsCommands, build_stats_embed
 from src.version import __version__
 from changelog_helper import parse_changelog
+from src.config import get_watch_folders_from_env
 
 # -------- Voice connection management --------
 # Reconnect guard variables (configurable)
@@ -288,6 +463,43 @@ _VOICE_ERROR_CODES = {
 # Serialize voice join attempts to avoid overlapping connects
 _voice_join_lock = asyncio.Lock()
 __last_connect_attempt_ts = 0.0
+
+# Background voice tasks; on_ready can fire again after a gateway reconnect,
+# so these are kept to avoid spawning duplicates.
+_voice_guard_task = None
+_voice_retry_task = None
+
+async def _retry_initial_voice_join():
+    """Keep retrying the startup voice join, up to VOICE_MAX_RECONNECTS times.
+
+    on_voice_state_update only fires when the bot's voice state actually
+    changes (e.g. connected -> disconnected); if join_voice_channel() exhausts
+    its attempts without ever establishing a connection, there's no prior
+    connected state to transition away from, so that event never fires. With
+    ENABLE_VOICE_GUARD off (the default), nothing would otherwise ever retry.
+    This loop's only job is to get the bot into voice at least once — ongoing
+    health monitoring after that remains ENABLE_VOICE_GUARD's opt-in job.
+
+    Bounded (rather than retrying forever) so a persistent underlying issue
+    doesn't repeatedly flash join attempts in the channel indefinitely.
+    """
+    for attempt in range(_MAX_RECONNECTS):
+        if bot.is_closed() or not getattr(Config, 'ENABLE_VOICE_JOIN', False):
+            return
+        ch = await _resolve_voice_channel()
+        if ch and _is_connected_to_channel(ch.guild, ch.id):
+            return
+        try:
+            if await join_voice_channel():
+                return
+        except Exception as e:
+            logger.debug(f"Initial voice join retry failed: {e}")
+        await asyncio.sleep(_VOICE_ERROR_RETRY_DELAY)
+    logger.warning(
+        f"Giving up on initial voice join after {_MAX_RECONNECTS} attempts. "
+        "Restart the bot once the underlying connectivity issue is resolved."
+    )
+
 
 async def _voice_connection_guard():
     """Monitor voice connection and gracefully reconnect on common disconnects.
@@ -519,6 +731,84 @@ async def join_voice_channel() -> bool:
         return False
 
 
+def _format_synced_top_level_commands(commands_list) -> str:
+    """Return a stable comma-separated list of top-level slash command names."""
+    try:
+        names = sorted({c.name for c in commands_list if getattr(c, 'name', None)})
+        return ", ".join(names) if names else "(none)"
+    except Exception:
+        return "(unknown)"
+
+
+async def _sync_app_commands_now() -> tuple[list | None, list | None]:
+    """Sync slash commands and return (global_synced_or_none, guild_synced_or_none)."""
+    guild_id = int(getattr(Config, 'SLASH_COMMAND_GUILD_ID', 0) or 0)
+    global_sync_enabled = bool(getattr(Config, 'SYNC_GLOBAL_COMMANDS', False))
+
+    if guild_id > 0 and global_sync_enabled:
+        logger.warning(
+            "Both SLASH_COMMAND_GUILD_ID and SYNC_GLOBAL_COMMANDS are enabled; "
+            "Discord may show duplicate slash entries in that guild (guild + global)."
+        )
+
+    if guild_id > 0:
+        dev_guild = discord.Object(id=guild_id)
+        bot.tree.copy_global_to(guild=dev_guild)
+        synced_guild = await bot.tree.sync(guild=dev_guild)
+        synced_global = None
+        if global_sync_enabled:
+            synced_global = await bot.tree.sync()
+        return synced_global, synced_guild
+
+    synced_global = await bot.tree.sync()
+    return synced_global, None
+
+
+def _register_app_command_groups() -> None:
+    """Register top-level slash command groups on the command tree."""
+    groups = [
+        system_group,
+        playback_group,
+        playlist_group,
+        queue_group,
+        subtitles_group,
+        audio_group,
+        schedule_group,
+        watch_group,
+        admin_group,
+        request_group,
+        root_help,
+        root_stats,
+    ]
+    for group in groups:
+        try:
+            bot.tree.add_command(group)
+        except app_commands.CommandAlreadyRegistered:
+            # Safe when called after a partial re-registration path.
+            continue
+
+
+async def _purge_global_commands_once() -> tuple[int, int, int | None]:
+    """Clear global command registrations once and resync guild scope.
+
+    Returns:
+        (global_before_count, global_after_count, guild_after_count_or_none)
+    """
+    global_before = await bot.tree.fetch_commands()
+
+    # Push an empty global command set to remove stale global registrations.
+    bot.tree.clear_commands(guild=None)
+    global_after = await bot.tree.sync()
+
+    # Restore local groups for ongoing runtime behavior and future sync operations.
+    _register_app_command_groups()
+
+    _, synced_guild = await _sync_app_commands_now()
+    guild_after_count = len(synced_guild) if synced_guild is not None else None
+
+    return len(global_before), len(global_after), guild_after_count
+
+
 @bot.event
 async def on_voice_state_update(member, before, after):
     """When the bot itself gets disconnected from voice, attempt a controlled reconnect."""
@@ -598,685 +888,615 @@ async def setup_hook():
         await bot.add_cog(PlaybackCommands(bot, vlc, tmdb_service, watch_service))
         await bot.add_cog(PlaylistCommands(bot, vlc, tmdb_service, watch_service))
         await bot.add_cog(Scheduler(bot, vlc))
-        await bot.add_cog(WatchCommands(bot))
+        await bot.add_cog(WatchCommands(bot, watch_service, vlc))
+        await bot.add_cog(StatsCommands(bot, vlc, stats_service))
         logger.info("Cogs loaded successfully")
+
+        # Sync slash commands (global or development guild).
+        if getattr(Config, 'ENABLE_SLASH_COMMANDS', True):
+            synced_global, synced_guild = await _sync_app_commands_now()
+            if synced_guild is not None:
+                logger.info(
+                    "Slash commands synced to guild %s: %s command(s) [%s]",
+                    int(getattr(Config, 'SLASH_COMMAND_GUILD_ID', 0) or 0),
+                    len(synced_guild),
+                    _format_synced_top_level_commands(synced_guild),
+                )
+            if synced_global is not None:
+                logger.info(
+                    "Slash commands synced globally: %s command(s) [%s]",
+                    len(synced_global),
+                    _format_synced_top_level_commands(synced_global),
+                )
+            elif synced_guild is not None:
+                logger.info("Slash global sync skipped (SYNC_GLOBAL_COMMANDS=false with dev guild mode)")
+        else:
+            logger.info("Slash command sync skipped (ENABLE_SLASH_COMMANDS=false)")
     except Exception as e:
         logger.error(f"Error loading cogs: {e}")
         sys.exit(1)
 
-@bot.event
-async def on_ready():
-    """Called when the bot is ready."""
-    # Log voice join/reconnect configuration to confirm loaded values
+def _detect_season(paths_list):
+    """Season number and its folder from the first path that names one (S01E02, 1x02, or a 'Season 1' folder)."""
+    for p in paths_list:
+        bn = os.path.basename(p)
+        par = os.path.dirname(p)
+        m = (re.search(r'[sS]?(\d{1,2})[xXeE](\d{1,2})', bn)
+             or re.search(r'(?<!\d)(\d{1,2})[xX](\d{1,2})(?!\d)', bn)
+             or re.search(r'[sS]eason[\s_\-]?(\d{1,2})', par))
+        if m:
+            return int(m.group(1)), par
+    return None, None
+
+
+def _announce_list_line(path: str) -> str:
+    name = os.path.basename(path)
     try:
-        logger.info(
-            "Voice join config: enabled=%s, auto_on_start=%s, channel_id=%s",
-            getattr(Config, 'ENABLE_VOICE_JOIN', False),
-            getattr(Config, 'VOICE_AUTO_JOIN_ON_START', True),
-            getattr(Config, 'VOICE_JOIN_CHANNEL_ID', 0),
-        )
-        logger.info(
-            "Voice reconnect config: max=%s, window=%ss, cooldown=%ss",
-            _MAX_RECONNECTS,
-            _RECONNECT_WINDOW,
-            _RECONNECT_COOLDOWN,
-        )
-        logger.info(
-            "Voice connect config: timeout=%ss, retry_delay=%ss, error_retry_delay=%ss, initial_retries=%s",
-            _VOICE_CONNECT_TIMEOUT,
-            _VOICE_CONNECT_RETRY_DELAY,
-            _VOICE_ERROR_RETRY_DELAY,
-            getattr(Config, 'VOICE_INITIAL_RETRIES', 2),
-        )
-    except Exception:
-        pass
-    async def send_startup_announcement():
-        announce_ids = Config.get_announce_channel_ids()
-        if not announce_ids:
-            return
-        embed = discord.Embed(
-            title="🤖 CtrlVee Bot is Online!",
-            description=(
-                f"Version: {__version__}\n"
-                f"Command prefix: `{Config.DISCORD_COMMAND_PREFIX}`\n"
-                "Ready to receive commands."
-            ),
-            color=discord.Color.green()
-        )
-        embed.set_footer(text="Thank you for using CtrlVee!")
-        # If a Ko-fi URL is configured, make it clearly visible and clickable
-        try:
-            if Config.KOFI_URL:
-                # Set the embed URL so the title becomes clickable
-                try:
-                    embed.url = Config.KOFI_URL
-                except Exception:
-                    pass
-
-                # Add a visible field with the clickable link (angle brackets ensure a clean URL)
-                try:
-                    embed.add_field(name="Support kutsaratinidor by supporting CtrlVee", value=f"☕ {f'<{Config.KOFI_URL}>'}", inline=False)
-                except Exception:
-                    pass
+        return f"• {MediaUtils.get_media_icon(name)} {MediaUtils.clean_filename_for_display(name)}"
+    except Exception as e:
+        logger.error(f"Error formatting announcement line for {path}: {e}")
+        return f"• {name}"
 
 
-        except Exception:
-            # Non-fatal: don't block startup announcement on footer issues
-            pass
-        # Prepare local avatar attachment if available
-        avatar_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'screenshots', 'avatar.png')
-        has_avatar_file = os.path.exists(avatar_path)
-        if has_avatar_file:
-            try:
-                embed.set_thumbnail(url='attachment://avatar.png')
-            except Exception:
-                pass
+def _lookup_season_embed(paths: list, season_num: int, season_parent: str | None):
+    """TMDB season embed for a batch, naming the series after the folder above 'Season N'."""
+    try:
+        series_name, series_year = None, None
+        if season_parent:
+            show_dir = os.path.dirname(season_parent)
+            series_name = os.path.basename(show_dir) if show_dir else None
+        if not series_name:
+            first = os.path.basename(paths[0])
+            s_title, _, _, series_year = MediaUtils.parse_tv_filename(first)
+            series_name = s_title or MediaUtils.clean_movie_title(first)
+        if series_name:
+            logger.info(f"Announcement TV parse: series='{series_name}' year={series_year} season={season_num}")
+            return tmdb_service.get_tv_metadata(series_name, season_num, series_year)
+    except Exception as e:
+        logger.debug(f"TV metadata lookup failed: {e}")
+    return None
 
-        for cid in announce_ids:
-            channel = bot.get_channel(cid)
-            if not channel:
-                try:
-                    channel = await bot.fetch_channel(cid)
-                except Exception as e:
-                    logger.warning(f"Could not resolve announce channel {cid}: {e}")
-                    continue
-            try:
-                if has_avatar_file:
-                    # Send the avatar image as an attachment so embed thumbnail displays
-                    await channel.send(embed=embed, file=discord.File(avatar_path, filename='avatar.png'))
-                else:
-                    await channel.send(embed=embed)
-                logger.info(f"Sent startup message to channel {cid}")
-            except Exception as e:
-                logger.warning(f"Failed to send startup message to channel {cid}: {e}")
 
-        # Mark startup announcement complete
-        try:
-            global _startup_announced
-            _startup_announced = True
-        except Exception:
-            pass
-
-    # If initial enqueue on start is enabled, delay the announcement until after initial scan completes
-    if Config.WATCH_ENQUEUE_ON_START and watch_service:
-        logger.info("Delaying startup announcement until watch folder initial scan completes...")
-        loop = asyncio.get_event_loop()
-        def wait_and_announce():
-            try:
-                # Wait up to 2 minutes for the initial scan to finish
-                done = watch_service.wait_initial_scan_done(timeout=120)
-                logger.info(f"Initial scan completion wait result: {done}")
-            except Exception as e:
-                logger.error(f"Error while waiting for initial scan: {e}")
-            finally:
-                asyncio.run_coroutine_threadsafe(send_startup_announcement(), loop)
-        # Run the waiting in a lightweight thread so we don't block the event loop
-        threading.Thread(target=wait_and_announce, name="AnnounceAfterInitialScan", daemon=True).start()
+def _lookup_single_embed(fname: str, tv: tuple, has_explicit_episode: bool):
+    """(embed, is_movie) for one file: an explicit episode prefers TV; otherwise the
+    better-scoring of the movie and TV matches. Falls back to a TV lookup by the movie title."""
+    tv_title, tv_season, _, tv_year = tv
+    clean_title, year = MediaUtils.parse_movie_filename(fname)
+    logger.info(f"Announcement single parse (Movie): title='{clean_title}' year={year} from '{fname}'")
+    if has_explicit_episode:
+        if tv_title:
+            embed = tmdb_service.get_tv_metadata(tv_title, tv_season, tv_year)
+        elif clean_title:
+            embed = tmdb_service.get_movie_metadata(clean_title, year)
+            if embed:
+                return embed, True
+        else:
+            embed = None
     else:
-        await send_startup_announcement()
-    logger.info(f'{bot.user} has connected to Discord!')
+        movie_embed, movie_score = None, 0.0
+        tv_embed, tv_score = None, 0.0
+        if clean_title:
+            movie_embed = tmdb_service.get_movie_metadata(clean_title, year)
+            movie_score = getattr(tmdb_service, '_last_match_score', 0.0)
+            logger.info(f"Movie lookup score: {movie_score:.1f}")
+        if tv_title:
+            tv_embed = tmdb_service.get_tv_metadata(tv_title, tv_season, tv_year)
+            tv_score = getattr(tmdb_service, '_last_match_score', 0.0)
+            logger.info(f"TV lookup score: {tv_score:.1f}")
+        if movie_embed and not (tv_embed and tv_score > movie_score):
+            logger.info(f"Chose movie (score {movie_score:.1f}) over TV (score {tv_score:.1f})")
+            return movie_embed, True
+        embed = tv_embed
+    if not embed and clean_title:
+        embed = tmdb_service.get_tv_metadata(clean_title)
+    return embed, False
 
-    # Startup sanity check for role configuration across joined guilds.
-    _warn_unknown_allowed_roles_on_startup()
-    
-    # Log all loaded commands and their checks
+
+def _media_added_embed(paths: list, is_initial: bool, max_items: int) -> discord.Embed | None:
+    """The "New Media Added" embed for files the watch folder just enqueued.
+
+    A batch gets the TMDB season embed when a season is detected, a single file the
+    better movie/TV match; otherwise the plain file list. No TMDB lookups on the
+    initial scan. None when SUPPRESS_SINGLE_TV suppresses a single episode.
+    """
+    sizes = {}
+    for p in paths:
+        try:
+            sizes[p] = os.path.getsize(p)
+        except Exception:
+            sizes[p] = None
+    total_size = sum(s for s in sizes.values() if s)
+    shown = paths[:max_items]
+    file_list = "\n".join(_announce_list_line(p) for p in shown)
+    purple = discord.Color.purple()
+
+    if len(paths) > 1:
+        if len(paths) > len(shown):
+            file_list += f"\n… and {len(paths) - len(shown)} more"
+        season_num, season_parent = _detect_season(paths)
+        tv_embed = None
+        if not is_initial and season_num is not None and tmdb_service:
+            tv_embed = _lookup_season_embed(paths, season_num, season_parent)
+        if tv_embed:
+            tv_embed.title = f"✨ New Media Added: {tv_embed.title}"
+            overview = (tv_embed.description or '').strip()
+            tv_embed.description = f"{overview}\n\n{file_list}" if overview else file_list
+            tv_embed.color = purple
+            tv_embed.add_field(name="Total Size", value=_format_bytes(total_size), inline=True)
+            return tv_embed
+        embed = discord.Embed(title="✨ New Media Added", description=file_list, color=purple)
+        embed.add_field(name="Total Size", value=_format_bytes(total_size), inline=True)
+        if Config.KOFI_URL:
+            embed.add_field(name="Support kutsaratinidor by supporting CtrlVee", value=f"☕ <{Config.KOFI_URL}>", inline=False)
+        return embed
+
+    path = paths[0]
+    fname = os.path.basename(path)
+    edition_tag = MediaUtils.extract_edition_tag(path)
+    size = sizes.get(path)
+    tmdb_embed, is_movie = None, False
+    if tmdb_service:
+        try:
+            tv = MediaUtils.parse_tv_filename(fname)
+            if tv[0]:
+                logger.info(f"Announcement single parse (TV): series='{tv[0]}' year={tv[3]} season={tv[1]} episode={tv[2]} from '{fname}'")
+            # Only an explicit episode marker (S01E02 / 1x02) counts as a TV episode for suppression
+            has_explicit_episode = bool(tv[2]) or bool(re.search(r"(?i)(s\d{1,2}e\d{1,2}|\d{1,2}x\d{1,2})", fname))
+            if tv[0] and has_explicit_episode and bool(getattr(Config, 'SUPPRESS_SINGLE_TV', True)):
+                logger.info("Single TV episode announcement suppressed by rule (set SUPPRESS_SINGLE_TV=false to send)")
+                return None
+            if not is_initial:
+                tmdb_embed, is_movie = _lookup_single_embed(fname, tv, has_explicit_episode)
+        except Exception as e:
+            logger.error(f"Error preparing TMDB embed for announcement: {e}")
+            tmdb_embed = None
+
+    if tmdb_embed:
+        tmdb_embed.title = f"✨ New Media Added: {tmdb_embed.title}"
+        pretty = MediaUtils.clean_filename_for_display(fname)
+        overview = (tmdb_embed.description or '').strip()
+        added = f"**{pretty}** has been added to the library."
+        tmdb_embed.description = f"{added}\n\n{overview}" if overview else added
+        tmdb_embed.color = purple
+        if edition_tag and is_movie:
+            tmdb_embed.add_field(name="Edition", value=edition_tag, inline=True)
+        if size is not None:
+            tmdb_embed.add_field(name="File Size", value=_format_bytes(size), inline=True)
+        return tmdb_embed
+    embed = discord.Embed(title="✨ New Media Added", description=file_list, color=purple)
+    if size is not None:
+        embed.add_field(name="File Size", value=_format_bytes(size), inline=True)
+    if edition_tag:
+        embed.add_field(name="Edition", value=edition_tag, inline=True)
+    return embed
+
+
+def _add_playlist_positions(embed: discord.Embed, paths: list, max_items: int) -> None:
+    """Add each announced file's playlist number (1-based leaf order, matching
+    play_num / /playback play-item) so users can play it right away."""
+    pos_map = {}
+    try:
+        playlist = vlc.get_playlist()
+        if playlist is not None:
+            for idx, leaf in enumerate(playlist.findall('.//leaf'), 1):
+                p = vlc._uri_to_path(leaf.get('uri'))
+                if p:
+                    pos_map[os.path.normpath(p)] = idx
+    except Exception as e:
+        logger.debug(f"Could not map playlist positions for announcement: {e}")
+    if not pos_map:
+        return
+    # Command hint matches whichever command mode is active.
+    if Config.ENABLE_PREFIX_COMMANDS:
+        play_cmd = f"{Config.DISCORD_COMMAND_PREFIX}play_num {{n}}"
+    else:
+        play_cmd = "/playback play-item {n}"
+    if len(paths) == 1:
+        num = pos_map.get(os.path.normpath(paths[0]))
+        if num:
+            embed.add_field(
+                name="Playback",
+                value=f"**#{num}** in the playlist — run `{play_cmd.format(n=num)}` to play it",
+                inline=False,
+            )
+        return
+    lines = []
+    for p in paths[:max_items]:
+        num = pos_map.get(os.path.normpath(p))
+        if num:
+            pretty = MediaUtils.clean_filename_for_display(os.path.basename(p), max_length=60)
+            lines.append(f"`#{num}` {pretty}")
+    remaining = len(paths) - max_items
+    if remaining > 0:
+        lines.append(f"… and {remaining} more (see `/playlist list`)")
+    if lines:
+        embed.add_field(name="Playlist Positions", value="\n".join(lines), inline=False)
+        embed.set_footer(text=f"Run `{play_cmd.format(n='<number>')}` to play a specific one")
+
+
+def _build_watch_announcement_embed(paths: list, is_initial: bool, max_items: int) -> discord.Embed | None:
+    """Announcement embed with playlist positions, or None if suppressed. Blocking (TMDB, VLC, filesystem)."""
+    embed = _media_added_embed(paths, is_initial, max_items)
+    if embed is not None:
+        try:
+            _add_playlist_positions(embed, paths, max_items)
+        except Exception as e:
+            logger.debug(f"Could not add playlist numbers to announcement: {e}")
+    return embed
+
+
+async def _resolve_announce_channels() -> list:
+    """Configured announce channels, from cache or fetched; unresolvable ones are logged and skipped."""
+    channels = []
+    for cid in Config.get_announce_channel_ids():
+        ch = bot.get_channel(cid)
+        if not ch:
+            try:
+                ch = await bot.fetch_channel(cid)
+            except Exception as e:
+                logger.warning(f"Could not resolve announce channel {cid}: {e}")
+                continue
+        channels.append(ch)
+    return channels
+
+
+def _schedule_on_bot_loop(coro, label: str) -> None:
+    """Run `coro` on the bot's event loop from a service thread, logging if it fails."""
+    try:
+        future = asyncio.run_coroutine_threadsafe(coro, bot.loop)
+    except Exception as e:
+        coro.close()
+        logger.error(f"Failed to schedule {label} task: {e}", exc_info=True)
+        return
+
+    def _log_result(fut):
+        try:
+            fut.result()
+        except Exception as e:
+            logger.error(f"{label} task failed: {e}", exc_info=True)
+
+    future.add_done_callback(_log_result)
+
+
+async def _send_startup_announcement() -> None:
+    """Post the "CtrlVee Bot is Online!" embed to the announce channels, once per process."""
+    global _startup_announced
+    if _startup_announced or not Config.get_announce_channel_ids():
+        return
+
+    prefix = Config.DISCORD_COMMAND_PREFIX
+    prefix_enabled = bool(getattr(Config, 'ENABLE_PREFIX_COMMANDS', True))
+    slash_enabled = bool(getattr(Config, 'ENABLE_SLASH_COMMANDS', False))
+    if prefix_enabled and slash_enabled:
+        command_mode_line = "Command mode: Prefix + Slash"
+        command_hint_line = f"Prefix: `{prefix}` • Try `{prefix}controls` or `/system help`"
+    elif prefix_enabled:
+        command_mode_line = "Command mode: Prefix"
+        command_hint_line = f"Prefix: `{prefix}` • Try `{prefix}controls`"
+    else:
+        command_mode_line = "Command mode: Slash"
+        command_hint_line = "Try `/system help`"
+
+    embed = discord.Embed(
+        title="🤖 CtrlVee Bot is Online!",
+        description=(
+            f"Version: {__version__}\n"
+            f"{command_mode_line}\n"
+            f"{command_hint_line}\n"
+            "Ready to receive commands."
+        ),
+        color=discord.Color.green()
+    )
+    embed.set_footer(text="Thank you for using CtrlVee!")
+    if Config.KOFI_URL:
+        # Clickable title plus a visible link field
+        embed.url = Config.KOFI_URL
+        embed.add_field(name="Support kutsaratinidor by supporting CtrlVee", value=f"☕ <{Config.KOFI_URL}>", inline=False)
+    avatar_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'screenshots', 'avatar.png')
+    has_avatar_file = os.path.exists(avatar_path)
+    if has_avatar_file:
+        embed.set_thumbnail(url='attachment://avatar.png')
+
+    for channel in await _resolve_announce_channels():
+        try:
+            if has_avatar_file:
+                # The avatar goes as an attachment so the embed thumbnail can reference it
+                await channel.send(embed=embed, file=discord.File(avatar_path, filename='avatar.png'))
+            else:
+                await channel.send(embed=embed)
+            logger.info(f"Sent startup message to channel {channel.id}")
+        except Exception as e:
+            logger.warning(f"Failed to send startup message to channel {channel.id}: {e}")
+    _startup_announced = True
+
+
+async def _announce_startup_after_initial_scan() -> None:
+    """Hold the startup announcement until the watch folder's initial enqueue finishes
+    (up to 2 minutes), so it lands before that scan's "New Media Added" posts."""
+    try:
+        done = await asyncio.to_thread(watch_service.wait_initial_scan_done, timeout=120)
+        logger.info(f"Initial scan completion wait result: {done}")
+    except Exception as e:
+        logger.error(f"Error while waiting for initial scan: {e}")
+    await _send_startup_announcement()
+
+
+async def _send_watch_announcement(paths: list, is_initial: bool) -> None:
+    # Let the startup announcement go first (up to 5s)
+    await bot.wait_until_ready()
+    for _ in range(20):
+        if _startup_announced:
+            break
+        await asyncio.sleep(0.25)
+    channels = await _resolve_announce_channels()
+    logger.info(f"Announcing to channels: {[ch.id for ch in channels]}")
+    if not channels:
+        logger.warning("No announce channels resolved. Announcement skipped.")
+        return
+    max_items = max(1, Config.WATCH_ANNOUNCE_MAX_ITEMS)
+    try:
+        # Off the event loop: TMDB lookups and the VLC playlist fetch block
+        embed = await asyncio.to_thread(_build_watch_announcement_embed, paths, is_initial, max_items)
+    except Exception as e:
+        logger.error(f"Error preparing announcement embed: {e}", exc_info=True)
+        embed = discord.Embed(
+            title="✨ New Media Added",
+            description=f"**{os.path.basename(paths[0])}** has been added to the library.",
+            color=discord.Color.purple()
+        )
+    if embed is None:
+        return
+    for ch in channels:
+        try:
+            logger.info(f"Sending announcement to channel {ch.id}")
+            await ch.send(embed=embed)
+        except discord.Forbidden:
+            logger.warning(f"Missing permission to send announcements in channel {ch.id}.")
+        except Exception as e:
+            logger.error(f"Failed to send announcement to channel {ch.id}: {e}")
+
+
+def _watch_notifier(paths, is_initial=False):
+    """WatchFolderService callback (on its thread) for newly enqueued files."""
+    logger.info(f"Notifier called with {len(paths)} new files: {paths}")
+    _schedule_on_bot_loop(_send_watch_announcement(paths, is_initial), "Announcement")
+
+
+async def _send_availability_announcement(record: dict) -> None:
+    channel_id = Config.REQUEST_ANNOUNCE_CHANNEL_ID or Config.REQUEST_CHANNEL_ID
+    if not channel_id:
+        return
+    channel = bot.get_channel(channel_id)
+    if channel is None:
+        try:
+            channel = await bot.fetch_channel(channel_id)
+        except Exception as e:
+            logger.error(f"Failed to fetch movie request announce channel {channel_id}: {e}")
+            return
+    embed = discord.Embed(
+        title="🎬 Now Available",
+        description=f"**{record.get('title')}**" + (f" ({record.get('year')})" if record.get('year') else "") + " is now available to watch.",
+        color=discord.Color.green(),
+    )
+    if record.get('overview'):
+        embed.add_field(name="Overview", value=record['overview'][:1024], inline=False)
+    if record.get('poster_path'):
+        embed.set_thumbnail(url=f"https://image.tmdb.org/t/p/w500{record['poster_path']}")
+    try:
+        await channel.send(
+            content=f"<@{record.get('requested_by_id')}> your requested {_request_noun(record.get('media_type', 'movie'))} is now available!",
+            embed=embed,
+        )
+    except discord.Forbidden:
+        logger.warning(f"Missing permission to send movie request announcement in channel {channel_id}.")
+    except Exception as e:
+        logger.error(f"Failed to send movie request announcement: {e}")
+
+
+def _request_noun(media_type: str) -> str:
+    return "TV series" if media_type == "tv" else "movie"
+
+
+def _movie_request_notifier(record: dict) -> None:
+    """MovieRequestTracker callback (on its thread) when a requested movie becomes available."""
+    _schedule_on_bot_loop(_send_availability_announcement(record), "Movie request announcement")
+
+
+def _resolve_autosave_path(filename: str) -> str:
+    """Relative autosave paths are taken from bot.py's directory (the project root)."""
+    if os.path.isabs(filename):
+        return filename
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
+
+
+def _autosave_playlist_once(path: str) -> None:
+    """Save VLC's playlist to `path` (XSPF for .xspf, else JSON) if it has entries. Blocking."""
+    playlist_xml = vlc.get_playlist()
+    if playlist_xml is None:
+        logger.debug("Playlist autosave skipped: VLC HTTP interface not reachable")
+        return
+    if not playlist_xml.findall('.//leaf'):
+        logger.debug("Playlist autosave skipped: playlist is empty or has no entries")
+        return
+    if path.lower().endswith('.xspf'):
+        fmt, content = 'XSPF', vlc.export_playlist_xspf()
+    else:
+        data = vlc.export_playlist()
+        fmt, content = 'JSON', json.dumps({'saved_at': time.time(), 'items': data}, indent=2) if data else None
+    if not content:
+        logger.debug(f"Playlist autosave skipped (no {fmt} data returned)")
+        return
+    # Write then rename, so a crash mid-write can't leave a truncated playlist
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, 'w', encoding='utf-8') as f:
+        f.write(content)
+    os.replace(tmp_path, path)
+    logger.info(f"Playlist autosaved ({fmt}) -> {path}")
+
+
+def _autosave_worker(path: str, interval: int) -> None:
+    logger.info(f"Playlist autosave enabled -> file='{path}', interval={interval}s")
+    while not _autosave_stop.is_set():
+        try:
+            _autosave_playlist_once(path)
+        except Exception as e:
+            logger.error(f"Playlist autosave error: {e}")
+        _autosave_stop.wait(interval)
+
+
+def _check_vlc_connection() -> None:
+    """Log whether VLC's HTTP interface is reachable, with setup steps if not. Blocking."""
+    status = vlc.get_status()
+    if status is not None:
+        logger.info(f"Successfully connected to VLC's HTTP interface (Current state: {status.findtext('state') or 'unknown'})")
+        return
+    logger.warning("Could not connect to VLC. Please make sure VLC is running with the HTTP interface enabled")
+    logger.info("\nTo enable VLC HTTP interface:")
+    logger.info("1. Open VLC")
+    logger.info("2. Go to Preferences (Cmd+,)")
+    logger.info("3. Click 'Show All' at the bottom left")
+    logger.info("4. Go to Interface → Main Interfaces")
+    logger.info("5. Check 'Web'")
+    logger.info("6. Go to Interface → Main Interfaces → Lua")
+    logger.info("7. Set password as 'vlc'")
+    logger.info("8. Restart VLC")
+    logger.warning("Starting bot anyway - will retry connection when needed...")
+
+
+def _log_startup_config() -> None:
+    _log_slash_channel_policy()
+    logger.info(
+        "Voice join config: enabled=%s, auto_on_start=%s, channel_id=%s",
+        getattr(Config, 'ENABLE_VOICE_JOIN', False),
+        getattr(Config, 'VOICE_AUTO_JOIN_ON_START', True),
+        getattr(Config, 'VOICE_JOIN_CHANNEL_ID', 0),
+    )
+    logger.info(
+        "Voice reconnect config: max=%s, window=%ss, cooldown=%ss",
+        _MAX_RECONNECTS, _RECONNECT_WINDOW, _RECONNECT_COOLDOWN,
+    )
+    logger.info(
+        "Voice connect config: timeout=%ss, retry_delay=%ss, error_retry_delay=%ss, initial_retries=%s",
+        _VOICE_CONNECT_TIMEOUT, _VOICE_CONNECT_RETRY_DELAY, _VOICE_ERROR_RETRY_DELAY,
+        getattr(Config, 'VOICE_INITIAL_RETRIES', 2),
+    )
     logger.info("Loaded commands:")
     for command in bot.commands:
         logger.info(f"Command: {command.name}")
         if command.checks:
-            logger.info(f"  Checks: {[check.__name__ if hasattr(check, '__name__') else str(check) for check in command.checks]}")
+            logger.info(f"  Checks: {[getattr(check, '__name__', str(check)) for check in command.checks]}")
         if hasattr(command, 'cog_name'):
             logger.info(f"  Cog: {command.cog_name}")
-    
-    # Test VLC connection
-    logger.info("Testing VLC connection...")
-    status = vlc.get_status()
-    if status is not None:
-        state = status.find('state').text
-        logger.info(f"Successfully connected to VLC's HTTP interface (Current state: {state})")
-    else:
-        logger.warning("Could not connect to VLC. Please make sure VLC is running with the HTTP interface enabled")
-        logger.info("\nTo enable VLC HTTP interface:")
-        logger.info("1. Open VLC")
-        logger.info("2. Go to Preferences (Cmd+,)")
-        logger.info("3. Click 'Show All' at the bottom left")
-        logger.info("4. Go to Interface → Main Interfaces")
-        logger.info("5. Check 'Web'")
-        logger.info("6. Go to Interface → Main Interfaces → Lua")
-        logger.info("7. Set password as 'vlc'")
-        logger.info("8. Restart VLC")
-        logger.warning("Starting bot anyway - will retry connection when needed...")
 
-    # If presence updates are globally disabled, clear any existing presence immediately
-    try:
-        if not getattr(Config, 'ENABLE_PRESENCE', True):
-            try:
-                await bot.change_presence(activity=None)
-                logger.info("Presence cleared at startup because ENABLE_PRESENCE=false")
-            except Exception as e:
-                logger.debug(f"Failed to clear presence at startup: {e}")
-    except Exception:
-        # Guard: any failure here is non-fatal
-        pass
 
-    # Start watch service if configured
+def _start_background_services() -> None:
+    """Start the watch folder, movie request tracker and playlist autosave threads.
+    Each is independent: one failing to start doesn't stop the others."""
+    global _autosave_thread
     try:
-        # Set announcement notifier for multiple channels if configured
         ids = Config.get_announce_channel_ids()
         logger.info(f"Configured announce channel IDs: {list(ids) if ids else 'None'}")
         if ids:
-            async def get_channels():
-                channels = []
-                for cid in Config.get_announce_channel_ids():
-                    ch = bot.get_channel(cid)
-                    logger.debug(f"Attempting to resolve channel ID {cid}: bot.get_channel -> {ch}")
-                    if not ch:
-                        try:
-                            ch = await bot.fetch_channel(cid)
-                            logger.debug(f"Fetched channel {cid} via fetch_channel: {ch}")
-                        except Exception as e:
-                            logger.error(f"Failed to fetch channel {cid}: {e}")
-                            ch = None
-                    if ch:
-                        channels.append(ch)
-                logger.info(f"Resolved announce channels: {[ch.id for ch in channels]}")
-                return channels
-
-            def notifier(paths, is_initial=False):
-                logger.info(f"Notifier called with {len(paths)} new files: {paths}")
-                async def _send_announcement():
-                    # Ensure startup announcement is sent first
-                    try:
-                        await bot.wait_until_ready()
-                        tries = 0
-                        while not _startup_announced and tries < 20:
-                            await asyncio.sleep(0.25)
-                            tries += 1
-                    except Exception:
-                        pass
-                    channels = await get_channels()
-                    logger.info(f"Announcing to channels: {[ch.id for ch in channels]}")
-                    if not channels:
-                        logger.warning("No announce channels resolved. Announcement skipped.")
-                        return
-                    max_items = max(1, Config.WATCH_ANNOUNCE_MAX_ITEMS)
-                    # Helper: detect a season number from filenames or parent folder
-                    def _detect_season(paths_list):
-                        season = None
-                        parent = None
-                        for p in paths_list:
-                            try:
-                                bn = os.path.basename(p)
-                                par = os.path.dirname(p)
-                                # Look for S01E02 or s01e02
-                                m = re.search(r'[sS]?(\d{1,2})[xXeE](\d{1,2})', bn)
-                                if m:
-                                    season = int(m.group(1))
-                                    parent = par
-                                    break
-                                # 1x02 pattern
-                                m2 = re.search(r'(?<!\d)(\d{1,2})[xX](\d{1,2})(?!\d)', bn)
-                                if m2:
-                                    season = int(m2.group(1))
-                                    parent = par
-                                    break
-                                # Parent folder named 'Season 1' or similar
-                                m3 = re.search(r'[sS]eason[\s_\-]?(\d{1,2})', par)
-                                if m3:
-                                    season = int(m3.group(1))
-                                    parent = par
-                                    break
-                            except Exception:
-                                continue
-                        return season, parent
-
-                    shown = paths[:max_items]
-                    remaining = len(paths) - len(shown)
-
-                    tmdb_embed = None
-                    # Compute sizes safely from filesystem, not playlist
-                    sizes = {}
-                    total_size = 0
-                    for p in paths:
-                        try:
-                            s = os.path.getsize(p)
-                            sizes[p] = s
-                            total_size += s
-                        except Exception:
-                            sizes[p] = None
-                    edition_tag = None
-                    # Multi-episode batch: try to create a compact season summary
-                    if len(paths) > 1:
-                        season_num, season_parent = _detect_season(paths)
-                        if season_num is not None:
-                            title = f"📥 Added Season {season_num} — {len(paths)} episode(s)"
-                        else:
-                            title = f"📥 {len(paths)} new file(s) added to VLC playlist"
-
-                        desc_lines = []
-                        for p in shown:
-                            try:
-                                name = os.path.basename(p)
-                                pretty = MediaUtils.clean_filename_for_display(name)
-                                icon = MediaUtils.get_media_icon(name)
-                                desc_lines.append(f"• {icon} {pretty}")
-                            except Exception as e:
-                                logger.error(f"Error formatting announcement line for {p}: {e}")
-                                try:
-                                    desc_lines.append(f"• {os.path.basename(p)}")
-                                except Exception:
-                                    desc_lines.append("• <new media>")
-
-                        if remaining > 0:
-                            desc_lines.append(f"… and {remaining} more")
-
-                        embed = discord.Embed(title=title, description="\n".join(desc_lines), color=discord.Color.green())
-                        # Add total batch size
-                        try:
-                            embed.add_field(name="Total Size", value=_format_bytes(total_size), inline=True)
-                        except Exception:
-                            pass
-                        # Add Support/Kofi field when configured
-                        try:
-                            if Config.KOFI_URL:
-                                embed.add_field(name="Support kutsaratinidor by supporting CtrlVee", value=f"☕ {f'<{Config.KOFI_URL}>'}", inline=False)
-                        except Exception:
-                            pass
-                        # If initial scan, suppress TMDB lookups and show only compact list
-                        if is_initial:
-                            tv_embed = None
-                        else:
-                            # If we detected a season number and TMDB is available, fetch TV/season embed
-                            tv_embed = None
-                            try:
-                                if season_num is not None and tmdb_service:
-                                    # Try to derive a series title from the first path's folder or filename
-                                    # Prefer parent folder name (likely the series title)
-                                    series_name = None
-                                    try:
-                                        # If season_parent is '/.../Show/Season 2', take its parent basename
-                                        if season_parent:
-                                            show_dir = os.path.dirname(season_parent)
-                                            series_name = os.path.basename(show_dir) if show_dir else None
-                                    except Exception:
-                                        series_name = None
-                                    # Fallback to cleaning filename
-                                    series_year = None
-                                    if not series_name and paths:
-                                        try:
-                                            # Prefer TV parser to strip SxxExx and noise
-                                            s_title, s_season, _, s_year = MediaUtils.parse_tv_filename(os.path.basename(paths[0]))
-                                            series_name = s_title or MediaUtils.clean_movie_title(os.path.basename(paths[0]))
-                                            series_year = s_year
-                                            # If season not detected earlier, use from filename
-                                            if season_num is None:
-                                                season_num = s_season
-                                        except Exception:
-                                            series_name = None
-
-                                    if series_name:
-                                        logger.info(f"Announcement TV parse: series='{series_name}' year={series_year} season={season_num}")
-                                        tv_embed = tmdb_service.get_tv_metadata(series_name, season_num, series_year)
-                            except Exception as e:
-                                logger.debug(f"TV metadata lookup failed: {e}")
-
-                    else:
-                        # Single item: keep previous behavior and attempt TMDB metadata
-                        title = f"📥 {len(paths)} new file(s) added to VLC playlist"
-                        desc_lines = []
-                        for p in shown:
-                            try:
-                                name = os.path.basename(p)
-                                pretty = MediaUtils.clean_filename_for_display(name)
-                                icon = MediaUtils.get_media_icon(name)
-                                desc_lines.append(f"• {icon} {pretty}")
-                            except Exception as e:
-                                logger.error(f"Error formatting announcement line for {p}: {e}")
-                                try:
-                                    desc_lines.append(f"• {os.path.basename(p)}")
-                                except Exception:
-                                    desc_lines.append("• <new media>")
-
-                        embed = discord.Embed(title=title, description="\n".join(desc_lines), color=discord.Color.green())
-                        if paths:
-                            edition_tag = MediaUtils.extract_edition_tag(paths[0])
-
-                        try:
-                            if len(paths) == 1 and tmdb_service:
-                                fname = os.path.basename(paths[0])
-                                clean_title, year = MediaUtils.parse_movie_filename(fname)
-                                if clean_title:
-                                    logger.info(f"Fetching TMDB metadata for single added item: '{clean_title}' year={year}")
-                                    tmdb_embed = tmdb_service.get_movie_metadata(clean_title, year)
-                        except Exception as e:
-                            logger.error(f"Failed to prepare TMDB embed for single-item announcement: {e}")
-
-                    # Build the final embed: prefer TV season embed for multi-episode batches
-                    final_embed = None
-                    try:
-                        if len(paths) > 1:
-                            # If we created a season embed (tv_embed), augment it with the episode list
-                            if 'tv_embed' in locals() and tv_embed:
-                                tv_embed.title = f"✨ New Media Added: {tv_embed.title}"
-                                # Always include the episode list in the description
-                                episode_list = (embed.description if (embed and embed.description) else '').strip()
-                                base_desc = (tv_embed.description or '').strip()
-                                if base_desc and episode_list:
-                                    tv_embed.description = f"{base_desc}\n\n{episode_list}"
-                                elif episode_list:
-                                    tv_embed.description = episode_list
-                                else:
-                                    # Ensure some content exists
-                                    tv_embed.description = f"{len(paths)} new episode(s) added."
-                                tv_embed.color = discord.Color.purple()
-                                # Add size field
-                                try:
-                                    tv_embed.add_field(name="Total Size", value=_format_bytes(total_size), inline=True)
-                                except Exception:
-                                    pass
-                                final_embed = tv_embed
-                            else:
-                                # Fallback to the compact list embed if TV lookup not available
-                                if embed:
-                                    embed.title = f"✨ New Media Added"
-                                    embed.color = discord.Color.purple()
-                                    # Ensure description not empty
-                                    if not embed.description:
-                                        embed.description = f"{len(paths)} new file(s) added to VLC playlist"
-                                    try:
-                                        embed.add_field(name="Total Size", value=_format_bytes(total_size), inline=True)
-                                    except Exception:
-                                        pass
-                                    final_embed = embed
-                                else:
-                                    final_embed = discord.Embed(
-                                        title="✨ New Media Added",
-                                        description=f"{len(paths)} new file(s) added to VLC playlist",
-                                        color=discord.Color.purple()
-                                    )
-                                    try:
-                                        final_embed.add_field(name="Total Size", value=_format_bytes(total_size), inline=True)
-                                    except Exception:
-                                        pass
-                        else:
-                            # Single file: attempt movie first, then TV metadata from filename
-                            suppress_single_tv = False
-                            suppress_cfg = bool(getattr(Config, 'SUPPRESS_SINGLE_TV', True))
-                            if tmdb_service:
-                                fname = os.path.basename(paths[0])
-                                # Try TV parser first
-                                tv_title, tv_season, tv_episode, tv_year = MediaUtils.parse_tv_filename(fname)
-                                if tv_title:
-                                    logger.info(f"Announcement single parse (TV): series='{tv_title}' year={tv_year} season={tv_season} episode={tv_episode} from '{fname}'")
-                                # Tighten TV suppression: only suppress if an explicit episode is detected
-                                # e.g., S01E02 or 1x02 patterns (tv_episode parsed) or a clear season number with episode-like pattern
-                                has_explicit_episode = bool(tv_episode) or bool(re.search(r"(?i)(s\d{1,2}e\d{1,2}|\d{1,2}x\d{1,2})", fname))
-                                if tv_title and suppress_cfg and has_explicit_episode:
-                                    suppress_single_tv = True
-                                clean_title, year = MediaUtils.parse_movie_filename(fname)
-                                logger.info(f"Announcement single parse (Movie): title='{clean_title}' year={year} from '{fname}'")
-                                tmdb_embed = None
-                                is_movie_embed = False
-                                # When no explicit episode marker: try both movie and TV, use the better match
-                                if not is_initial:
-                                    if not has_explicit_episode:
-                                        # No explicit episode: try both and compare scores
-                                        movie_embed = None
-                                        tv_embed = None
-                                        movie_score = 0.0
-                                        tv_score = 0.0
-                                        
-                                        if not suppress_single_tv and clean_title:
-                                            movie_embed = tmdb_service.get_movie_metadata(clean_title, year)
-                                            movie_score = getattr(tmdb_service, '_last_match_score', 0.0)
-                                            logger.info(f"Movie lookup score: {movie_score:.1f}")
-                                        
-                                        if tv_title:
-                                            tv_embed = tmdb_service.get_tv_metadata(tv_title, tv_season, tv_year)
-                                            tv_score = getattr(tmdb_service, '_last_match_score', 0.0)
-                                            logger.info(f"TV lookup score: {tv_score:.1f}")
-                                        
-                                        # Choose the better match
-                                        if tv_embed and movie_embed:
-                                            if tv_score > movie_score:
-                                                logger.info(f"Chose TV (score {tv_score:.1f}) over movie (score {movie_score:.1f})\"")
-                                                tmdb_embed = tv_embed
-                                            else:
-                                                logger.info(f"Chose movie (score {movie_score:.1f}) over TV (score {tv_score:.1f})\"")
-                                                tmdb_embed = movie_embed
-                                                is_movie_embed = True
-                                        elif tv_embed:
-                                            tmdb_embed = tv_embed
-                                        elif movie_embed:
-                                            tmdb_embed = movie_embed
-                                            is_movie_embed = True
-                                        else:
-                                            # Both failed: try generic TV lookup as last resort
-                                            if clean_title:
-                                                tmdb_embed = tmdb_service.get_tv_metadata(clean_title)
-                                    else:
-                                        # Has explicit episode: prefer TV
-                                        if tv_title:
-                                            tmdb_embed = tmdb_service.get_tv_metadata(tv_title, tv_season, tv_year)
-                                        elif not suppress_single_tv and clean_title:
-                                            tmdb_embed = tmdb_service.get_movie_metadata(clean_title, year)
-                                            is_movie_embed = True
-                                        if not tmdb_embed and clean_title:
-                                            tmdb_embed = tmdb_service.get_tv_metadata(clean_title)
-                                    if tmdb_embed:
-                                        tmdb_embed.title = f"✨ New Media Added: {tmdb_embed.title}"
-                                        # Add the pretty filename line above TMDB overview
-                                        pretty = MediaUtils.clean_filename_for_display(os.path.basename(paths[0]))
-                                        overview = (tmdb_embed.description or '').strip()
-                                        if overview:
-                                            tmdb_embed.description = f"**{pretty}** has been added to the library.\n\n{overview}"
-                                        else:
-                                            tmdb_embed.description = f"**{pretty}** has been added to the library."
-                                        tmdb_embed.color = discord.Color.purple()
-                                        if edition_tag and is_movie_embed:
-                                            try:
-                                                tmdb_embed.add_field(name="Edition", value=edition_tag, inline=True)
-                                            except Exception:
-                                                pass
-                                        # Add file size
-                                        try:
-                                            sz = sizes.get(paths[0])
-                                            if sz is not None:
-                                                tmdb_embed.add_field(name="File Size", value=_format_bytes(sz), inline=True)
-                                        except Exception:
-                                            pass
-                                        final_embed = tmdb_embed
-                    except Exception as e:
-                        logger.error(f"Error preparing TMDB embed for announcement: {e}")
-
-                    # If no rich embed, create a simple one
-                    if not final_embed and not (len(paths) == 1 and 'suppress_single_tv' in locals() and suppress_single_tv):
-                        # Generic fallback: use the constructed list embed (embed) if available
-                        try:
-                            if embed:
-                                embed.title = "✨ New Media Added"
-                                embed.color = discord.Color.purple()
-                                # Add sizes to fallback
-                                try:
-                                    if len(paths) == 1:
-                                        sz = sizes.get(paths[0])
-                                        if sz is not None:
-                                            embed.add_field(name="File Size", value=_format_bytes(sz), inline=True)
-                                    else:
-                                        embed.add_field(name="Total Size", value=_format_bytes(total_size), inline=True)
-                                except Exception:
-                                    pass
-                                if len(paths) == 1 and edition_tag:
-                                    try:
-                                        embed.add_field(name="Edition", value=edition_tag, inline=True)
-                                    except Exception:
-                                        pass
-                                final_embed = embed
-                            else:
-                                # Last-resort minimal embed
-                                title_text = os.path.basename(paths[0]) if paths else "New Media"
-                                final_embed = discord.Embed(
-                                    title="✨ New Media Added",
-                                    description=f"**{title_text}** has been added to the library.",
-                                    color=discord.Color.purple()
-                                )
-                                try:
-                                    if len(paths) == 1:
-                                        sz = sizes.get(paths[0])
-                                        if sz is not None:
-                                            final_embed.add_field(name="File Size", value=_format_bytes(sz), inline=True)
-                                    else:
-                                        final_embed.add_field(name="Total Size", value=_format_bytes(total_size), inline=True)
-                                except Exception:
-                                    pass
-                                if len(paths) == 1 and edition_tag:
-                                    try:
-                                        final_embed.add_field(name="Edition", value=edition_tag, inline=True)
-                                    except Exception:
-                                        pass
-                        except Exception:
-                            title_text = os.path.basename(paths[0]) if paths else "New Media"
-                            final_embed = discord.Embed(
-                                title="✨ New Media Added",
-                                description=f"**{title_text}** has been added to the library.",
-                                color=discord.Color.purple()
-                            )
-                    # Send the announcement to all configured channels
-                    if not (len(paths) == 1 and 'suppress_single_tv' in locals() and suppress_single_tv):
-                        for ch in channels:
-                            try:
-                                logger.info(f"Sending announcement to channel {ch.id}")
-                                await ch.send(embed=final_embed)
-                            except discord.Forbidden:
-                                logger.warning(f"Missing permission to send announcements in channel {ch.id}.")
-                            except Exception as e:
-                                logger.error(f"Failed to send announcement to channel {ch.id}: {e}")
-                    else:
-                        try:
-                            logger.info("Single TV episode announcement suppressed by rule (set SUPPRESS_SINGLE_TV=false to send)")
-                        except Exception:
-                            pass
-                
-                # Schedule the announcement and log if it fails
-                try:
-                    future = asyncio.run_coroutine_threadsafe(_send_announcement(), bot.loop)
-                    # Add a callback to log if the task raised an exception
-                    def _log_result(fut):
-                        try:
-                            fut.result()  # Will raise if the coroutine failed
-                            logger.info("Announcement task completed successfully")
-                        except Exception as e:
-                            logger.error(f"Announcement task failed with exception: {e}", exc_info=True)
-                    future.add_done_callback(_log_result)
-                except Exception as e:
-                    logger.error(f"Failed to schedule announcement coroutine: {e}", exc_info=True)
-
-            watch_service.set_notifier(notifier)
-
-        started = watch_service.start()
-        if started:
+            watch_service.set_notifier(_watch_notifier)
+        if watch_service.start():
             logger.info("WatchFolderService started")
         else:
             logger.info("WatchFolderService not started (disabled or already running)")
-
-        # Start autosave thread if configured
-        if Config.PLAYLIST_AUTOSAVE_FILE:
-            def _resolve_autosave_path(filename: str) -> str:
-                if os.path.isabs(filename):
-                    return filename
-                # Save to same directory as bot.py
-                base_dir = os.path.dirname(os.path.abspath(__file__))
-                # __file__ is in src/, go up one level to project root
-                project_root = os.path.abspath(os.path.join(base_dir, os.pardir, os.pardir))
-                return os.path.join(project_root, filename)
-
-            autosave_path = _resolve_autosave_path(Config.PLAYLIST_AUTOSAVE_FILE)
-            interval = max(10, int(Config.PLAYLIST_AUTOSAVE_INTERVAL))
-
-            def autosave_worker():
-                logger.info(f"Playlist autosave enabled -> file='{autosave_path}', interval={interval}s")
-                while not _autosave_stop.is_set():
-                    try:
-                        # Verify VLC is reachable and playlist has entries before saving
-                        status = vlc.get_status()
-                        if status is None:
-                            logger.debug("Playlist autosave skipped: VLC HTTP interface not reachable")
-                        else:
-                            # Check playlist entries
-                            playlist_xml = vlc.get_playlist()
-                            has_entries = False
-                            try:
-                                if playlist_xml is not None:
-                                    leaves = playlist_xml.findall('.//leaf')
-                                    if leaves and len(leaves) > 0:
-                                        has_entries = True
-                            except Exception:
-                                # If parsing playlist fails, be conservative and skip saving
-                                has_entries = False
-
-                            if not has_entries:
-                                logger.debug("Playlist autosave skipped: playlist is empty or has no entries")
-                            else:
-                                if autosave_path.lower().endswith('.xspf'):
-                                    xspf = vlc.export_playlist_xspf()
-                                    if xspf:
-                                        logger.info(f"Saving playlist (XSPF) -> {autosave_path}")
-                                        with open(autosave_path, 'w', encoding='utf-8') as f:
-                                            f.write(xspf)
-                                        logger.debug(f"Playlist autosaved (XSPF) to {autosave_path}")
-                                    else:
-                                        logger.debug("Playlist autosave skipped (no XSPF data returned)")
-                                else:
-                                    data = vlc.export_playlist()
-                                    if data:
-                                        logger.info(f"Saving playlist (JSON) -> {autosave_path}")
-                                        with open(autosave_path, 'w', encoding='utf-8') as f:
-                                            import json
-                                            json.dump({
-                                                'saved_at': __import__('time').time(),
-                                                'items': data
-                                            }, f, indent=2)
-                                        try:
-                                            item_count = len(data) if hasattr(data, '__len__') else 'unknown'
-                                        except Exception:
-                                            item_count = 'unknown'
-                                        logger.debug(f"Playlist autosaved to {autosave_path} ({item_count} items)")
-                                    else:
-                                        logger.debug("Playlist autosave skipped (no playlist data returned)")
-                    except Exception as e:
-                        logger.error(f"Playlist autosave error: {e}")
-                    finally:
-                        _autosave_stop.wait(interval)
-
-            global _autosave_thread
-            if not _autosave_thread or not _autosave_thread.is_alive():
-                _autosave_stop.clear()
-                _autosave_thread = threading.Thread(target=autosave_worker, name="PlaylistAutosave", daemon=True)
-                _autosave_thread.start()
-
-        # Join voice channel after all startup tasks are done
-        await join_voice_channel()
-        # Start voice connection guard if enabled
-        try:
-            if getattr(Config, 'ENABLE_VOICE_GUARD', False):
-                bot.loop.create_task(_voice_connection_guard())
-            else:
-                logger.info("Voice guard is disabled (ENABLE_VOICE_GUARD=false)")
-        except Exception as e:
-            logger.debug(f"Could not start voice connection guard: {e}")
     except Exception as e:
         logger.error(f"Failed to start WatchFolderService: {e}")
+
+    try:
+        movie_request_tracker.set_notifier(_movie_request_notifier)
+        if movie_request_tracker.start():
+            logger.info("MovieRequestTracker started")
+        else:
+            logger.info("MovieRequestTracker not started (no REQUEST_STORE_FILE configured)")
+    except Exception as e:
+        logger.error(f"Failed to start MovieRequestTracker: {e}")
+
+    if Config.PLAYLIST_AUTOSAVE_FILE and not (_autosave_thread and _autosave_thread.is_alive()):
+        try:
+            path = _resolve_autosave_path(Config.PLAYLIST_AUTOSAVE_FILE)
+            interval = max(10, int(Config.PLAYLIST_AUTOSAVE_INTERVAL))
+            _autosave_stop.clear()
+            _autosave_thread = threading.Thread(target=_autosave_worker, args=(path, interval), name="PlaylistAutosave", daemon=True)
+            _autosave_thread.start()
+        except Exception as e:
+            logger.error(f"Failed to start playlist autosave: {e}")
+
+
+async def _start_voice() -> None:
+    """Initial voice join, plus the retry and guard tasks (each started only if not already running)."""
+    global _voice_guard_task, _voice_retry_task
+    try:
+        joined = await join_voice_channel()
+        if not joined and getattr(Config, 'ENABLE_VOICE_JOIN', False):
+            # Don't permanently give up if the initial join failed — see
+            # _retry_initial_voice_join's docstring for why the event-driven
+            # reconnect handler can't recover this on its own.
+            if _voice_retry_task is None or _voice_retry_task.done():
+                _voice_retry_task = bot.loop.create_task(_retry_initial_voice_join())
+    except Exception as e:
+        logger.error(f"Initial voice join failed: {e}")
+    try:
+        if getattr(Config, 'ENABLE_VOICE_GUARD', False):
+            if _voice_guard_task is None or _voice_guard_task.done():
+                _voice_guard_task = bot.loop.create_task(_voice_connection_guard())
+        else:
+            logger.info("Voice guard is disabled (ENABLE_VOICE_GUARD=false)")
+    except Exception as e:
+        logger.debug(f"Could not start voice connection guard: {e}")
+
+
+_startup_done = False
+_startup_announce_task = None
+
+
+@bot.event
+async def on_ready():
+    """Called when the bot is ready, and again after each gateway reconnect.
+
+    One-time startup (announcement, config logs, VLC check, background services)
+    runs only on the first call; presence and voice join run every time.
+    """
+    global _startup_done, _startup_announce_task
+    logger.info(f'{bot.user} has connected to Discord!')
+    if not _startup_done:
+        _startup_done = True
+        _log_startup_config()
+        if Config.WATCH_ENQUEUE_ON_START and watch_service:
+            logger.info("Delaying startup announcement until watch folder initial scan completes...")
+            _startup_announce_task = bot.loop.create_task(_announce_startup_after_initial_scan())
+        else:
+            await _send_startup_announcement()
+        _warn_unknown_allowed_roles_on_startup()
+        logger.info("Testing VLC connection...")
+        await asyncio.to_thread(_check_vlc_connection)
+        _start_background_services()
+
+    if not getattr(Config, 'ENABLE_PRESENCE', True):
+        try:
+            await bot.change_presence(activity=None)
+            logger.info("Presence cleared at startup because ENABLE_PRESENCE=false")
+        except Exception as e:
+            logger.debug(f"Failed to clear presence at startup: {e}")
+
+    # Join voice channel after all startup tasks are done
+    await _start_voice()
+
 
 class CommandChannelContext(commands.Context):
     """Custom context that redirects bot responses to a dedicated command channel when configured.
 
-    Commands are still accepted from any channel. Only the response destination changes.
+    Commands are still accepted from any channel. Replies stay put when typed in one of
+    the command channels; otherwise they go to the first configured command channel.
     Falls back to the originating channel if the command channel cannot be resolved.
     """
 
     async def send(self, content=None, **kwargs):
-        cmd_channel_id = getattr(Config, 'COMMAND_CHANNEL_ID', 0)
-        if cmd_channel_id:
+        cmd_ids = Config.COMMAND_CHANNEL_IDS
+        if cmd_ids and self.channel.id not in cmd_ids:
+            cmd_channel_id = cmd_ids[0]
             channel = self.bot.get_channel(cmd_channel_id)
             if channel is None:
                 try:
@@ -1290,6 +1510,9 @@ class CommandChannelContext(commands.Context):
 
 @bot.event
 async def on_message(message):
+    if not getattr(Config, 'ENABLE_PREFIX_COMMANDS', True):
+        return
+
     if message.author == bot.user:
         return
     
@@ -1314,7 +1537,7 @@ async def on_command_error(ctx, error):
     cmd_name = getattr(getattr(ctx, 'command', None), 'name', None)
 
     if isinstance(error, commands.MissingAnyRole):
-        allowed_roles = _format_allowed_roles_for_display()
+        allowed_roles = _format_allowed_roles_for_display(getattr(ctx, 'guild', None))
         logger.warning(f"Role check failed: required roles (any of): {allowed_roles}")
         await ctx.send(f"You need one of these roles to use this command: {allowed_roles}")
     elif isinstance(error, commands.CommandNotFound):
@@ -1415,6 +1638,7 @@ async def controls(ctx):
 `{prefix}schedules` - List all upcoming scheduled movies
 `{prefix}unschedule <number>` - Remove all schedules for a movie number
     `{prefix}privacy` - Show data use and privacy statement
+`{prefix}stats` - Show the watch leaderboard
         """
         embed.add_field(name="ℹ️ Status & Scheduling", value=status_commands, inline=False)
 
@@ -1440,7 +1664,7 @@ Examples: `{prefix}radarr_recent` (all instances, 7 days), `{prefix}radarr_recen
             embed.add_field(name="🎬 Radarr Integration", value=radarr_commands, inline=False)
 
         # Add footer note about permissions
-        roles_str = _format_allowed_roles_for_display()
+        roles_str = _format_allowed_roles_for_display(getattr(ctx, 'guild', None))
         footer_text = f"⚠️ Most commands require one of these roles: {roles_str}"
         embed.set_footer(text=footer_text)
 
@@ -1508,6 +1732,29 @@ async def privacy(ctx):
         logger.error(f"privacy command error: {e}")
         await ctx.send(f"Error showing privacy statement: {e}")
 
+def _build_changelog_embeds(entries: list) -> list:
+    """Build one embed per changelog version entry.
+
+    Field values are clipped to Discord's 1024-char field cap via
+    `_clip_field_lines` — changelog bullets (e.g. voice-room-rules entries)
+    can individually run past 600 chars, so even 5 items can overflow.
+    """
+    embeds = []
+    for entry in entries:
+        embed = discord.Embed(
+            title=f"v{entry['version']}",
+            description=f"Released: {entry['date']}",
+            color=discord.Color.blurple()
+        )
+        for section in ['Changed', 'Added', 'Fixed']:
+            items = entry['sections'].get(section)
+            if items:
+                lines = [f"• {item}" for item in items]
+                embed.add_field(name=section, value=_clip_field_lines(lines), inline=False)
+        embeds.append(embed)
+    return embeds
+
+
 @bot.command(name="changelog", aliases=['changes', 'whatsnew'])
 async def changelog(ctx):
     """Show recent changelog entries (latest 2 versions)."""
@@ -1516,29 +1763,67 @@ async def changelog(ctx):
         if not entries:
             await ctx.send("Changelog could not be loaded.")
             return
-        
-        # Build and send embeds for each version
-        for entry in entries:
-            embed = discord.Embed(
-                title=f"v{entry['version']}",
-                description=f"Released: {entry['date']}",
-                color=discord.Color.blurple()
-            )
-            
-            # Add sections in preferred order
-            for section in ['Changed', 'Added', 'Fixed']:
-                if section in entry['sections'] and entry['sections'][section]:
-                    items = entry['sections'][section][:5]  # Limit to 5 items per section
-                    value = '\n'.join([f"• {item}" for item in items])
-                    if len(entry['sections'][section]) > 5:
-                        value += f"\n• ... and {len(entry['sections'][section]) - 5} more"
-                    embed.add_field(name=section, value=value, inline=False)
-            
+
+        for embed in _build_changelog_embeds(entries):
             await ctx.send(embed=embed)
-    
+
     except Exception as e:
         logger.error(f"changelog command error: {e}")
         await ctx.send(f"Error loading changelog: {e}")
+
+
+def _select_radarr_instances(instance) -> tuple[list, str | None]:
+    """Configured Radarr instances matching `instance` (a name, display name, or 'all'), or an error message."""
+    if not _radarr_services:
+        return [], "Radarr is not configured. Please set RADARR_* environment variables."
+    target = instance.strip().lower() if isinstance(instance, str) else 'all'
+    if target == 'all':
+        return _radarr_services, None
+    selected = [i for i in _radarr_services if i['name'].lower() == target or i['display'].lower() == target]
+    if not selected:
+        names = ", ".join([i['name'] for i in _radarr_services])
+        disp = ", ".join([i['display'] for i in _radarr_services])
+        return [], f"Unknown Radarr instance '{instance}'. Try one of: {names} (display: {disp}) or 'all'."
+    return selected, None
+
+
+async def _radarr_recent_embed(selected: list, days: int, limit: int, title: str) -> discord.Embed | None:
+    """Recent downloads from each selected instance, fetched concurrently; None if every instance failed."""
+    async def fetch_one(item):
+        name = item['display']
+        svc: RadarrService = item['service']
+        try:
+            return name, await svc.get_recent_downloads(days=days, limit=limit)
+        except Exception as e:
+            return name, {"success": False, "error": str(e)}
+
+    results = await asyncio.gather(*(fetch_one(i) for i in selected))
+
+    embed = discord.Embed(
+        title=title,
+        description=f"Time window: last {days} day(s).",
+        color=discord.Color.purple()
+    )
+    any_success = False
+    for display_name, res in results:
+        if res.get("success"):
+            any_success = True
+            movies = res.get("movies", [])
+            if not movies:
+                value = "No recent items found."
+            else:
+                lines = []
+                for m in movies[:limit]:
+                    title = m.get('title') or 'Untitled'
+                    year = m.get('year') or '—'
+                    lines.append(f"• {title} ({year})")
+                value = "\n".join(lines)
+            embed.add_field(name=display_name, value=value, inline=False)
+        else:
+            err = res.get("error", "Unknown error")
+            embed.add_field(name=f"{display_name} (error)", value=f"❌ {err}", inline=False)
+    return embed if any_success else None
+
 
 @bot.command(name="radarr_recent", aliases=["recent_movies", "recent_radarr"])
 async def radarr_recent(ctx, instance: str = 'all', days: int = 7, limit: int = 10):
@@ -1550,67 +1835,20 @@ async def radarr_recent(ctx, instance: str = 'all', days: int = 7, limit: int = 
     - !radarr_recent all 3 5 -> all instances, last 3 days, max 5 each
     """
     try:
-        if not _radarr_services:
-            await ctx.send("Radarr is not configured. Please set RADARR_* environment variables.")
+        selected, error = _select_radarr_instances(instance)
+        if error:
+            await ctx.send(error)
             return
-
-        # Resolve instance filter
-        target = instance.strip().lower() if isinstance(instance, str) else 'all'
-        selected = _radarr_services
-        if target != 'all':
-            selected = [i for i in _radarr_services if i['name'].lower() == target or i['display'].lower() == target]
-            if not selected:
-                names = ", ".join([i['name'] for i in _radarr_services])
-                disp = ", ".join([i['display'] for i in _radarr_services])
-                await ctx.send(f"Unknown Radarr instance '{instance}'. Try one of: {names} (display: {disp}) or 'all'.")
-                return
 
         # Clamp days/limit
         days = max(1, int(days))
         limit = max(1, min(25, int(limit)))
 
-        # Fetch concurrently
-        async def fetch_one(item):
-            name = item['display']
-            svc: RadarrService = item['service']
-            try:
-                return name, await svc.get_recent_downloads(days=days, limit=limit)
-            except Exception as e:
-                return name, {"success": False, "error": str(e)}
-
-        results = await asyncio.gather(*(fetch_one(i) for i in selected))
-
-        # Build embed
-        embed = discord.Embed(
-            title="🎬 Recently Added Movies",
-            description=f"Time window: last {days} day(s).",
-            color=discord.Color.purple()
-        )
-        embed.set_footer(text=f"Use {Config.DISCORD_COMMAND_PREFIX}radarr_recent [instance|all] [days] [limit]")
-
-        any_success = False
-        for display_name, res in results:
-            if res.get("success"):
-                any_success = True
-                movies = res.get("movies", [])
-                if not movies:
-                    value = "No recent items found."
-                else:
-                    lines = []
-                    for m in movies[:limit]:
-                        title = m.get('title') or 'Untitled'
-                        year = m.get('year') or '—'
-                        lines.append(f"• {title} ({year})")
-                    value = "\n".join(lines)
-                embed.add_field(name=display_name, value=value, inline=False)
-            else:
-                err = res.get("error", "Unknown error")
-                embed.add_field(name=f"{display_name} (error)", value=f"❌ {err}", inline=False)
-
-        if not any_success:
+        embed = await _radarr_recent_embed(selected, days, limit, "🎬 Recently Added Movies")
+        if embed is None:
             await ctx.send("Could not retrieve recent movies from any Radarr instance.")
             return
-
+        embed.set_footer(text=f"Use {Config.DISCORD_COMMAND_PREFIX}radarr_recent [instance|all] [days] [limit]")
         await ctx.send(embed=embed)
     except Exception as e:
         logger.error(f"radarr_recent command error: {e}")
@@ -1687,6 +1925,2027 @@ async def list_guilds(ctx):
     except Exception as e:
         logger.error(f"list_guilds command error: {e}")
         await ctx.send(f"Error listing servers: {e}")
+
+
+@bot.command(name="syncslash", aliases=["sync_slash", "slashsync"])
+@commands.is_owner()
+async def syncslash(ctx):
+    """Owner-only: force resync slash commands and print registered top-level names."""
+    if not getattr(Config, 'ENABLE_SLASH_COMMANDS', True):
+        await ctx.send("Slash commands are disabled (`ENABLE_SLASH_COMMANDS=false`).")
+        return
+
+    try:
+        synced_global, synced_guild = await _sync_app_commands_now()
+        lines = []
+        if synced_guild is not None:
+            guild_id = int(getattr(Config, 'SLASH_COMMAND_GUILD_ID', 0) or 0)
+            lines.insert(
+                0,
+                f"Guild sync ({guild_id}): {len(synced_guild)} command(s) -> {_format_synced_top_level_commands(synced_guild)}",
+            )
+        if synced_global is not None:
+            lines.append(
+                f"Global sync: {len(synced_global)} command(s) -> {_format_synced_top_level_commands(synced_global)}"
+            )
+        elif synced_guild is not None:
+            lines.append("Global sync skipped (SYNC_GLOBAL_COMMANDS=false).")
+        await ctx.send("\n".join(lines))
+    except Exception as e:
+        logger.error(f"syncslash command error: {e}")
+        await ctx.send(f"Slash sync failed: {type(e).__name__}: {e}")
+
+
+@bot.command(name="clearglobalslash", aliases=["clear_global_slash", "purgeglobalslash"])
+@commands.is_owner()
+async def clearglobalslash(ctx):
+    """Owner-only: one-time purge of global slash registrations in dev-guild mode."""
+    if not getattr(Config, 'ENABLE_SLASH_COMMANDS', True):
+        await ctx.send("Slash commands are disabled (`ENABLE_SLASH_COMMANDS=false`).")
+        return
+
+    guild_id = int(getattr(Config, 'SLASH_COMMAND_GUILD_ID', 0) or 0)
+    if guild_id <= 0:
+        await ctx.send("Set `SLASH_COMMAND_GUILD_ID` to your dev server first (must be > 0).")
+        return
+
+    if bool(getattr(Config, 'SYNC_GLOBAL_COMMANDS', False)):
+        await ctx.send("Set `SYNC_GLOBAL_COMMANDS=false` first, then rerun this command.")
+        return
+
+    try:
+        before_count, after_count, guild_after_count = await _purge_global_commands_once()
+        lines = [
+            f"Global slash commands before purge: {before_count}",
+            f"Global slash commands after purge: {after_count}",
+        ]
+        if guild_after_count is not None:
+            lines.append(f"Guild slash commands resynced: {guild_after_count}")
+        lines.append("If duplicates still appear, restart Discord once more to refresh local cache.")
+        await ctx.send("\n".join(lines))
+    except Exception as e:
+        logger.error(f"clearglobalslash command error: {e}")
+        await ctx.send(f"Global slash cleanup failed: {type(e).__name__}: {e}")
+
+
+system_group = app_commands.Group(name="system", description="CtrlVee system and information commands")
+playback_group = app_commands.Group(name="playback", description="CtrlVee playback controls")
+playlist_group = app_commands.Group(name="playlist", description="CtrlVee playlist browsing and search")
+queue_group = app_commands.Group(name="queue", description="CtrlVee queue management")
+subtitles_group = app_commands.Group(name="subtitles", description="CtrlVee subtitle track controls")
+audio_group = app_commands.Group(name="audio", description="CtrlVee audio track controls")
+schedule_group = app_commands.Group(name="schedule", description="CtrlVee scheduled playback")
+watch_group = app_commands.Group(name="watch", description="CtrlVee watch folder management")
+admin_group = app_commands.Group(name="admin", description="CtrlVee owner administration")
+request_group = app_commands.Group(name="request", description="CtrlVee media requests")
+
+
+async def _reply(interaction: discord.Interaction, *args, **kwargs) -> None:
+    """Send an interaction reply via response or followup, whichever is still open.
+
+    Needed because the schedule-proximity confirmation defers the response while
+    it waits on Continue/Cancel, so the eventual result must go through followup.
+    """
+    if interaction.response.is_done():
+        await interaction.followup.send(*args, **kwargs)
+    else:
+        await interaction.response.send_message(*args, **kwargs)
+
+
+async def _defer_if_needed(interaction: discord.Interaction) -> None:
+    """Acknowledge the interaction before slow VLC work.
+
+    Discord drops an interaction that isn't answered within 3 seconds (404 Unknown
+    interaction), even if the action itself succeeded. Deferring extends that to
+    15 minutes; replies after this must go through _reply.
+    """
+    if not interaction.response.is_done():
+        await interaction.response.defer()
+
+
+async def _confirm_nearby_schedule_for_interaction(playback_cog, interaction: discord.Interaction, item=None, starts_in: float = 0) -> bool:
+    """Defer the interaction, then gate on the schedule-proximity prompt.
+
+    Defers first because building the notice can probe a file's runtime
+    (MediaUtils.probe_duration), which may outlast Discord's 3-second deadline.
+    """
+    await _defer_if_needed(interaction)
+    return await playback_cog._confirm_nearby_schedule(interaction.channel, interaction.user, item, starts_in)
+
+
+async def _check_allowed_roles_for_interaction(interaction: discord.Interaction) -> bool:
+    """Return True when the caller has one of ALLOWED_ROLES in guild context."""
+    # Role-gated slash commands are guild-only in this migration slice.
+    if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        return False
+
+    member: discord.Member = interaction.user
+    allowed = Config.ALLOWED_ROLES
+    if not allowed:
+        await interaction.response.send_message("Command permissions are not configured.", ephemeral=True)
+        return False
+
+    member_role_ids = {r.id for r in member.roles}
+    member_role_names = {r.name.lower() for r in member.roles}
+
+    for role in allowed:
+        if isinstance(role, int) and role in member_role_ids:
+            return True
+        if isinstance(role, str) and role.lower() in member_role_names:
+            return True
+
+    await interaction.response.send_message(
+        f"You need one of these roles to use this command: {_format_allowed_roles_for_display(interaction.guild)}",
+        ephemeral=True,
+    )
+    return False
+
+
+async def _log_no_results_search(
+    interaction: discord.Interaction, command_name: str, query: str, message: Optional[discord.Message] = None
+) -> None:
+    """Log a search that returned no results: the command, query, requester, and guild.
+
+    Posts to SEARCH_LOG_CHANNEL_ID when configured (falling back to the terminal if
+    that send fails), otherwise logs to the terminal directly.
+    """
+    guild_text = f"{interaction.guild.name} ({interaction.guild.id})" if interaction.guild else "DM"
+    user_text = f"{interaction.user} ({interaction.user.id})"
+    channel_text = f"#{interaction.channel}" if interaction.channel else str(interaction.channel_id)
+    message_link = message.jump_url if message else None
+
+    if Config.SEARCH_LOG_CHANNEL_ID:
+        try:
+            channel = bot.get_channel(Config.SEARCH_LOG_CHANNEL_ID) or await bot.fetch_channel(Config.SEARCH_LOG_CHANNEL_ID)
+            embed = discord.Embed(
+                title="Search returned no results",
+                description=f"`{command_name}` — **{query}**",
+                color=discord.Color.orange(),
+            )
+            embed.add_field(name="User", value=user_text, inline=True)
+            embed.add_field(name="Guild", value=guild_text, inline=True)
+            embed.add_field(name="Channel", value=channel_text, inline=True)
+            if message_link:
+                embed.add_field(name="Message", value=f"[Jump]({message_link})", inline=False)
+            await channel.send(embed=embed)
+            return
+        except Exception as e:
+            logger.warning(f"Failed to log no-results search to SEARCH_LOG_CHANNEL_ID={Config.SEARCH_LOG_CHANNEL_ID}: {e}")
+
+    logger.info(
+        f"No results: command={command_name} query={query!r} user={user_text} guild={guild_text} channel={channel_text}"
+        + (f" message={message_link}" if message_link else "")
+    )
+
+
+async def _check_request_channel_for_interaction(interaction: discord.Interaction) -> bool:
+    """Return True when movie requests are configured and used in the right channel."""
+    if not Config.REQUEST_CHANNEL_ID or not overseerr_service.is_configured():
+        await interaction.response.send_message(
+            "Requests are not configured on this bot.", ephemeral=True
+        )
+        return False
+    if interaction.channel_id != Config.REQUEST_CHANNEL_ID:
+        await interaction.response.send_message(
+            f"Please use this command in <#{Config.REQUEST_CHANNEL_ID}>.", ephemeral=True
+        )
+        return False
+    return True
+
+
+def _build_movie_request_embed(candidate: dict, *, title_prefix: str = "", description: Optional[str] = None) -> discord.Embed:
+    year_text = f" ({candidate['year']})" if candidate.get('year') else ""
+    embed = discord.Embed(
+        title=f"{title_prefix}{candidate['title']}{year_text}",
+        description=description if description is not None else (candidate.get('overview') or "No overview available."),
+        color=discord.Color.purple(),
+    )
+    if candidate.get('poster_path'):
+        embed.set_thumbnail(url=f"https://image.tmdb.org/t/p/w500{candidate['poster_path']}")
+    return embed
+
+
+class MovieRequestSelect(discord.ui.Select):
+    def __init__(self, candidates: list[dict], requester: discord.abc.User, media_type: str = "movie"):
+        self.candidates_by_value = {str(c['tmdb_id']): c for c in candidates}
+        self.requester = requester
+        self.media_type = media_type
+        options = [
+            discord.SelectOption(
+                label=f"{c['title']} ({c['year']})" if c.get('year') else c['title'],
+                value=str(c['tmdb_id']),
+                description=(c.get('overview') or "")[:100] or None,
+            )
+            for c in candidates
+        ]
+        super().__init__(placeholder=f"Select the correct {_request_noun(media_type)}...", options=options, min_values=1, max_values=1)
+
+    async def callback(self, interaction: discord.Interaction):
+        if interaction.user.id != self.requester.id:
+            await interaction.response.send_message("Only the person who ran this command can pick a result.", ephemeral=True)
+            return
+
+        candidate = self.candidates_by_value[self.values[0]]
+
+        existing = movie_request_tracker.find_blocking_request(candidate['tmdb_id'], self.media_type)
+        if existing:
+            label = STATUS_LABELS[5] if existing.get("status") == "available" else existing.get("status", "pending").title()
+            duplicate_embed = _build_movie_request_embed(
+                candidate, title_prefix="ℹ️ Already requested: ",
+                description=f"Requested by {existing.get('requested_by_name', 'someone')} — status: {label}. Use `/request status` for the latest.\n\n{candidate.get('overview') or ''}",
+            )
+            await interaction.response.edit_message(embed=duplicate_embed, view=None)
+            self.view.stop()
+            return
+
+        submitting_embed = _build_movie_request_embed(candidate, title_prefix="Submitting request: ")
+        await interaction.response.edit_message(embed=submitting_embed, view=None)
+
+        result = await overseerr_service.request_media(candidate['tmdb_id'], self.media_type)
+        if result.get("success"):
+            movie_request_tracker.add_request({
+                "tmdb_id": candidate['tmdb_id'],
+                "media_type": self.media_type,
+                "title": candidate['title'],
+                "year": candidate.get('year'),
+                "overview": candidate.get('overview') or "",
+                "poster_path": candidate.get('poster_path'),
+                "overseerr_request_id": result.get("request_id"),
+                "overseerr_media_id": result.get("media_id"),
+                "requested_by_id": self.requester.id,
+                "requested_by_name": str(self.requester),
+                "requested_at": datetime.now(timezone.utc).isoformat(),
+                "status": "pending",
+                "notified_at": None,
+            })
+            confirmed_embed = _build_movie_request_embed(
+                candidate, title_prefix="✅ Requested: ",
+                description=f"Requested by {self.requester.mention}. You'll be notified here once it's available.\n\n{candidate.get('overview') or ''}",
+            )
+            await interaction.edit_original_response(embed=confirmed_embed)
+        else:
+            failed_embed = _build_movie_request_embed(
+                candidate,
+                title_prefix="ℹ️ Nothing new to request: " if result.get("nothing_to_request") else "❌ Request failed: ",
+                description=result.get("error", "Unknown error"),
+            )
+            await interaction.edit_original_response(embed=failed_embed)
+
+        self.view.stop()
+
+
+class MovieRequestSelectView(discord.ui.View):
+    def __init__(self, candidates: list[dict], requester: discord.abc.User, media_type: str = "movie"):
+        super().__init__(timeout=60)
+        self.message: Optional[discord.Message] = None
+        self.requester = requester
+        self.add_item(MovieRequestSelect(candidates, requester, media_type))
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.requester.id:
+            await interaction.response.send_message("Only the person who ran this command can cancel it.", ephemeral=True)
+            return
+        # Discord can't turn a public message ephemeral after the fact, so instead of
+        # leaving "Request cancelled." visible to everyone, remove the public message
+        # entirely and privately ack only the person who cancelled.
+        await interaction.response.send_message("Request cancelled.", ephemeral=True)
+        try:
+            await interaction.message.delete()
+        except Exception:
+            pass
+        self.stop()
+
+    async def on_timeout(self) -> None:
+        if self.message is None:
+            return
+        try:
+            await self.message.delete()
+        except Exception:
+            pass
+
+
+def _build_system_help_embed() -> discord.Embed:
+    prefix = Config.DISCORD_COMMAND_PREFIX
+    embed = discord.Embed(
+        title="CtrlVee Slash Commands",
+        description="V2 migration in progress. Use these slash commands now. Run `/help` to see this list anytime.",
+        color=discord.Color.blue(),
+    )
+    embed.add_field(
+        name="Available /system commands",
+        value=(
+            "• `/system help`\n"
+            "• `/system version`\n"
+            "• `/system privacy`\n"
+            "• `/system changelog`\n"
+            "• `/system sync` (owner only)\n"
+            "• `/system clear-global-slash` (owner only)"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Available /playback commands",
+        value=(
+            "• `/playback play`\n"
+            "• `/playback pause`\n"
+            "• `/playback stop`\n"
+            "• `/playback restart`\n"
+            "• `/playback rewind`\n"
+            "• `/playback forward`\n"
+            "• `/playback next`\n"
+            "• `/playback previous`\n"
+            "• `/playback play-item`\n"
+            "• `/playback status`\n"
+            "• `/playback speed`\n"
+            "• `/playback shuffle`"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Available /playlist commands",
+        value=(
+            "• `/playlist list`\n"
+            "• `/playlist search`\n"
+            "• `/playlist play-search`\n"
+            "• `/playlist radarr-recent`"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Available /queue commands",
+        value=(
+            "• `/queue add-next`\n"
+            "• `/queue status`\n"
+            "• `/queue clear`\n"
+            "• `/queue remove`"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Available /subtitles commands",
+        value=(
+            "• `/subtitles list`\n"
+            "• `/subtitles set`\n"
+            "• `/subtitles next`\n"
+            "• `/subtitles previous`"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Available /audio commands",
+        value=(
+            "• `/audio list`\n"
+            "• `/audio set`"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Available /schedule commands",
+        value=(
+            "• `/schedule add`\n"
+            "• `/schedule list`\n"
+            "• `/schedule remove`"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Available /watch commands",
+        value="• `/watch add`\n• `/watch remove`",
+        inline=False,
+    )
+    embed.add_field(
+        name="Available /request commands",
+        value=(
+            "• `/request movie`\n"
+            "• `/request tv`\n"
+            "• `/request status`\n"
+            "• `/request clear`"
+        ),
+        inline=False,
+    )
+    embed.add_field(name="Watch leaderboard", value="• `/stats`", inline=False)
+    if getattr(Config, 'ENABLE_PREFIX_COMMANDS', True):
+        embed.add_field(
+            name="Prefix mode",
+            value=f"Prefix commands are still enabled during migration (prefix: `{prefix}`).",
+            inline=False,
+        )
+    else:
+        embed.add_field(
+            name="Prefix mode",
+            value="Prefix commands are disabled. Message Content Intent is not required.",
+            inline=False,
+        )
+    return embed
+
+
+@system_group.command(name="help", description="Show available CtrlVee slash system commands")
+async def system_help(interaction: discord.Interaction):
+    await interaction.response.send_message(embed=_build_system_help_embed())
+
+
+@bot.tree.command(name="help", description="Show available CtrlVee commands")
+async def root_help(interaction: discord.Interaction):
+    await interaction.response.send_message(embed=_build_system_help_embed())
+
+
+@bot.tree.command(name="stats", description="Show the watch leaderboard")
+@app_commands.guild_only()
+async def root_stats(interaction: discord.Interaction):
+    await interaction.response.send_message(embed=build_stats_embed(stats_service))
+
+
+@system_group.command(name="version", description="Show CtrlVee version and configuration summary")
+async def system_version(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="CtrlVee Version",
+        color=discord.Color.blue()
+    )
+    embed.add_field(name="Version", value=__version__, inline=True)
+    embed.add_field(name="Items Per Page", value=str(Config.ITEMS_PER_PAGE), inline=True)
+    embed.add_field(name="TMDB", value=("Configured" if Config.TMDB_API_KEY else "Not Configured"), inline=True)
+    if getattr(Config, 'PRIVACY_POLICY_URL', '').strip():
+        embed.add_field(name="Privacy Policy", value=f"<{Config.PRIVACY_POLICY_URL}>", inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@system_group.command(name="privacy", description="Show privacy and data handling statement")
+async def system_privacy(interaction: discord.Interaction):
+    await interaction.response.send_message(embed=_build_privacy_embed(), ephemeral=True)
+
+
+@system_group.command(name="changelog", description="Show recent changelog entries")
+async def system_changelog(interaction: discord.Interaction):
+    entries = parse_changelog(max_versions=2)
+    if not entries:
+        await interaction.response.send_message("Changelog could not be loaded.", ephemeral=True)
+        return
+
+    first = True
+    for embed in _build_changelog_embeds(entries):
+        if first:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            first = False
+        else:
+            await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+@playlist_group.command(name="radarr-recent", description="Show recently downloaded movies from Radarr")
+@app_commands.describe(
+    instance="Radarr instance name or 'all'",
+    days="Lookback window in days",
+    limit="Maximum items per instance",
+)
+async def playlist_radarr_recent(
+    interaction: discord.Interaction,
+    instance: str = 'all',
+    days: app_commands.Range[int, 1, 365] = 7,
+    limit: app_commands.Range[int, 1, 25] = 10,
+):
+    selected, error = _select_radarr_instances(instance)
+    if error:
+        await interaction.response.send_message(error)
+        return
+
+    await interaction.response.defer(thinking=True)
+    embed = await _radarr_recent_embed(selected, days, limit, "Recently Added Movies")
+    if embed is None:
+        await interaction.followup.send("Could not retrieve recent movies from any Radarr instance.")
+        return
+    await interaction.followup.send(embed=embed)
+
+
+@system_group.command(name="sync", description="Owner only: force resync slash commands")
+async def system_sync(interaction: discord.Interaction):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("This command is owner-only.", ephemeral=True)
+        return
+
+    if not getattr(Config, 'ENABLE_SLASH_COMMANDS', True):
+        await interaction.response.send_message(
+            "Slash commands are disabled (`ENABLE_SLASH_COMMANDS=false`).",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        synced_global, synced_guild = await _sync_app_commands_now()
+        lines = []
+        if synced_guild is not None:
+            guild_id = int(getattr(Config, 'SLASH_COMMAND_GUILD_ID', 0) or 0)
+            lines.insert(
+                0,
+                f"Guild sync ({guild_id}): {len(synced_guild)} command(s) -> {_format_synced_top_level_commands(synced_guild)}",
+            )
+        if synced_global is not None:
+            lines.append(
+                f"Global sync: {len(synced_global)} command(s) -> {_format_synced_top_level_commands(synced_global)}"
+            )
+        elif synced_guild is not None:
+            lines.append("Global sync skipped (SYNC_GLOBAL_COMMANDS=false).")
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
+    except Exception as e:
+        logger.error(f"/system sync command error: {e}")
+        await interaction.followup.send(f"Slash sync failed: {type(e).__name__}: {e}", ephemeral=True)
+
+
+@system_group.command(name="clear-global-slash", description="Owner only: one-time purge of global slash registrations")
+async def system_clear_global_slash(interaction: discord.Interaction):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("This command is owner-only.", ephemeral=True)
+        return
+
+    if not getattr(Config, 'ENABLE_SLASH_COMMANDS', True):
+        await interaction.response.send_message(
+            "Slash commands are disabled (`ENABLE_SLASH_COMMANDS=false`).",
+            ephemeral=True,
+        )
+        return
+
+    guild_id = int(getattr(Config, 'SLASH_COMMAND_GUILD_ID', 0) or 0)
+    if guild_id <= 0:
+        await interaction.response.send_message(
+            "Set `SLASH_COMMAND_GUILD_ID` to your dev server first (must be > 0).",
+            ephemeral=True,
+        )
+        return
+
+    if bool(getattr(Config, 'SYNC_GLOBAL_COMMANDS', False)):
+        await interaction.response.send_message(
+            "Set `SYNC_GLOBAL_COMMANDS=false` first, then rerun this command.",
+            ephemeral=True,
+        )
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        before_count, after_count, guild_after_count = await _purge_global_commands_once()
+        lines = [
+            f"Global slash commands before purge: {before_count}",
+            f"Global slash commands after purge: {after_count}",
+        ]
+        if guild_after_count is not None:
+            lines.append(f"Guild slash commands resynced: {guild_after_count}")
+        lines.append("If duplicates still appear, restart Discord once more to refresh local cache.")
+        await interaction.followup.send("\n".join(lines), ephemeral=True)
+    except Exception as e:
+        logger.error(f"/system clear-global-slash command error: {e}")
+        await interaction.followup.send(f"Global slash cleanup failed: {type(e).__name__}: {e}", ephemeral=True)
+
+
+@playback_group.command(name="play", description="Start or resume playback")
+async def playback_play(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    if vlc.play():
+        await interaction.response.send_message("Playback resumed.")
+    else:
+        await interaction.response.send_message("Could not start playback.")
+
+
+@playback_group.command(name="pause", description="Pause playback")
+async def playback_pause(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    if vlc.pause():
+        await interaction.response.send_message("Playback paused.")
+    else:
+        await interaction.response.send_message("Could not pause playback.")
+
+
+@playback_group.command(name="stop", description="Stop playback")
+async def playback_stop(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    if vlc.stop():
+        await interaction.response.send_message("Playback stopped.")
+    else:
+        await interaction.response.send_message("Could not stop playback.")
+
+
+@playback_group.command(name="restart", description="Restart current item from beginning")
+async def playback_restart(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    if vlc.seek("0"):
+        await interaction.response.send_message("Restarted current item.")
+    else:
+        await interaction.response.send_message("Could not restart current item.")
+
+
+@playback_group.command(name="rewind", description="Rewind playback")
+@app_commands.describe(seconds="Number of seconds to rewind")
+async def playback_rewind(interaction: discord.Interaction, seconds: app_commands.Range[int, 1, 3600] = 10):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    if vlc.seek(f"-{seconds}"):
+        await interaction.response.send_message(f"Rewound {seconds} seconds.")
+    else:
+        await interaction.response.send_message("Could not rewind playback.")
+
+
+@playback_group.command(name="forward", description="Fast forward playback")
+@app_commands.describe(seconds="Number of seconds to fast forward")
+async def playback_forward(interaction: discord.Interaction, seconds: app_commands.Range[int, 1, 3600] = 10):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    if vlc.seek(f"+{seconds}"):
+        await interaction.response.send_message(f"Fast forwarded {seconds} seconds.")
+    else:
+        await interaction.response.send_message("Could not fast forward playback.")
+
+
+@playback_group.command(name="next", description="Play next track")
+async def playback_next(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    playback_cog = bot.get_cog("PlaybackCommands")
+    if playback_cog:
+        ok, reason = playback_cog._playback_guard(interaction.user)
+        if not ok:
+            await interaction.response.send_message(reason, ephemeral=True)
+            return
+        if not await _confirm_nearby_schedule_for_interaction(playback_cog, interaction):
+            return
+
+    if vlc.next():
+        await _reply(interaction, "Skipped to next track.")
+    else:
+        await _reply(interaction, "Could not skip to next track.")
+
+
+@playback_group.command(name="previous", description="Play previous track")
+async def playback_previous(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    playback_cog = bot.get_cog("PlaybackCommands")
+    if playback_cog:
+        ok, reason = playback_cog._playback_guard(interaction.user)
+        if not ok:
+            await interaction.response.send_message(reason, ephemeral=True)
+            return
+        if not await _confirm_nearby_schedule_for_interaction(playback_cog, interaction):
+            return
+
+    if vlc.previous():
+        await _reply(interaction, "Jumped to previous track.")
+    else:
+        await _reply(interaction, "Could not jump to previous track.")
+
+
+@playback_group.command(name="play-item", description="Play an item by playlist number")
+@app_commands.describe(number="1-based playlist item number")
+async def playback_play_num(interaction: discord.Interaction, number: app_commands.Range[int, 1, 99999]):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    playback_cog = bot.get_cog("PlaybackCommands")
+    if playback_cog:
+        ok, reason = playback_cog._playback_guard(interaction.user)
+        if not ok:
+            await interaction.response.send_message(reason)
+            return
+        if not await _confirm_nearby_schedule_for_interaction(playback_cog, interaction, playback_cog._playlist_leaf(number)):
+            return
+
+    playlist = vlc.get_playlist()
+    if not playlist:
+        await _reply(interaction, "Could not access VLC playlist.")
+        return
+
+    items = playlist.findall('.//leaf')
+    if not items:
+        await _reply(interaction, "Playlist is empty.")
+        return
+
+    if number > len(items):
+        await _reply(interaction, f"Invalid playlist number. Playlist has {len(items)} item(s).")
+        return
+
+    item = items[number - 1]
+    item_id = item.get('id')
+    if not item_id or not vlc.play_item(item_id):
+        await _reply(interaction, "Could not start playback for that item.")
+        return
+    if playback_cog:
+        playback_cog._seat_playback_owner(interaction.user, item_id)
+
+    pretty = MediaUtils.clean_filename_for_display(item.get('name', ''), max_length=120)
+    await _reply(interaction, f"Loading item #{number}: {pretty}")
+
+
+@playback_group.command(name="status", description="Show current playback status")
+async def playback_status(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    # This can make one or two blocking VLC HTTP calls (each up to a 5s timeout)
+    # before it has anything to send back — defer so a slow/unresponsive VLC
+    # doesn't blow past Discord's 3s interaction window ("Unknown interaction").
+    await interaction.response.defer(thinking=True)
+
+    playback_cog = bot.get_cog("PlaybackCommands")
+    if playback_cog and hasattr(playback_cog, 'get_status_embed'):
+        try:
+            embed = await playback_cog.get_status_embed()
+            if embed:
+                await interaction.followup.send(embed=embed)
+                return
+        except Exception as e:
+            logger.debug(f"Slash /playback status embed fallback: {e}")
+
+    status = vlc.get_status()
+    if status is None:
+        await interaction.followup.send("Could not read VLC status.")
+        return
+    state = status.find('state').text if status.find('state') is not None else 'unknown'
+    await interaction.followup.send(f"Current VLC state: {state}")
+
+
+async def _run_playlist_cleanup(interaction: discord.Interaction, source: str) -> None:
+    """Shared owner-only playlist cleanup handler for slash commands."""
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("This command is owner-only.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True, thinking=True)
+    try:
+        result = await asyncio.to_thread(vlc.remove_missing_playlist_items)
+        removed = int(result.get('removed', 0))
+        items = result.get('items', []) or []
+        if removed == 0:
+            await interaction.followup.send("Playlist cleanup complete: no missing files detected.", ephemeral=True)
+            return
+
+        max_list = 10
+        listed = items[:max_list]
+        more = removed - len(listed)
+        lines = []
+        for it in listed:
+            nm = it.get('name') or '<unknown>'
+            lines.append(f"• {MediaUtils.clean_filename_for_display(nm)}")
+        if more > 0:
+            lines.append(f"… and {more} more")
+
+        embed = discord.Embed(
+            title="Playlist Cleanup",
+            description=f"Removed {removed} missing file(s) from the playlist:\n\n" + "\n".join(lines),
+            color=discord.Color.orange(),
+        )
+        embed.set_footer(text="Cleanup tool")
+        await interaction.followup.send(embed=embed, ephemeral=True)
+    except Exception as e:
+        logger.error(f"{source} error: {e}")
+        await interaction.followup.send(f"Cleanup failed: {e}", ephemeral=True)
+
+
+def _parse_speed_target(target: str | None) -> float | None:
+    if target is None:
+        return None
+    t = target.strip().lower()
+    if t in ('status', 'show', 'current'):
+        return None
+    if t in ('1.5', '1.5x', '15', 'fast', 'up'):
+        return 1.5
+    if t in ('1', '1.0', 'normal', 'default', 'reset', 'norm'):
+        return 1.0
+    try:
+        return float(t.rstrip('x'))
+    except Exception:
+        return None
+
+
+@playback_group.command(name="speed", description="Show or set playback speed")
+@app_commands.describe(target="Leave blank or use status to show speed; set to 1.5 or normal to change it")
+async def playback_speed(interaction: discord.Interaction, target: str | None = None):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    # Every path below can make a blocking VLC HTTP call (up to a 5s timeout);
+    # defer so a slow/unresponsive VLC doesn't blow past Discord's 3s window.
+    await interaction.response.defer(thinking=True)
+
+    target_text = target.strip().lower() if target is not None else None
+    if target_text is None or target_text in {"status", "show", "current"}:
+        status = vlc.get_status()
+        if status is None:
+            await interaction.followup.send("Could not access VLC status.")
+            return
+
+        rate_elem = status.find('rate')
+        rate_val = None
+        if rate_elem is not None and rate_elem.text:
+            try:
+                rate_val = float(rate_elem.text.strip())
+            except Exception:
+                rate_val = None
+
+        if rate_val is not None:
+            await interaction.followup.send(f"Current playback rate: {rate_val:.2f}x")
+        else:
+            await interaction.followup.send("Current playback rate is unknown.")
+        return
+
+    rate = _parse_speed_target(target)
+    if rate is None:
+        await interaction.followup.send(
+            "Invalid speed. Leave it blank or use status to check, or provide a number like 1.5 or preset normal.",
+        )
+        return
+
+    ok = vlc.set_rate(rate)
+    if ok:
+        if rate == 1.0:
+            await interaction.followup.send("Playback speed reset to normal (1.0x).")
+        else:
+            await interaction.followup.send(f"Playback speed set to {rate}x.")
+    else:
+        await interaction.followup.send(f"Failed to set playback speed to {rate}x.")
+
+
+@playback_group.command(name="shuffle", description="Manage shuffle mode")
+@app_commands.describe(action="Choose on, off, toggle, or status")
+@app_commands.choices(action=[
+    app_commands.Choice(name="status", value="status"),
+    app_commands.Choice(name="toggle", value="toggle"),
+    app_commands.Choice(name="on", value="on"),
+    app_commands.Choice(name="off", value="off"),
+])
+async def playback_shuffle(interaction: discord.Interaction, action: str = "status"):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    current = vlc.get_shuffle_state()
+    if action == "status":
+        await interaction.response.send_message(f"Shuffle is currently {'enabled' if current else 'disabled'}.")
+        return
+
+    if action == "on":
+        if current:
+            await interaction.response.send_message("Shuffle is already enabled.")
+            return
+
+        ok = vlc.toggle_shuffle() is not None
+        if ok and vlc.get_shuffle_state():
+            await interaction.response.send_message("Shuffle enabled.")
+        else:
+            await interaction.response.send_message("Could not enable shuffle.")
+        return
+
+    if action == "off":
+        if not current:
+            await interaction.response.send_message("Shuffle is already disabled.")
+            return
+
+        ok = vlc.toggle_shuffle() is not None
+        if ok and not vlc.get_shuffle_state():
+            await interaction.response.send_message("Shuffle disabled.")
+        else:
+            await interaction.response.send_message("Could not disable shuffle.")
+        return
+
+    if action != "toggle":
+        await interaction.response.send_message("Invalid shuffle action. Use status, toggle, on, or off.")
+        return
+
+    ok = vlc.toggle_shuffle() is not None
+    if not ok:
+        await interaction.response.send_message("Could not toggle shuffle.")
+        return
+
+    new_state = vlc.get_shuffle_state()
+    if new_state == current:
+        await interaction.response.send_message("Shuffle toggle command sent, but state did not change.")
+    else:
+        await interaction.response.send_message(
+            f"Shuffle {'enabled' if new_state else 'disabled'}.",
+        )
+
+
+def _human_size(num: int) -> str:
+    size = float(max(0, int(num)))
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
+        if size < 1024.0:
+            return f"{size:.2f} {unit}"
+        size /= 1024.0
+    return f"{size:.2f} PB"
+
+
+@playlist_group.command(name="list", description="Show playlist with interactive pagination")
+async def playlist_list(interaction: discord.Interaction):
+    await _defer_if_needed(interaction)
+    items = vlc.get_playlist()
+    leaves = items.findall('.//leaf') if items is not None else []
+    if not leaves:
+        await _reply(interaction, "Playlist is empty.")
+        return
+
+    view = PlaylistView(leaves, items_per_page=Config.ITEMS_PER_PAGE)
+    embed = view.build_embed()
+    size_bytes = watch_service.get_total_media_size() if watch_service else 0
+    footer = embed.footer.text or ""
+    embed.set_footer(text=f"{footer} | Media Library Size: {_human_size(size_bytes)}")
+    await _reply(interaction, embed=embed, view=view)
+
+
+@playlist_group.command(name="search", description="Search for items in playlist")
+@app_commands.describe(query="Search text")
+async def playlist_search(interaction: discord.Interaction, query: str):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    playlist_cog = bot.get_cog("PlaylistCommands")
+    if not playlist_cog or not hasattr(playlist_cog, '_search_items'):
+        await _reply(interaction, "Playlist search is unavailable right now.")
+        return
+
+    await _defer_if_needed(interaction)
+    results = playlist_cog._search_items(query)
+    embed = discord.Embed(
+        title="Search Results",
+        description=f"Search query: '{query}'",
+        color=discord.Color.blue(),
+    )
+
+    if not results:
+        embed.add_field(name="No Results", value="No matches found in the playlist", inline=False)
+        await _reply(interaction, embed=embed)
+        try:
+            reply = await interaction.original_response()
+        except Exception:
+            reply = None
+        await _log_no_results_search(interaction, "/playlist search", query, message=reply)
+        return
+
+    pages = playlist_cog._build_search_pages(results)
+    first_page = pages[0] if pages else []
+    embed.add_field(
+        name=f"Found {len(results)} matches • Page 1/{max(1, len(pages))}",
+        value="\n".join(first_page) if first_page else "No matches found in the playlist",
+        inline=False,
+    )
+    shown = len(first_page)
+    if shown:
+        embed.set_footer(text=f"Use /playback play-item to play an item • Showing 1-{shown} of {len(results)}")
+    else:
+        embed.set_footer(text="Use /playback play-item to play an item")
+
+    if len(pages) > 1:
+        view = SearchResultsView(query=query, pages=pages, total_matches=len(results))
+        await _reply(interaction, embed=embed, view=view)
+    else:
+        await _reply(interaction, embed=embed)
+
+
+@playlist_group.command(name="play-search", description="Search and play an item from the playlist")
+@app_commands.describe(query="Search text")
+async def playlist_play_search(interaction: discord.Interaction, query: str):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    playback_cog = bot.get_cog("PlaybackCommands")
+    if playback_cog:
+        ok, reason = playback_cog._playback_guard(interaction.user)
+        if not ok:
+            await interaction.response.send_message(reason)
+            return
+
+    playlist_cog = bot.get_cog("PlaylistCommands")
+    if not playlist_cog or not hasattr(playlist_cog, '_search_items'):
+        await _reply(interaction, "Playlist search is unavailable right now.", ephemeral=True)
+        return
+
+    await _defer_if_needed(interaction)
+    results = playlist_cog._search_items(query)
+    if not results:
+        await _reply(interaction, "No matches found in playlist.", ephemeral=True)
+        try:
+            reply = await interaction.original_response()
+        except Exception:
+            reply = None
+        await _log_no_results_search(interaction, "/playlist play-search", query, message=reply)
+        return
+
+    # Single match: check against its runtime. Multiple: the pick isn't known yet,
+    # so fall back to the fixed proximity window.
+    target = results[0][1] if len(results) == 1 else None
+    if playback_cog and not await _confirm_nearby_schedule_for_interaction(playback_cog, interaction, target):
+        return
+
+    if len(results) == 1:
+        playlist_num, item = results[0]
+        item_id = item.get('id')
+        if not item_id or not vlc.play_item(item_id):
+            await _reply(interaction, "Could not play the selected item.", ephemeral=True)
+            return
+        if playback_cog:
+            playback_cog._seat_playback_owner(interaction.user, item_id)
+        pretty = MediaUtils.clean_filename_for_display(item.get('name', ''), max_length=120)
+        await _reply(interaction, f"Loading item #{playlist_num}: {pretty}")
+        if playback_cog and hasattr(playback_cog, '_announce_now_playing'):
+            try:
+                await playback_cog._announce_now_playing('command', item, playlist_num)
+            except Exception as e:
+                logger.debug(f"Slash /playlist play-search announcement fallback: {e}")
+        return
+
+    # Multiple results: show a dropdown picker via PlaySearchView
+    view = playlist_cog.make_play_search_view(interaction.user.id, results)
+    embed = discord.Embed(
+        title="Play Search Results",
+        description=f"**{len(results)} matches** for *{query}* — pick an item to play.",
+        color=discord.Color.blurple(),
+    )
+    shown = results[:playlist_cog.SEARCH_PICKER_CAP]  # must match the dropdown's cap
+    preview_lines = []
+    for playlist_num, item in shown:
+        name = MediaUtils.clean_filename_for_display(item.get('name', ''), max_length=60)
+        preview_lines.append(f"`#{playlist_num}` {name}")
+    embed.add_field(
+        name=f"Top {len(shown)} results",
+        value="\n".join(preview_lines),
+        inline=False,
+    )
+    if len(results) > len(shown):
+        embed.set_footer(text=f"Showing top {len(shown)} of {len(results)} — refine your query for more")
+    else:
+        embed.set_footer(text="Select an item from the dropdown below")
+    await _reply(interaction, embed=embed, view=view)
+    view.message = await interaction.original_response()
+
+
+@queue_group.command(name="add-next", description="Queue a playlist item to play next")
+@app_commands.describe(number="1-based playlist item number")
+async def queue_add_next(interaction: discord.Interaction, number: app_commands.Range[int, 1, 99999]):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    playback_cog = bot.get_cog("PlaybackCommands")
+    if playback_cog:
+        ok, reason = playback_cog._playback_guard(interaction.user)
+        if not ok:
+            await interaction.response.send_message(reason, ephemeral=True)
+            return
+
+    await _defer_if_needed(interaction)
+    if playback_cog and not await _confirm_nearby_schedule_for_interaction(
+        playback_cog, interaction, playback_cog._playlist_leaf(number), await asyncio.to_thread(playback_cog._queue_next_starts_in)
+    ):
+        return
+    playlist = vlc.get_playlist()
+    if not playlist:
+        await _reply(interaction, "Could not access VLC playlist.")
+        return
+
+    items = playlist.findall('.//leaf')
+    if not items:
+        await _reply(interaction, "Playlist is empty.")
+        return
+
+    if number > len(items):
+        await _reply(interaction, f"Invalid playlist number. Playlist has {len(items)} item(s).")
+        return
+
+    item = items[number - 1]
+    item_id = item.get('id')
+    item_name = item.get('name', 'Unknown')
+    result = vlc.queue_item_next(item_id)
+    if not result.get("success"):
+        await _reply(interaction, f"Error queuing item: {result.get('error', 'Unknown error')}")
+        return
+
+    embed = discord.Embed(title="Item Queued", color=discord.Color.green())
+    embed.add_field(
+        name="Queued Item",
+        value=f"**{item_name}**\nPlaylist position: #{number}",
+        inline=False,
+    )
+    embed.add_field(
+        name="Queue Position",
+        value=f"#{result['queue_order']} of {result.get('total_queued', 1)} in queue",
+        inline=True,
+    )
+    await _reply(interaction, embed=embed)
+
+
+@queue_group.command(name="status", description="Show current queue status")
+async def queue_status(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    await _defer_if_needed(interaction)
+    queue_state = vlc.get_queue_status()
+    queued_items = queue_state.get("queued_items", {})
+    embed = discord.Embed(
+        title=f"Queue Status ({len(queued_items)} item{'s' if len(queued_items) != 1 else ''})" if queued_items else "Queue Status",
+        color=discord.Color.blue(),
+    )
+
+    if queued_items:
+        playlist = vlc.get_playlist()
+        playlist_map = {}
+        if playlist:
+            for idx, item in enumerate(playlist.findall('.//leaf'), 1):
+                item_id = item.get('id')
+                if item_id:
+                    playlist_map[item_id] = {
+                        'name': item.get('name', 'Unknown'),
+                        'position': idx,
+                    }
+
+        queue_lines = []
+        for item_id, info in queued_items.items():
+            if item_id in playlist_map:
+                name = playlist_map[item_id]['name']
+                pos = playlist_map[item_id]['position']
+                queue_lines.append(f"• **{name}** (playlist #{pos}, queue #{info['queue_order']})")
+            else:
+                name = info.get('item_name', 'Unknown')
+                queue_lines.append(f"• **{name}** (queue #{info['queue_order']})")
+
+        embed.add_field(
+            name="Active Queue Items",
+            value="\n".join(queue_lines[:5]) + ("\n..." if len(queue_lines) > 5 else ""),
+            inline=False,
+        )
+    else:
+        embed.add_field(name="Active Queue Items", value="No items currently queued", inline=False)
+
+    embed.add_field(name="Usage", value="Use /queue add-next to queue a playlist item", inline=False)
+    await _reply(interaction, embed=embed)
+
+
+@queue_group.command(name="clear", description="Clear all queue tracking")
+async def queue_clear(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    vlc.clear_queue_tracking()
+    embed = discord.Embed(
+        title="Queue Cleared",
+        description="All queue tracking has been cleared.",
+        color=discord.Color.orange(),
+    )
+    embed.add_field(
+        name="Note",
+        value="This clears tracking data only. Playlist item positions remain unchanged.",
+        inline=False,
+    )
+    await interaction.response.send_message(embed=embed)
+
+
+@queue_group.command(name="remove", description="Remove queued item by queue order or #playlist number")
+@app_commands.describe(ref="Queue order (e.g. 1) or playlist reference (e.g. #10)")
+async def queue_remove(interaction: discord.Interaction, ref: str):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    await _defer_if_needed(interaction)
+    try:
+        if ref.startswith('#'):
+            num = int(ref[1:])
+            result = vlc.remove_from_queue_by_playlist_number(num)
+        else:
+            num = int(ref)
+            result = vlc.remove_from_queue_by_order(num)
+    except ValueError:
+        await _reply(
+            interaction,
+            "Invalid reference. Use a number (queue order) or #<playlist number>.",
+        )
+        return
+
+    if not result.get('success'):
+        await _reply(
+            interaction,
+            result.get('error', 'Failed to remove from queue.'),
+        )
+        return
+
+    name = result.get('item_name', 'Unknown')
+    embed = discord.Embed(
+        title="Removed from Queue",
+        description=f"{name} has been removed from the queue.",
+        color=discord.Color.red(),
+    )
+    await _reply(interaction, embed=embed)
+
+
+@subtitles_group.command(name="list", description="List subtitle tracks")
+async def subtitles_list(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    tracks = vlc.get_subtitle_tracks()
+    if tracks is None:
+        await interaction.response.send_message("Could not retrieve subtitle tracks from VLC.", ephemeral=True)
+        return
+    if len(tracks) == 0:
+        await interaction.response.send_message("No subtitle tracks reported for current media.", ephemeral=True)
+        return
+
+    playback_cog = bot.get_cog("PlaybackCommands")
+    selected_stream_index = getattr(playback_cog, 'selected_subtitle_stream_index', None) if playback_cog else None
+    if selected_stream_index is not None:
+        for tr in tracks:
+            if tr.get('stream_index') == selected_stream_index:
+                tr['selected'] = True
+                break
+
+    lines = []
+    for i, tr in enumerate(tracks, start=1):
+        mark = "✅" if tr.get('selected') else "⚪"
+        ui_idx = tr.get('index') or i
+        name = tr.get('name') or f"Track {ui_idx}"
+        lines.append(f"{mark} **{ui_idx}.** {name}")
+
+    embed = discord.Embed(
+        title="Subtitle Tracks",
+        description="\n".join(lines[:20]) + ("\n..." if len(lines) > 20 else ""),
+        color=discord.Color.blue(),
+    )
+    selected_track = next((tr for tr in tracks if tr.get('selected')), None)
+    if selected_track:
+        cur_idx = selected_track.get('index') or selected_track.get('id')
+        cur_name = selected_track.get('name') or f"Track {cur_idx}"
+        embed.add_field(name="Current", value=f"✅ {cur_name} ({cur_idx})", inline=True)
+    else:
+        embed.add_field(name="Current", value="⚪ Off", inline=True)
+    embed.add_field(name="Usage", value="Use /subtitles set <number|off>", inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@subtitles_group.command(name="set", description="Select subtitle track by position, or off")
+@app_commands.describe(track="Subtitle position from /subtitles list, or 'off'")
+async def subtitles_set(interaction: discord.Interaction, track: str):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    tracks = vlc.get_subtitle_tracks() or []
+    playback_cog = bot.get_cog("PlaybackCommands")
+
+    if track.lower() in {"off", "none", "disable", "disabled"}:
+        ok = vlc.set_subtitle_track(-1) or vlc.set_subtitle_track(0)
+        if not ok:
+            await interaction.response.send_message("Failed to disable subtitles.", ephemeral=True)
+            return
+        if playback_cog:
+            setattr(playback_cog, 'selected_subtitle_stream_index', None)
+        await interaction.response.send_message("Subtitles disabled.", ephemeral=True)
+        return
+
+    try:
+        pos_index = int(track)
+    except Exception:
+        await interaction.response.send_message("Please provide a number or 'off'.", ephemeral=True)
+        return
+
+    if pos_index < 1 or pos_index > len(tracks):
+        await interaction.response.send_message(
+            f"Position out of range. There are {len(tracks)} subtitle tracks.",
+            ephemeral=True,
+        )
+        return
+
+    tid = None
+    stream_idx = None
+    selected_track = None
+    for tr in tracks:
+        if tr.get('index') == pos_index:
+            tid = tr.get('id')
+            stream_idx = tr.get('stream_index')
+            selected_track = tr
+            break
+    if tid is None:
+        selected_track = tracks[pos_index - 1]
+        tid = selected_track.get('id')
+        stream_idx = selected_track.get('stream_index')
+
+    ok = False
+    if stream_idx is not None:
+        ok = vlc.set_subtitle_track(stream_idx)
+    if not ok and tid is not None:
+        ok = vlc.set_subtitle_track(tid)
+    if not ok:
+        ok = vlc.set_subtitle_track(pos_index - 1) or vlc.set_subtitle_track(pos_index)
+
+    if not ok:
+        await interaction.response.send_message("Failed to set subtitle track.", ephemeral=True)
+        return
+
+    if playback_cog:
+        setattr(
+            playback_cog,
+            'selected_subtitle_stream_index',
+            stream_idx if stream_idx is not None else tid,
+        )
+
+    fallback_name = selected_track.get('name') if selected_track else 'Unknown'
+    fallback_pos = selected_track.get('index') if selected_track else pos_index
+    await interaction.response.send_message(
+        f"Selected subtitle {fallback_pos}: {fallback_name}",
+        ephemeral=True,
+    )
+
+
+@subtitles_group.command(name="next", description="Switch to next subtitle track")
+async def subtitles_next(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    if vlc.subtitle_next():
+        await interaction.response.send_message("Switched to next subtitle track.", ephemeral=True)
+    else:
+        await interaction.response.send_message("Could not cycle subtitle track.", ephemeral=True)
+
+
+@subtitles_group.command(name="previous", description="Switch to previous subtitle track")
+async def subtitles_previous(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    if vlc.subtitle_prev():
+        await interaction.response.send_message("Switched to previous subtitle track.", ephemeral=True)
+    else:
+        await interaction.response.send_message("Could not cycle subtitle track.", ephemeral=True)
+
+
+@audio_group.command(name="list", description="List audio tracks")
+async def audio_list(interaction: discord.Interaction):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    tracks = vlc.get_audio_tracks()
+    if tracks is None:
+        await interaction.response.send_message("Could not retrieve audio tracks from VLC.", ephemeral=True)
+        return
+    if len(tracks) == 0:
+        await interaction.response.send_message("No audio tracks reported for current media.", ephemeral=True)
+        return
+
+    playback_cog = bot.get_cog("PlaybackCommands")
+    selected_stream_index = getattr(playback_cog, 'selected_audio_stream_index', None) if playback_cog else None
+    if selected_stream_index is not None:
+        for tr in tracks:
+            if tr.get('stream_index') == selected_stream_index:
+                tr['selected'] = True
+                break
+
+    lines = []
+    for i, tr in enumerate(tracks, start=1):
+        mark = "✅" if tr.get('selected') else "⚪"
+        ui_idx = tr.get('index') or i
+        name = tr.get('name') or f"Track {ui_idx}"
+        lines.append(f"{mark} **{ui_idx}.** {name}")
+
+    embed = discord.Embed(
+        title="Audio Tracks",
+        description="\n".join(lines[:20]) + ("\n..." if len(lines) > 20 else ""),
+        color=discord.Color.blue(),
+    )
+    selected_track = next((tr for tr in tracks if tr.get('selected')), None)
+    if selected_track:
+        cur_idx = selected_track.get('index') or selected_track.get('id')
+        cur_name = selected_track.get('name') or f"Track {cur_idx}"
+        embed.add_field(name="Current", value=f"✅ {cur_name} ({cur_idx})", inline=True)
+    else:
+        embed.add_field(name="Current", value="⚪ Unknown", inline=True)
+    embed.add_field(name="Usage", value="Use /audio set <number>", inline=False)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@audio_group.command(name="set", description="Select audio track by position")
+@app_commands.describe(track="Audio position from /audio list")
+async def audio_set(interaction: discord.Interaction, track: app_commands.Range[int, 1, 100]):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    tracks = vlc.get_audio_tracks() or []
+    if not tracks:
+        await interaction.response.send_message("No audio tracks found.", ephemeral=True)
+        return
+
+    pos_index = int(track)
+    if pos_index > len(tracks):
+        await interaction.response.send_message(
+            f"Position out of range. There are {len(tracks)} audio tracks.",
+            ephemeral=True,
+        )
+        return
+
+    tid = None
+    stream_idx = None
+    selected_track = None
+    for tr in tracks:
+        if tr.get('index') == pos_index:
+            tid = tr.get('id')
+            stream_idx = tr.get('stream_index')
+            selected_track = tr
+            break
+    if tid is None:
+        selected_track = tracks[pos_index - 1]
+        tid = selected_track.get('id')
+        stream_idx = selected_track.get('stream_index')
+
+    ok = False
+    if stream_idx is not None:
+        ok = vlc.set_audio_track(stream_idx)
+    if not ok and tid is not None:
+        ok = vlc.set_audio_track(tid)
+    if not ok:
+        ok = vlc.set_audio_track(pos_index - 1) or vlc.set_audio_track(pos_index)
+
+    if not ok:
+        await interaction.response.send_message("Failed to set audio track.", ephemeral=True)
+        return
+
+    playback_cog = bot.get_cog("PlaybackCommands")
+    if playback_cog:
+        setattr(
+            playback_cog,
+            'selected_audio_stream_index',
+            stream_idx if stream_idx is not None else tid,
+        )
+
+    fallback_name = selected_track.get('name') if selected_track else 'Unknown'
+    fallback_pos = selected_track.get('index') if selected_track else pos_index
+    await interaction.response.send_message(
+        f"Selected audio {fallback_pos}: {fallback_name}",
+        ephemeral=True,
+    )
+
+
+@schedule_group.command(name="add", description="Schedule playlist item playback")
+@app_commands.describe(number="Playlist item number", date="YYYY-MM-DD", time_24h="HH:MM (24h)")
+async def schedule_add(
+    interaction: discord.Interaction,
+    number: app_commands.Range[int, 1, 99999],
+    date: str,
+    time_24h: str,
+):
+    scheduler_cog = bot.get_cog("Scheduler")
+    if not scheduler_cog:
+        await interaction.response.send_message("Scheduler is unavailable.")
+        return
+
+    try:
+        dt = datetime.strptime(f"{date} {time_24h}", "%Y-%m-%d %H:%M").replace(tzinfo=PH_TZ)
+    except Exception:
+        await interaction.response.send_message("Invalid date/time format. Use YYYY-MM-DD and HH:MM.")
+        return
+
+    now = datetime.now(PH_TZ)
+    if dt <= now:
+        await interaction.response.send_message("Scheduled time must be in the future (PH time).")
+        return
+
+    for s in scheduler_cog.scheduled:
+        if s["number"] == number and abs((s["dt"] - dt).total_seconds()) < 60:
+            await interaction.response.send_message(
+                f"Movie #{number} is already scheduled at {format_schedule_time(s['dt'])}.",
+            )
+            return
+
+    playlist = vlc.get_playlist()
+    items = playlist.findall('.//leaf') if playlist is not None else []
+    idx = number - 1
+    if not (0 <= idx < len(items)):
+        await interaction.response.send_message(
+            f"Movie number {number} is out of bounds. Playlist has {len(items)} item(s).",
+        )
+        return
+
+    filename = items[idx].get('name', 'Unknown')
+    title = MediaUtils.clean_movie_title(filename)
+    item_uri = items[idx].get('uri')
+    duration = MediaUtils.get_media_duration(items[idx])
+    entry = {
+        "number": number,
+        "title": title,
+        "uri": item_uri,
+        "dt": dt,
+        "user": interaction.user.id,
+        "channel": interaction.channel_id,
+        "duration": duration,
+    }
+    scheduler_cog.scheduled.append(entry)
+    scheduler_cog._save_schedule_backup()
+
+    if duration == 'Loading...':
+        dur_str = 'Loading...'
+    elif duration:
+        dur_str = MediaUtils.format_time(duration)
+    else:
+        dur_str = 'Unknown'
+
+    embed = discord.Embed(title="Movie Scheduled", color=discord.Color.green())
+    embed.add_field(name="Number", value=f"#{number}", inline=True)
+    embed.add_field(name="Title", value=title, inline=True)
+    embed.add_field(name="Scheduled For", value=format_schedule_time(dt), inline=False)
+    embed.add_field(name="Duration", value=dur_str, inline=True)
+    embed.add_field(name="Scheduled By", value=interaction.user.mention, inline=True)
+    await interaction.response.send_message(embed=embed)
+
+
+@schedule_group.command(name="list", description="List upcoming scheduled movies")
+async def schedule_list(interaction: discord.Interaction):
+    scheduler_cog = bot.get_cog("Scheduler")
+    if not scheduler_cog:
+        await interaction.response.send_message("Scheduler is unavailable.")
+        return
+
+    if not scheduler_cog.scheduled:
+        await interaction.response.send_message("No movies scheduled.")
+        return
+
+    embed = discord.Embed(title="Upcoming Scheduled Movies", color=discord.Color.purple())
+    for s in sorted(scheduler_cog.scheduled, key=lambda x: x["dt"]):
+        dt_str = format_schedule_time(s["dt"])
+        duration = s.get("duration")
+        if duration == 'Loading...' or duration == 0:
+            dur_str = 'Loading...'
+        elif duration:
+            dur_str = MediaUtils.format_time(duration)
+        else:
+            dur_str = "Unknown"
+        scheduled_by = f"<@{s['user']}>" if s.get('user') else "Unknown"
+        embed.add_field(
+            name=f"#{s['number']} — {s.get('title', 'Unknown')}",
+            value=f"Scheduled for {dt_str}\nDuration: {dur_str}\nScheduled by: {scheduled_by}",
+            inline=False,
+        )
+
+    await interaction.response.send_message(embed=embed)
+
+
+@schedule_group.command(name="remove", description="Remove all schedules for a playlist number")
+@app_commands.describe(number="Playlist item number")
+async def schedule_remove(interaction: discord.Interaction, number: app_commands.Range[int, 1, 99999]):
+    scheduler_cog = bot.get_cog("Scheduler")
+    if not scheduler_cog:
+        await interaction.response.send_message("Scheduler is unavailable.")
+        return
+
+    before = len(scheduler_cog.scheduled)
+    scheduler_cog.scheduled = [s for s in scheduler_cog.scheduled if s["number"] != number]
+    scheduler_cog._save_schedule_backup()
+    after = len(scheduler_cog.scheduled)
+
+    if before == after:
+        await interaction.response.send_message(f"No schedules found for movie #{number}.")
+    else:
+        await interaction.response.send_message(f"Removed all schedules for movie #{number}.")
+
+
+@watch_group.command(name="add", description="Add a watch folder")
+@app_commands.describe(path="Absolute or relative directory path")
+async def watch_add(interaction: discord.Interaction, path: str):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("This command is owner-only.", ephemeral=True)
+        return
+
+    raw = (path or '').strip()
+    norm = os.path.normpath(os.path.abspath(os.path.expanduser(raw)))
+    if not os.path.isdir(norm):
+        await interaction.response.send_message(f"Path not found or not a directory: {raw}", ephemeral=True)
+        return
+
+    current_list = get_watch_folders_from_env()
+    if norm in current_list:
+        await interaction.response.send_message(f"Folder already in watch list: {norm}", ephemeral=True)
+        return
+
+    updated = current_list + [norm]
+    if not _write_env_watch_folders(updated):
+        await interaction.response.send_message("Failed to update watch folders configuration.", ephemeral=True)
+        return
+
+    embed = discord.Embed(
+        title="Watch Folder Added",
+        description=(
+            f"Added: {norm}\n\n"
+            f"Total folders: {len(updated)}\n"
+            "Changes take effect immediately; new files are discovered on the next scan."
+        ),
+        color=discord.Color.green(),
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@watch_group.command(name="remove", description="Pick a watch folder to remove")
+@app_commands.describe(purge_playlist="Also remove the folder's files from the VLC playlist (default: yes)")
+async def watch_remove(interaction: discord.Interaction, purge_playlist: bool = True):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("This command is owner-only.", ephemeral=True)
+        return
+
+    embed, view = build_watch_remove_picker(interaction.user.id, watch_service, vlc, purge_playlist)
+    if view is None:
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+    else:
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
+@admin_group.command(name="list-guilds", description="Owner only: list joined guilds")
+async def admin_list_guilds(interaction: discord.Interaction):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("This command is owner-only.", ephemeral=True)
+        return
+
+    guilds = sorted(list(bot.guilds), key=lambda g: (g.name or "").lower())
+    if not guilds:
+        await interaction.response.send_message("I am not currently in any servers.", ephemeral=True)
+        return
+
+    lines = [f"{i}. {g.name} ({g.id})" for i, g in enumerate(guilds, start=1)]
+    max_chars = 1900
+    chunks = []
+    current = ""
+    for line in lines:
+        candidate = f"{current}\n{line}" if current else line
+        if len(candidate) > max_chars:
+            chunks.append(current)
+            current = line
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+
+    first = True
+    for chunk in chunks:
+        if first:
+            await interaction.response.send_message(
+                f"I am in **{len(guilds)}** server(s):\n{chunk}",
+                ephemeral=True,
+            )
+            first = False
+        else:
+            await interaction.followup.send(f"(continued)\n{chunk}", ephemeral=True)
+
+
+@admin_group.command(name="leave-server", description="Owner only: leave current or specified guild")
+@app_commands.describe(guild_id="Guild ID (omit to leave current guild)")
+async def admin_leave_server(interaction: discord.Interaction, guild_id: str | None = None):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("This command is owner-only.", ephemeral=True)
+        return
+
+    target_guild = None
+    if guild_id:
+        if not guild_id.isdigit():
+            await interaction.response.send_message("Invalid guild ID.", ephemeral=True)
+            return
+        target_guild = bot.get_guild(int(guild_id))
+        if target_guild is None:
+            await interaction.response.send_message(f"I am not in a server with ID {guild_id}.", ephemeral=True)
+            return
+    else:
+        if interaction.guild is None:
+            await interaction.response.send_message("When used in DMs, provide a guild ID.", ephemeral=True)
+            return
+        target_guild = interaction.guild
+
+    guild_name = target_guild.name
+    guild_id_text = str(target_guild.id)
+    try:
+        if target_guild.system_channel and target_guild.system_channel.permissions_for(target_guild.me).send_messages:
+            await target_guild.system_channel.send("Leaving this server by owner request.")
+    except Exception:
+        pass
+
+    await interaction.response.send_message(
+        f"Leaving server: **{guild_name}** ({guild_id_text}).",
+        ephemeral=True,
+    )
+    logger.warning(
+        "admin leave-server invoked by %s (%s) for guild %s (%s)",
+        interaction.user,
+        interaction.user.id,
+        guild_name,
+        guild_id_text,
+    )
+    await target_guild.leave()
+
+
+@admin_group.command(name="cleanup-playlist", description="Owner only: remove missing files from VLC playlist")
+async def admin_cleanup_playlist(interaction: discord.Interaction):
+    await _run_playlist_cleanup(interaction, "/admin cleanup-playlist")
+
+
+@admin_group.command(name="reconnect-voice", description="Owner only: force a voice channel reconnect attempt")
+async def admin_reconnect_voice(interaction: discord.Interaction):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("This command is owner-only.", ephemeral=True)
+        return
+
+    if not getattr(Config, 'ENABLE_VOICE_JOIN', False):
+        await interaction.response.send_message("Voice join is disabled (`ENABLE_VOICE_JOIN=false`).", ephemeral=True)
+        return
+
+    ch = await _resolve_voice_channel()
+    if not ch:
+        await interaction.response.send_message(
+            "Could not resolve the configured voice channel (check `VOICE_JOIN_CHANNEL_ID` and permissions).",
+            ephemeral=True,
+        )
+        return
+
+    if _is_connected_to_channel(ch.guild, ch.id):
+        await interaction.response.send_message(f"Already connected to **{ch.name}** — nothing to do.", ephemeral=True)
+        return
+
+    await interaction.response.defer(ephemeral=True)
+    logger.warning(
+        "admin reconnect-voice invoked by %s (%s) for channel %s (%s)",
+        interaction.user, interaction.user.id, ch.name, ch.id,
+    )
+    try:
+        joined = await join_voice_channel()
+    except Exception as e:
+        logger.error(f"admin reconnect-voice error: {e}")
+        await interaction.followup.send(f"Reconnect attempt failed: {type(e).__name__}: {e}", ephemeral=True)
+        return
+
+    if joined and _is_connected_to_channel(ch.guild, ch.id):
+        # Let the background guard resume its normal cadence instead of
+        # immediately re-flagging this manual join as a failure.
+        global _reconnect_attempts
+        _reconnect_attempts = 0
+        await interaction.followup.send(f"Reconnected to **{ch.name}**.", ephemeral=True)
+    else:
+        await interaction.followup.send(f"Reconnect attempt did not succeed — still not in **{ch.name}**.", ephemeral=True)
+
+
+def _resolve_guild_channel_name(guild: discord.Guild, channel_id: int) -> str:
+    """Resolve a channel ID to its guild channel name, falling back to the raw ID."""
+    if not channel_id:
+        return "Not configured"
+    channel = guild.get_channel(channel_id)
+    return f"#{channel.name}" if channel else f"ID {channel_id}"
+
+
+def _resolve_guild_role_name(guild: discord.Guild, role_id: int) -> str:
+    """Resolve a role ID to its guild role name, falling back to the raw ID."""
+    if not role_id:
+        return "Not configured"
+    role = guild.get_role(role_id)
+    return role.name if role else f"ID {role_id}"
+
+
+def _format_allowed_roles_resolved(guild: discord.Guild) -> str:
+    """Format ALLOWED_ROLES for display, showing only roles that exist in this guild.
+
+    Config entries may be role IDs or role names; both are resolved against the
+    current guild so the owner sees readable @names. Any configured role that
+    isn't present in this guild (deleted, renamed, or from another server) is
+    omitted rather than shown as a raw ID.
+    """
+    names = []
+    for role in Config.ALLOWED_ROLES:
+        resolved = (
+            guild.get_role(role)
+            if isinstance(role, int)
+            else next((r for r in guild.roles if r.name == role), None)
+        )
+        if resolved is not None:
+            names.append(f"@{resolved.name}")
+    return ", ".join(names) or "None in this server"
+
+
+def _clip_field_lines(lines: list, limit: int = 1000) -> str:
+    """Join display lines into an embed field value kept under Discord's 1024-char
+    cap, preserving whole lines and noting how many were dropped."""
+    full = "\n".join(lines)
+    if len(full) <= limit:
+        return full
+
+    kept: list[str] = []
+    used = 0
+    for line in lines:
+        sep = 1 if kept else 0  # '\n' separator
+        if used + sep + len(line) > limit:
+            break
+        kept.append(line)
+        used += sep + len(line)
+    dropped = len(lines) - len(kept)
+
+    if not kept:
+        # Even the first line can't fit whole: show its head plus a drop note.
+        remaining = len(lines) - 1
+        suffix = f"\n… and {remaining} more" if remaining else "…"
+        head = max(1, limit - len(suffix))
+        return lines[0][: head - 1] + "…" + suffix
+
+    text = "\n".join(kept)
+    if dropped:
+        suffix = f"\n… and {dropped} more"
+        # Reclaim space from the last kept line if the suffix would overflow.
+        if len(text) + len(suffix) > limit:
+            text = text[: max(1, limit - len(suffix)) - 1] + "…"
+        text += suffix
+    return text
+
+
+def _build_admin_config_overview_embed(guild: discord.Guild) -> discord.Embed:
+    """Build a human-readable config overview embed for the given guild.
+
+    Resolves channel/role IDs to names and deliberately omits secrets and
+    voice-chat timing/number tuning knobs.
+    """
+    cfg = Config
+
+    embed = discord.Embed(
+        title="Configuration Overview",
+        description=f"**Server:** {guild.name} (`{guild.id}`)",
+        color=discord.Color.blue(),
+    )
+    embed.set_footer(text="Owner-only view · secrets excluded")
+
+    mode_lines = [
+        f"Prefix commands: **{'on' if cfg.ENABLE_PREFIX_COMMANDS else 'off'}** (prefix `{cfg.DISCORD_COMMAND_PREFIX}`)",
+        f"Slash commands: **{'on' if cfg.ENABLE_SLASH_COMMANDS else 'off'}**",
+    ]
+    if cfg.SLASH_COMMAND_GUILD_ID:
+        sync_guild = bot.get_guild(cfg.SLASH_COMMAND_GUILD_ID)
+        mode_lines.append(
+            f"Slash sync: **dev guild `{sync_guild.name if sync_guild else cfg.SLASH_COMMAND_GUILD_ID}`** only"
+        )
+    else:
+        mode_lines.append("Slash sync: **global**")
+    embed.add_field(name="Discord & Command Mode", value=_clip_field_lines(mode_lines), inline=False)
+
+    role_lines = [f"Allowed roles: **{_format_allowed_roles_resolved(guild)}**"]
+    if cfg.WATCH_ANNOUNCE_ROLE_ID:
+        role_lines.append(f"Announce role: **{_resolve_guild_role_name(guild, cfg.WATCH_ANNOUNCE_ROLE_ID)}**")
+    embed.add_field(name="Roles & Permissions", value=_clip_field_lines(role_lines), inline=False)
+
+    announce_ids = cfg.get_announce_channel_ids()
+    announce_display = (
+        ", ".join(_resolve_guild_channel_name(guild, cid) for cid in announce_ids)
+        if announce_ids
+        else "Not configured"
+    )
+    channel_lines = [
+        f"Command channel: **{', '.join(_resolve_guild_channel_name(guild, cid) for cid in cfg.COMMAND_CHANNEL_IDS) or 'Not configured'}**",
+        f"Search log channel: **{_resolve_guild_channel_name(guild, cfg.SEARCH_LOG_CHANNEL_ID)}**",
+        f"Voice channel: **{_resolve_guild_channel_name(guild, cfg.VOICE_JOIN_CHANNEL_ID)}**",
+        f"Voice room rules (play presence/hijack guard): **{'on' if cfg.ENABLE_VOICE_ROOM_RULES else 'off'}**",
+        f"Request channel: **{_resolve_guild_channel_name(guild, cfg.REQUEST_CHANNEL_ID)}**",
+        f"Request announce: **{_resolve_guild_channel_name(guild, cfg.REQUEST_ANNOUNCE_CHANNEL_ID)}**",
+        f"Watch announce: **{announce_display}**",
+    ]
+    embed.add_field(name="Channels", value=_clip_field_lines(channel_lines), inline=False)
+
+    radarr_names = [inst["display_name"] for inst in cfg.get_radarr_instances()]
+    overseerr = "Not configured"
+    if cfg.OVERSEERR_URL and cfg.OVERSEERR_API_KEY:
+        overseerr = cfg.OVERSEERR_URL
+    service_lines = [
+        f"VLC: **{cfg.VLC_HOST}:{cfg.VLC_PORT}**",
+        f"TMDB: **{'Configured' if cfg.TMDB_API_KEY else 'Not configured'}**",
+        f"Radarr: **{', '.join(radarr_names) if radarr_names else 'Not configured'}**",
+        f"Overseerr: **{overseerr}**",
+    ]
+    embed.add_field(name="Media & Services", value=_clip_field_lines(service_lines), inline=False)
+
+    lib_lines = [
+        f"Watch folders: **{', '.join(cfg.WATCH_FOLDERS) if cfg.WATCH_FOLDERS else 'Disabled'}**",
+        f"Queue backup: **{cfg.QUEUE_BACKUP_FILE}**",
+        f"Playlist autosave: **{cfg.PLAYLIST_AUTOSAVE_FILE or 'Disabled'}**",
+        f"Items per page: **{cfg.ITEMS_PER_PAGE}**",
+    ]
+    embed.add_field(name="Library & Watch", value=_clip_field_lines(lib_lines), inline=False)
+
+    return embed
+
+
+@app_commands.default_permissions(administrator=True)
+@admin_group.command(name="show-config", description="Owner only: show a human-readable config overview for this server")
+async def admin_show_config(interaction: discord.Interaction):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("This command is owner-only.", ephemeral=True)
+        return
+    if interaction.guild is None:
+        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        return
+    embed = _build_admin_config_overview_embed(interaction.guild)
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+async def _start_request(interaction: discord.Interaction, title: str, media_type: str) -> None:
+    if not await _check_request_channel_for_interaction(interaction):
+        return
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    await interaction.response.defer(thinking=True)
+
+    search = tmdb_service.search_tv if media_type == "tv" else tmdb_service.search_movies
+    candidates = search(title)
+    if not candidates:
+        reply = await interaction.followup.send(f"No results found for '{title}'.")
+        await _log_no_results_search(interaction, f"/request {media_type}", title, message=reply)
+        return
+
+    view = MovieRequestSelectView(candidates, interaction.user, media_type)
+    embed = discord.Embed(
+        title=f"Which {_request_noun(media_type)} did you mean?",
+        description="\n".join(
+            f"**{c['title']}**" + (f" ({c['year']})" if c.get('year') else "") for c in candidates
+        ),
+        color=discord.Color.blue(),
+    )
+    message = await interaction.followup.send(embed=embed, view=view)
+    view.message = message
+
+
+@request_group.command(name="movie", description="Request a movie via Overseerr/Jellyseerr")
+@app_commands.describe(title="Movie title to search for")
+async def request_movie(interaction: discord.Interaction, title: str):
+    await _start_request(interaction, title, "movie")
+
+
+@request_group.command(name="tv", description="Request all seasons of a TV series via Overseerr/Jellyseerr")
+@app_commands.describe(title="TV series title to search for")
+async def request_tv(interaction: discord.Interaction, title: str):
+    await _start_request(interaction, title, "tv")
+
+
+@request_group.command(name="status", description="Check the status of your requests")
+async def request_status(interaction: discord.Interaction):
+    if not await _check_request_channel_for_interaction(interaction):
+        return
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    await interaction.response.defer(thinking=True, ephemeral=True)
+
+    records = movie_request_tracker.get_requests_for_user(interaction.user.id)
+    if not records:
+        await interaction.followup.send("You haven't requested anything yet.")
+        return
+
+    lines = []
+    for record in records:
+        status = record.get("status", "pending")
+        if status in ("available", "declined", "failed", "removed"):
+            label = STATUS_LABELS[5] if status == "available" else status.title()
+        else:
+            request_id = record.get("overseerr_request_id")
+            result = await overseerr_service.get_request_status(request_id) if request_id is not None else {"success": False}
+            if result.get("success") and result.get("found", True):
+                request_status = result.get("request_status")
+                if request_status == REQUEST_STATUS_DECLINED:
+                    label = "Declined"
+                elif request_status == REQUEST_STATUS_FAILED:
+                    label = "Failed"
+                else:
+                    label = STATUS_LABELS.get(result.get("media_status"), "Unknown")
+            elif result.get("success") and not result.get("found", True):
+                label = "Removed"
+            else:
+                # Live check failed (e.g. Seerr temporarily unreachable) — fall back
+                # to the last known local status rather than showing an error.
+                label = status.title()
+        year_text = f" ({record['year']})" if record.get('year') else ""
+        tv_tag = "📺 " if record.get("media_type") == "tv" else ""
+        lines.append(f"{tv_tag}**{record['title']}**{year_text} — {label}")
+
+    embed = discord.Embed(
+        title="Your Requests",
+        description="\n".join(lines),
+        color=discord.Color.blue(),
+    )
+    await interaction.followup.send(embed=embed)
+
+
+@request_group.command(name="clear", description="Remove your declined/failed/removed requests from tracking")
+async def request_clear(interaction: discord.Interaction):
+    if not await _check_request_channel_for_interaction(interaction):
+        return
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    removed = movie_request_tracker.clear_terminal_for_user(interaction.user.id)
+    if removed:
+        await interaction.followup.send(f"Cleared {removed} declined/failed/removed request{'s' if removed != 1 else ''} from your history.")
+    else:
+        await interaction.followup.send("Nothing to clear — you have no declined/failed/removed requests.")
+
+
+_register_app_command_groups()
 
 def main():
     """Main entry point for the bot"""
