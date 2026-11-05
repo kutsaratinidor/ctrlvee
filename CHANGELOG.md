@@ -1,3 +1,8 @@
+## 1.19.1 - 2026-11-05
+
+### Fixed
+- **`/request tv` showed an error for series you already have**: Requesting a series whose seasons were all in the library or already requested showed `❌ Request failed: No seasons available to request (HTTP 202)`. It now shows `ℹ️ Nothing new to request` and says every season is already available or requested.
+
 ## 1.19.0 - 2026-11-05
 
 ### Added

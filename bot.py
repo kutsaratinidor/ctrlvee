@@ -2186,7 +2186,8 @@ class MovieRequestSelect(discord.ui.Select):
             await interaction.edit_original_response(embed=confirmed_embed)
         else:
             failed_embed = _build_movie_request_embed(
-                candidate, title_prefix="❌ Request failed: ",
+                candidate,
+                title_prefix="ℹ️ Nothing new to request: " if result.get("nothing_to_request") else "❌ Request failed: ",
                 description=result.get("error", "Unknown error"),
             )
             await interaction.edit_original_response(embed=failed_embed)

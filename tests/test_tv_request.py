@@ -37,6 +37,15 @@ def main():
     with mock.patch.object(Config, "OVERSEERR_SONARR_SERVER_ID", None):
         assert "serverId" not in _payload("tv")
 
+    # Every season taken (HTTP 202): a plain answer, not a failure with a status code
+    service = svc.OverseerrService("http://seerr", "key")
+    response = mock.Mock(status_code=202)
+    response.json.return_value = {"message": "No seasons available to request"}
+    with mock.patch.object(svc.requests, "post", return_value=response):
+        result = asyncio.run(service.request_media(42, "tv"))
+    assert result["success"] is False and result["nothing_to_request"] is True
+    assert "HTTP" not in result["error"]
+
     with tempfile.TemporaryDirectory() as tmp:
         tracker = MovieRequestTracker(None, store_file=os.path.join(tmp, "r.json"))
         # Old records have no media_type and count as movies

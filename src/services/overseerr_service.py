@@ -107,6 +107,14 @@ class OverseerrService:
                     "request_id": data.get("id"),
                     "media_id": (data.get("media") or {}).get("id"),
                 }
+            if response.status_code == 202:
+                # Seerr's "No seasons available to request": every season is already
+                # in the library or requested, so there's nothing wrong to report.
+                return {
+                    "success": False,
+                    "nothing_to_request": True,
+                    "error": "Every season is already available or requested on Overseerr.",
+                }
             self.logger.warning(f"Overseerr HTTP {response.status_code}: {response.text[:500]}")
             try:
                 err = response.json().get("message")
