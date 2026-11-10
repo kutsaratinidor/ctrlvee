@@ -1086,6 +1086,8 @@ class PlaybackCommands(commands.Cog):
                 status = self.vlc.get_status()
                 if status:
                     current_state = status.find('state').text
+                    if current_state == 'playing':
+                        self.vlc.queue_held = False  # any resume (play, next, VLC UI) releases a stop's hold on the queue
                     # If VLC is stopped, clear the bot's presence (throttled)
                     # BUT: do not clear it if we are still waiting for the initial scan to complete
                     try:
@@ -1119,42 +1121,12 @@ class PlaybackCommands(commands.Cog):
                         
                         # Handle queue transitions when track changes OR when state changes to stopped/paused
                         if (position_changed and current_item is not None) or (state_changed and current_state in ['stopped', 'paused']):
-                            current_item_id = current_item.get('id') if current_item else None
-                            
-                            # Priority 1: Handle position changes (track transitions)
-                            if position_changed and current_item_id:
-                                # Check if there's a queue and this is a natural track progression
-                                next_queued = self.vlc.get_next_queued_item()
-                                if next_queued:
-                                    # There's a queued item - check if the current track is NOT the queued item
-                                    if current_item_id != next_queued['item_id']:
-                                        if self._check_queue_auto_play_cooldown():
-                                            logger.info(f"Track changed to {current_item_id} but we have queued item {next_queued['item_id']} - interrupting to play queued item")
-                                            try:
-                                                play_result = self.vlc.play_next_queued_item()
-                                                logger.info(f"Auto-play result: {play_result}")
-                                                
-                                                if play_result.get("success"):
-                                                    logger.info(f"Auto-played next queued item: {play_result.get('item_name', 'Unknown')}")
-                                                    
-                                                    # Optionally notify in Discord if notification channel is set
-                                                    channel_id = getattr(Config, 'WATCH_ANNOUNCE_CHANNEL_ID', 0)
-                                                    if channel_id:
-                                                        try:
-                                                            channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
-                                                            if channel:
-                                                                await channel.send(f"Auto-playing next queued item: **{play_result.get('item_name', 'Unknown')}**")
-                                                        except Exception as e:
-                                                            logger.error(f"Failed to send auto-play notification: {e}")
-                                                        
-                                                else:
-                                                    logger.warning(f"Auto-play failed: {play_result.get('error', 'Unknown error')}")
-                                            except Exception as e:
-                                                logger.error(f"Error auto-playing next queued item: {e}")
-                            
+                            # Note: an XML <leaf/> has no children, so it's falsy; always compare with None
+                            current_item_id = current_item.get('id') if current_item is not None else None
+
                             # Priority 2: For state changes to stopped OR paused, check if we should auto-play next queued item
                             # (movies often go to paused state when they end, not stopped)
-                            elif state_changed and current_state in ['stopped', 'paused'] and self.vlc.get_next_queued_item():
+                            if not (position_changed and current_item_id) and state_changed and current_state in ['stopped', 'paused'] and not self.vlc.queue_held and self.vlc.get_next_queued_item():
                                 if self._check_queue_auto_play_cooldown():
                                     try:
                                         logger.info(f"Track {current_state} - checking for next queued item to auto-play")
@@ -1216,6 +1188,15 @@ class PlaybackCommands(commands.Cog):
                                     # Log any queue transitions
                                     if queue_result.get("transitions"):
                                         for transition in queue_result["transitions"]:
+                                            if transition["action"] == "auto_play_next_queued":
+                                                channel_id = getattr(Config, 'WATCH_ANNOUNCE_CHANNEL_ID', 0)
+                                                if channel_id:
+                                                    try:
+                                                        channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
+                                                        if channel:
+                                                            await channel.send(f"Auto-playing next queued item: **{transition['item_name']}**")
+                                                    except Exception as e:
+                                                        logger.error(f"Failed to send auto-play notification: {e}")
                                             if transition["action"] == "shuffle_restored":
                                                 logger.info(f"Queue system restored shuffle after item {transition['item_id']} finished")
                                                 
@@ -1340,8 +1321,8 @@ class PlaybackCommands(commands.Cog):
                     # Enhanced periodic check: If we have queued items, ensure they get played
                     next_queued = self.vlc.get_next_queued_item()
                     if next_queued:
-                        # Case 1: VLC is stopped and we have queued items
-                        if current_state == 'stopped':
+                        # Case 1: VLC is stopped and we have queued items (unless a user stop is holding the queue)
+                        if current_state == 'stopped' and not self.vlc.queue_held:
                             # Reset playback rate when VLC has stopped (file finished)
                             try:
                                 self.vlc.set_rate(1.0)
@@ -1373,24 +1354,6 @@ class PlaybackCommands(commands.Cog):
                                 except Exception as e:
                                     logger.error(f"Error auto-playing from stopped state: {e}")
                         
-                        # Case 2: VLC is playing but wrong item (queue was bypassed)
-                        elif current_state == 'playing' and current_item:
-                            current_item_id = current_item.get('id')
-                            if current_item_id != next_queued['item_id']:
-                                if self._check_queue_auto_play_cooldown():
-                                    try:
-                                        logger.info(f"Periodic check: Wrong item playing ({current_item_id}), should be queued item ({next_queued['item_id']}) - correcting")
-                                        play_result = self.vlc.play_next_queued_item()
-                                        
-                                        if play_result.get("success"):
-                                            logger.info(f"Periodic correction successful: {play_result.get('item_name', 'Unknown')}")
-                                            try:
-                                                await self._set_presence(play_result.get('item_name'), reason="periodic correction (wrong item)")
-                                                await self._set_voice_channel_status(play_result.get('item_name'), state='playing', reason="periodic correction (wrong item)")
-                                            except Exception:
-                                                pass
-                                    except Exception as e:
-                                        logger.error(f"Error in periodic queue correction: {e}")
                     
             except Exception as e:
                 logger.error(f"Error in VLC monitoring task: {e}")

@@ -1,3 +1,11 @@
+## 1.20.1 - 2026-11-10
+
+### Fixed
+- **`/playback next` skipped the queue**: It moved to VLC's next playlist item instead of the first queued item. `next` now plays the queue first on both slash and prefix commands.
+- **The queue was ignored when a file ended and VLC moved on by itself**: The bot only picked up the queue when VLC stopped or paused at the end of a file, so queued items were often skipped. Choosing a specific item to play still takes priority, and the queue waits until it ends.
+- **Queued items could vanish without playing**: After VLC restarted or the playlist reloaded, a queued item could point at an ID VLC no longer has, or at a different file. It was removed as if it had played. These entries are now skipped with a log warning and the next queued item plays.
+- **Stop didn't stick while something was queued**: The queue started again within about half a second. Stop now holds the queue until playback resumes.
+
 ## 1.20.0 - 2026-11-05
 
 ### Changed
