@@ -1,3 +1,9 @@
+## 1.20.2 - 2026-11-10
+
+### Fixed
+- **`/playlist play-search` failed with many matches**: The results preview went over Discord's 1024-character limit for an embed field when titles were long, so the reply and picker never appeared. The preview is now split across fields, and all 25 results still show.
+- **`!play_search` could exceed Discord's message limit**: A very long search text could push the results message over 2000 characters. The query shown in the header is now cut at 60 characters.
+
 ## 1.20.1 - 2026-11-10
 
 ### Fixed

@@ -3022,11 +3022,14 @@ async def playlist_play_search(interaction: discord.Interaction, query: str):
     for playlist_num, item in shown:
         name = MediaUtils.clean_filename_for_display(item.get('name', ''), max_length=60)
         preview_lines.append(f"`#{playlist_num}` {name}")
-    embed.add_field(
-        name=f"Top {len(shown)} results",
-        value="\n".join(preview_lines),
-        inline=False,
-    )
+    # Names are capped at 60 chars, so a line is at most ~70: 12 lines fit a 1024-char field
+    # and the 25-option cap needs 3 fields at most, well under the 6000-char embed total.
+    for start in range(0, len(preview_lines), 12):
+        embed.add_field(
+            name=f"Top {len(shown)} results" if start == 0 else "\u200b",
+            value="\n".join(preview_lines[start:start + 12]),
+            inline=False,
+        )
     if len(results) > len(shown):
         embed.set_footer(text=f"Showing top {len(shown)} of {len(results)} — refine your query for more")
     else:

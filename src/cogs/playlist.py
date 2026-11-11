@@ -581,7 +581,9 @@ class PlaylistCommands(commands.Cog):
                 basename = MediaUtils.clean_filename_for_display(name, max_length=60)
                 lines.append(f"{icon}`{num}` {basename}")
 
-            header = f"**{len(results)} matches** for *{query}* — reply with the number to play, or `cancel` to dismiss."
+            # Keep the message under Discord's 2000-char cap: 25 lines of ~70 chars plus this header
+            shown_query = query if len(query) <= 60 else query[:59] + "…"
+            header = f"**{len(results)} matches** for *{shown_query}* — reply with the number to play, or `cancel` to dismiss."
             if len(results) > len(shown):
                 header += f" Showing top {len(shown)}; refine your query for more."
             await ctx.send(header + "\n" + "\n".join(lines))
