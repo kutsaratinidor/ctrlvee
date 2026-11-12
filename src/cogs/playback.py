@@ -1220,7 +1220,7 @@ class PlaybackCommands(commands.Cog):
                                     logger.error(f"Error handling queue transition: {e}")
                             
                             # Detect when the last playing item finished (for shuffle restoration)
-                            if position_changed and self.last_known_playing_item:
+                            if position_changed and self.last_known_playing_item is not None:  # <leaf/> is falsy
                                 last_item_id = self.last_known_playing_item.get('id')
                                 if last_item_id and last_item_id != current_item_id:
                                     # The last playing item is no longer playing - it finished

@@ -340,7 +340,7 @@ Prefix shown as `!` below; replace with your configured `DISCORD_COMMAND_PREFIX`
 - `!rewind [seconds]`, `!forward [seconds]`
 - `!play_num <number>`
 - `!shuffle`, `!shuffle_on`, `!shuffle_off`
-- `!speed <rate|preset>`
+- `!speed <rate|preset>` (resets to 1.0 when a new item starts)
 - `!speedstatus`
 
 ### Playlist

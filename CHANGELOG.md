@@ -1,3 +1,8 @@
+## 1.20.4 - 2026-11-12
+
+### Fixed
+- **Playback speed carried over to the next item**: The reset to 1.0 when a new item starts never ran, so a speed set with `/playback speed` or `!speed` stayed on for every following file. It now resets when the playing item changes: a file ending, `next`, the queue starting, or picking an item. Seeking, pausing and playlist cleanup leave it alone.
+
 ## 1.20.3 - 2026-11-12
 
 ### Fixed

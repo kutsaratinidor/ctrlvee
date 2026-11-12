@@ -21,7 +21,7 @@ class FakeVLC(VLCController):
     def __init__(self):
         super().__init__(queue_backup_file=tempfile.mktemp())
         self.items = {"1": "a", "2": "b", "3": "c", "4": "d", "5": "e"}
-        self.cur, self.state, self.random = "1", "playing", False
+        self.cur, self.state, self.random, self.rate = "1", "playing", False, 1.0
 
     def _make_request(self, endpoint, params=None):
         params = params or {}
@@ -56,6 +56,7 @@ class FakeVLC(VLCController):
         self.cur = ids[(ids.index(self.cur) + 1) % len(ids)]
 
     def set_rate(self, rate):
+        self.rate = rate
         return True
 
 
@@ -146,6 +147,13 @@ async def main():
     vlc.clear_queue_tracking()
     await ticks(cog)
     cog._announce_now_playing = _noop
+
+    vlc.set_rate(1.5)
+    await ticks(cog)
+    assert vlc.rate == 1.5, "speed must hold while the same item plays"
+    vlc.advance()  # file ends, VLC moves on
+    await ticks(cog)
+    assert vlc.rate == 1.0, "speed must reset to 1.0 when a new item starts"
 
     vlc.queue_item_next("99")  # id no longer in VLC (playlist reloaded / VLC restarted)
     vlc.queue_item_next("3")
