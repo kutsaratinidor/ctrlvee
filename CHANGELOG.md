@@ -1,3 +1,370 @@
+## 1.20.3 - 2026-11-12
+
+### Fixed
+- **Playlist cleanup re-sent Now Playing over and over**: The bot spotted track changes by the current item's position number in the playlist. Removing missing files above it shifted that number on each delete, so the same title was announced repeatedly. If something was queued, it could also jump to the queued item mid-cleanup. Track changes are now spotted by the item's VLC ID.
+
+## 1.20.2 - 2026-11-10
+
+### Fixed
+- **`/playlist play-search` failed with many matches**: The results preview went over Discord's 1024-character limit for an embed field when titles were long, so the reply and picker never appeared. The preview is now split across fields, and all 25 results still show.
+- **`!play_search` could exceed Discord's message limit**: A very long search text could push the results message over 2000 characters. The query shown in the header is now cut at 60 characters.
+
+## 1.20.1 - 2026-11-10
+
+### Fixed
+- **`/playback next` skipped the queue**: It moved to VLC's next playlist item instead of the first queued item. `next` now plays the queue first on both slash and prefix commands.
+- **The queue was ignored when a file ended and VLC moved on by itself**: The bot only picked up the queue when VLC stopped or paused at the end of a file, so queued items were often skipped. Choosing a specific item to play still takes priority, and the queue waits until it ends.
+- **Queued items could vanish without playing**: After VLC restarted or the playlist reloaded, a queued item could point at an ID VLC no longer has, or at a different file. It was removed as if it had played. These entries are now skipped with a log warning and the next queued item plays.
+- **Stop didn't stick while something was queued**: The queue started again within about half a second. Stop now holds the queue until playback resumes.
+
+## 1.20.0 - 2026-11-05
+
+### Changed
+- **Schedule commands need an allowed role**: `/schedule add`, `list` and `remove`, plus `!schedule`, `!schedules` and `!unschedule`, had no role check, so anyone could schedule a movie to start a minute later or remove a schedule. They don't require being in the voice room.
+- **More playback commands need you in the voice room**: `play`, `stop`, `restart`, `rewind`, `forward`, changing `speed` or `shuffle`, and clearing or removing queue items now follow the voice room rules. `pause` and status-only commands stay open.
+- **A configured voice room that can't be found now blocks playback commands**: A wrong `VOICE_JOIN_CHANNEL_ID`, or one that isn't a voice channel, used to turn the rules off for everyone without warning. A startup warning now also covers this, and a room that isn't set at all.
+
+### Fixed
+- **Playback could be skipped from outside the voice room**: `forward` (also `!skip`) had no room check, and seeking past the end of an item moves VLC to the next one.
+- **Leaving voice during the schedule prompt still worked**: The room check only ran before the Continue/Cancel prompt. It now runs again after Continue, which also stops the click replacing something another user started during the wait.
+- **`/playback pause` could resume or start playback**: VLC's `pl_pause` is a toggle. Pause now only pauses.
+
+### Added
+- **Command and guard logging**: Every command and voice room decision is logged with the user who ran it, so reports can be traced.
+
+## 1.19.1 - 2026-11-05
+
+### Fixed
+- **`/request tv` showed an error for series you already have**: Requesting a series whose seasons were all in the library or already requested showed `❌ Request failed: No seasons available to request (HTTP 202)`. It now shows `ℹ️ Nothing new to request` and says every season is already available or requested.
+
+## 1.19.0 - 2026-11-05
+
+### Added
+- **TV series requests**: `/request tv <title>` searches TMDB and requests every season through Overseerr/Jellyseerr, with the same picker, tracking and availability announcement as `/request movie`. `OVERSEERR_SONARR_SERVER_ID` sends these requests to a specific Sonarr instance, and blank uses Overseerr's default. A series that's already available can be requested again to pick up new seasons.
+
+### Fixed
+- **Duplicate check after a re-request**: The check read a title's oldest tracked request, so after a declined or failed request was retried, the title could be requested again while the retry was still live. It now reads the latest request.
+
+## 1.18.0 - 2026-11-05
+
+### Added
+- **Watch leaderboard**: `/stats` and `!stats` show the top 10 by hours watched and by titles finished, and anyone can use them. Everyone in the voice room is credited while VLC is playing. A title counts as finished at 85% of its minutes, even across several sittings, and only once per person. Each TV episode counts as its own title, and a Radarr upgrade stays the same title. Totals are kept in `watch_stats.json`. Tracking needs `VOICE_JOIN_CHANNEL_ID` and starts from zero. Set `STATS_EXCLUDED_USER_IDS` to keep accounts such as the streaming account off the board.
+
+### Fixed
+- **`/help` disappeared after a global slash cleanup**: `/system clear-global-slash` and `!clearglobalslash` removed `/help` until the bot restarted, because only the command groups were restored afterwards. `/help` is now restored with them.
+
+## 1.17.16 - 2026-11-03
+
+### Added
+- **Multiple command channels**: `COMMAND_CHANNEL_ID` now accepts a comma-separated list (e.g. `111,222`). Slash commands work in every listed channel, separately from `WATCH_ANNOUNCE_CHANNEL_ID`, so commands can run in two channels while announcements go to just one. Prefix-command replies stay in the channel they were typed in when that channel is listed, and otherwise go to the first listed channel. A single ID works as before.
+
+## 1.17.15 - 2026-11-02
+
+### Fixed
+- **Scheduled movies played the wrong item after playlist cleanup**: A schedule only used its playlist number when it fired. After `/admin cleanup-playlist` removed missing files, every later number shifted and the schedule played whatever item now had that number. A schedule now finds its movie by file path. If that file is gone, for example because Radarr replaced it with an upgrade, the schedule switches to the newest playlist item with the same title and year and updates its number. This also covers an old file that was deleted from disk before cleanup removed it from the playlist. This runs from 10 minutes before start, so the reminder shows the correct number. If nothing matches, the schedule is skipped and logged rather than playing a different movie.
+
+## 1.17.14 - 2026-10-31
+
+### Fixed
+- **Removed watch folder came back seconds later**: If a background watch scan read the folder list just before `/watch remove` (or `!watch_remove`) saved it, the scan re-added the folder. Its files were then queued again, because removal had cleared the record of files already seen. A scan already walking the folder could also queue its files again right after the playlist purge. Scans and removals now take turns, so the removed folder stays removed.
+- **Partial reads of the watch folder list**: `.env` and `WATCH_FOLDERS_FILE` are now written to a temporary file and renamed into place, so a scan can't read a half-written list. Background reloads also no longer clear the record of files already seen, so a folder that briefly drops out of the config isn't queued again in full when it returns. Only an explicit removal clears it.
+
+## 1.17.13 - 2026-10-30
+
+### Fixed
+- **Year in square brackets was ignored for TMDB lookups**: A filename like `Red Sorghum (紅高粱) [1988].mkv` lost its year because every `[...]` tag was stripped, so the TMDB match couldn't tell the 1988 film from the 2014 TV series and picked the series. A bracketed year such as `[1988]` is now kept, and other bracketed tags are still removed.
+- **Non-Latin alternate titles polluted the TMDB search**: A parenthesized alternate title like `(紅高粱)` was searched as part of the title (`Red Sorghum 紅高粱`), which kept it from matching exactly. It is now dropped when there is a Latin title to search with. Latin parentheticals such as `(US)` are unchanged.
+
+## 1.17.12 - 2026-10-30
+
+### Fixed
+- **Wrong TMDB match for titles with `&` or short titles**: Now-playing and other TMDB lookups could pick an unrelated title. `&` was dropped during matching, so `Love & Death` matched `Love Death Dog`, and `Love.and.Death` didn't match the real `Love & Death`. A short title that merely appeared inside a longer one (`Love and Death` in `10 Stories About Love and Death`) also scored almost like an exact match. `&` and `and` are now treated as equal, and partial matches score by how much of the title they cover. Movie and TV lookups now share one scoring function.
+- **Stray `( )` in parsed TV titles**: A filename like `Show (2023).mkv` was parsed as the series `Show ( )`. The empty brackets are now removed.
+
+## 1.17.11 - 2026-10-30
+
+### Added
+- **Remove a watch folder**: New owner-only `!watch_remove <path>` and `/watch remove` take a folder out of the watch list, stop scanning it right away, and remove its files from the VLC playlist. The item that's currently playing is left in place. `/watch remove` (and `!watch_remove` with no path) shows the watched folders in an embed with a dropdown to pick from. Use `--keep` or `purge_playlist:False` to leave the playlist untouched.
+
+### Fixed
+- **Removed watch folders kept being scanned**: Taking a folder out of `WATCH_FOLDERS` (or `WATCH_FOLDERS_FILE`) while the bot was running had no effect until a restart, so a deleted folder logged "Watch folder not found" on every scan. The watcher now drops removed folders on its next scan.
+
+## 1.17.10 - 2026-10-28
+
+### Fixed
+- **Relative playlist autosave path saved outside the project**: A relative `PLAYLIST_AUTOSAVE_FILE` (such as the `template.env` default `ctrlvee_playlist.xspf`) was written two folders above the project. It's now saved next to `bot.py`. Absolute paths are unaffected. If you used a relative path, an old copy may still be sitting two folders up.
+- **Truncated playlist autosave on crash**: Autosave now writes to a temporary file and renames it into place, so a crash or power loss mid-save can't leave a half-written playlist.
+- **One startup failure skipped the rest**: If starting the watch folder failed, the movie request tracker, playlist autosave, and voice join were skipped too, and the log only said "Failed to start WatchFolderService". Each now starts independently and logs its own error.
+- **Startup crash on an unexpected VLC status**: The startup VLC check no longer fails when VLC's status has no playback state; it logs `unknown` instead.
+
+### Changed
+- **Reconnects no longer repeat startup work**: Discord reconnects re-ran the startup sequence (config and command logs, VLC check, role check, notifier setup). Now only voice join and presence are refreshed on a reconnect.
+- **Startup doesn't stall the bot**: The startup VLC check and the wait for the initial watch-folder scan now run in the background.
+
+## 1.17.9 - 2026-10-28
+
+### Fixed
+- **Duplicate "Total Size" in watch-folder announcements**: A batch of new files that didn't match a TMDB season showed the **Total Size** field twice. It now appears once.
+- **Unneeded TMDB lookups for new-media announcements**: A single new movie was looked up on TMDB twice (the first result was discarded). Files found on the initial scan were still looked up once even though the announcement doesn't use TMDB, and single TV episodes hidden by `SUPPRESS_SINGLE_TV` were looked up before being suppressed. Each now does only the lookups it needs.
+
+### Changed
+- **New-media announcements no longer stall the bot**: The TMDB lookups and VLC playlist read for a watch-folder announcement now run in the background, so other commands and voice handling keep responding while it's being built.
+
+## 1.17.8 - 2026-10-28
+
+### Changed
+- **Schedule proximity guard reads runtimes VLC hasn't parsed yet**: When a playlist entry has no runtime in VLC (for example, a freshly added file that hasn't been played), the bot now reads the file's runtime itself using libvlc (the already-required `python-vlc`). The overlap check therefore uses the real runtime rather than the fixed `SCHEDULE_PROXIMITY_WINDOW_SECONDS`, including for items already queued ahead of a `queue add-next`. The fixed window is still used when the file can't be read (libvlc missing, unreachable share, or a 2-second timeout), and for `next` with nothing queued, `previous`, and a multi-result `/playlist play-search`. The read runs in the background so it doesn't hold up the rest of the bot, and slash commands that go through the guard (`/playback next`, `previous`, `play`, `/playlist play-search`, `/queue add-next`) now acknowledge the interaction ("CtrlVee is thinking…") before checking, so a slow read can't trigger `404 Unknown interaction`.
+
+## 1.17.7 - 2026-10-21
+
+### Added
+- **Original language in TMDB embeds**: Movie and TV info embeds (now playing, scheduled-start announcements) now include an **Original Language** field from TMDB, e.g. `Korean`. Shows the ISO code (e.g. `TL`) if TMDB doesn't provide a name for it.
+
+### Changed
+- **Schedule proximity guard uses the real runtime**: Instead of a fixed 30-minute window, the Continue/Cancel prompt now fires when an upcoming scheduled movie would start before the item you're playing finishes, based on that item's runtime from VLC. A 2-hour movie started 90 minutes before a schedule now prompts, and a short clip that ends before the schedule no longer does. The prompt shows the item's runtime and when it would end. `queue add-next`/`!queue_next` count from when the queued item would actually start (after the current item and anything already queued). `SCHEDULE_PROXIMITY_WINDOW_SECONDS` is still used when the runtime isn't known: VLC hasn't parsed the file yet, `next` with nothing queued, `previous`, or a multi-result `/playlist play-search`.
+
+## 1.17.6 - 2026-10-16
+
+### Fixed
+- **"Unknown interaction" (404) on slow slash commands**: Discord drops a slash command that isn't answered within 3 seconds. `/playlist search`, `/playlist play-search`, `/playlist list`, `/queue add-next`, `/queue status`, and `/queue remove` fetched the playlist from VLC before replying, so a slow VLC response or large playlist made the reply fail with `404 Unknown interaction`, even when the action (e.g. queueing the item) had already succeeded. These commands now acknowledge the interaction first ("CtrlVee is thinking…") and then post the result.
+
+## 1.17.5 - 2026-10-16
+
+### Changed
+- **Schedule times shown in each viewer's timezone**: Schedule confirmations, the schedule list, the "already scheduled" error, and the schedule-proximity prompt now show the time in Philippine time followed by a Discord timestamp, e.g. `2026-10-20 20:00 PST · <local date/time> (in 4 days)`. Each person's Discord app renders the timestamp in their own timezone and keeps the relative part counting down. Schedules are still entered and run in Philippine time.
+
+## 1.17.4 - 2026-10-14
+
+### Fixed
+- **Duplicate voice guard tasks after a gateway reconnect**: `on_ready` fires again when Discord starts a new gateway session, and each time it started another voice connection guard (and initial voice-join retry). The copies shared the same reconnect counters and could try to rejoin voice at the same moment. Each task now starts only if one isn't already running.
+
+## 1.17.3 - 2026-10-14
+
+### Fixed
+- **Raw connection errors in Overseerr/Radarr responses**: When Overseerr or Radarr was down or returned an error, the bot showed the full `requests` exception (e.g. `HTTPConnectionPool(host=..., port=5055): Max retries exceeded ... Connection refused`) or the raw response body. It now shows a short message such as `Overseerr is unreachable (is it running?)`, `didn't respond in time`, `rejected the API key (HTTP 401)`, or `had an internal error (HTTP 502)`. The full error is still logged. Overseerr's own request errors (e.g. already requested) are still shown as-is.
+
+## 1.17.2 - 2026-10-03
+
+### Fixed
+- **Voice channel status reverting to ▶ while paused or stopped**: The Now Playing announcer always set the voice status as playing, and the monitor calls it on every VLC state change (and the periodic announcer calls it on a timer). Pausing or stopping showed `⏸ Title` or the idle text for a moment, then flipped back to `▶ Title`. The announcer now uses VLC's actual state (commands that just started playback still count as playing), and a stopped state always shows `VOICE_STATUS_IDLE_NAME` or clears the status.
+
+## 1.17.1 - 2026-10-03
+
+### Fixed
+- **Voice channel status not showing ⏸ on pause**: The status was only refreshed on track changes, so pausing or resuming left it on `▶ Title`. It now also updates when VLC switches between playing and paused.
+- **Voice channel status stuck after a movie ends**: When a movie finished paused with nothing queued, the bot's presence was cleared but the voice status stayed on `⏸ Title`. It now switches to `VOICE_STATUS_IDLE_NAME` (or clears if that's empty), the same as when VLC is stopped.
+
+## 1.17.0 - 2026-10-03
+
+### Changed
+- **Shorter voice channel status**: The now-playing voice channel status now reads `▶ Title` while playing and `⏸ Title` while paused, replacing `Now Playing: Title [Paused]`. `VOICE_STATUS_PREFIX` now defaults to `▶`, and `VOICE_STATUS_SHOW_PAUSED` swaps the prefix for `⏸` instead of appending `[Paused]`.
+
+### Fixed
+- **Voice channel status skipped without Manage Channels**: Status updates were skipped unless the bot had Manage Channels, even though Discord only requires Set Voice Channel Status while the bot is in the channel. Either permission is now accepted.
+
+## 1.16.1 - 2026-09-28
+
+### Fixed
+- **`/playlist play-search` crashing on more than 25 matches**: The result picker trimmed matches to Discord's 25-option select limit but built the dropdown from the untrimmed list, raising `ValueError: maximum number of options already provided (25)`. The dropdown now uses the trimmed list, matching the embed's "top 25" preview.
+
+## 1.16.0 - 2026-09-20
+
+### Changed
+- **Schedule proximity guard now confirms instead of just warning**: `play-item`/`play-search`, `next`/`previous`, and `queue add-next`/`!queue_next` now prompt the issuer with **Continue**/**Cancel** buttons when an upcoming scheduled movie is close (previously it only posted a non-blocking warning and proceeded regardless). Clicking Cancel, or leaving the prompt untouched for `SCHEDULE_PROXIMITY_CONFIRM_TIMEOUT_SECONDS` (default 30s), now stops the command instead of playing anyway.
+
+## 1.15.0 - 2026-09-19
+
+### Added
+- **Schedule proximity guard**: `play-item`/`play-search`, `next`/`previous`, and `queue add-next`/`!queue_next` now warn (without blocking) the issuer when an upcoming scheduled movie is due to start within `SCHEDULE_PROXIMITY_WINDOW_SECONDS` (default 30 minutes), naming the movie and who scheduled it. A schedule that has already started does not trigger it. Controlled by `ENABLE_SCHEDULE_PROXIMITY_GUARD` (default: on).
+- **"Scheduled By" on schedule embeds**: `!schedule`/`!schedules` and `/schedule add`/`/schedule list` now show who scheduled each movie — the scheduler's identity was already tracked internally but never surfaced.
+
+## 1.14.0 - 2026-09-17
+
+### Added
+- **`/admin reconnect-voice`**: Owner-only command to force an immediate voice channel reconnect attempt without restarting the bot process, for when the background voice guard leaves the bot missing from its channel without reconnecting on its own.
+
+### Fixed
+- **Changelog embed field overflow**: `!changelog` / `/system changelog` capped sections to 5 items but not by character count, so a long section (e.g. v1.13.2's Fixed, 1600 chars) could still exceed Discord's 1024-char field cap and fail to send. Both command paths now share one helper that clips by character count instead.
+- **`setup.py` failing with "No module named pip"**: `python -m venv` can report success even when the created venv has no pip bundled (common on Debian/Ubuntu without `python3-pip` installed alongside `python3-venv`). `setup.py` now detects this and self-heals via `ensurepip` before giving up with an actionable error.
+- **`setup.py` reusing a broken `.venv` with no `activate` script**: A venv left behind by the failure above is missing `bin/activate` (Python's `venv` module only writes it after its own pip bootstrap succeeds), but `setup.py` only checked for `bin/python` and happily reused it on the next run — so `source .venv/bin/activate` kept failing even after the pip fix. It now also checks for `activate` and rebuilds the venv from scratch if it's incomplete.
+
+## 1.13.2 - 2026-09-16
+
+### Fixed
+- **Readable allowed roles in `/admin show-config`**: ALLOWED_ROLES now render as `@role-name` names resolved against the server the command is run in — both ID and name entries — and configured roles that don't exist in that server (deleted, renamed, or from another guild) are omitted instead of showing a bare role ID.
+- **show-config no longer overflows Discord's field limit**: When `ALLOWED_ROLES` / `WATCH_FOLDERS` etc. were long, `/admin show-config` could exceed Discord's 1024-char embed-field cap and fail with a 400. Fields are now clipped with a "… and N more" note.
+- **Readable roles in access-denied messages**: Denial messages now say the readable role name (e.g. "CtrlVee admin") instead of a raw role ID when the user lacks one of `ALLOWED_ROLES`.
+- **Playback advance/queue commands now respect the voice-room hijack guard**: `!next`, `!previous`, `/playback next`, `/playback previous`, `!queue_next`, and `/queue add-next` (previously unguarded beyond the role check) are now blocked while the person who started the current item is still in the voice room — the "hijacked by a `next`" path. Ownership still frees as soon as the item actually changes (auto-advance, `stop`, or the watcher's own `next`).
+- **Stable order for TV-series search results**: `!search` / `!play_search` matched episodes of a series against a filename-length penalty, so a short-titled episode (e.g. `S01E07 AIM`) could outrank `S01E01 First Day` and scramble the picker. Relevance scoring no longer penalizes longer filenames; tied episodes now fall out in playlist order, keeping a season sequential.
+
+## 1.13.1 - 2026-09-15
+
+### Fixed
+- **Cleanup no longer disconnects the bot**: `!cleanup` (`cleanup_missing`) and `/admin cleanup-playlist` ran the whole playlist scan synchronously on Discord's event loop — for large playlists or slow/missing network shares, file-existence and VLC HTTP checks could block past heartbeat expiry and silently drop the gateway connection. The scan now runs in a worker thread. Also, the "Bot is Online" banner is now sent once per process, so a reconnect no longer re-posts it.
+
+## 1.13.0 - 2026-09-15
+
+### Changed
+- **Play-Search Picker**: When `/playlist play-search` or `!play_search` returns more than one result, a numbered list and interactive picker (slash) or reply-to-select prompt (prefix) is shown instead of auto-playing the top match, with a cancel/dismiss option on both. Single-result searches still play immediately without any picker.
+
+## 1.12.0 - 2026-09-14
+
+### Added
+- **Voice Room Rules**: Playback-start commands now behave like music bots, gated by the designated voice channel (`VOICE_JOIN_CHANNEL_ID`). A user must be in the room to use `/playback play-item` and `/playlist play-search` (or `!play_num` / `!play_search`), and another user cannot take over the currently playing item while the person who started it is still in the room — they're asked to coordinate instead. Ownership is per-track, so once the item changes (auto-advance, watch folder, `next`/`stop`) the slot is free again. Controlled by `ENABLE_VOICE_ROOM_RULES` (default: on); `queue add-next` / `!queue_next` remain unguarded.
+
+## 1.11.4 - 2026-09-13
+
+### Added
+- **Playlist Numbers in Watch-Folder Announcements**: New-media announcements now show the playlist position of each added file, plus the exact command to play it (`!play_num <n>` in prefix mode, `/playback play-item <n>` in slash mode) — no need to check the list first. Single files get a "Playback" field; multi-file batches get a "Playlist Positions" list.
+
+## 1.11.3 - 2026-09-12
+
+### Changed
+- **Sequential Episode Enqueueing**: Files detected by the watch folder service are now enqueued in episode order (season, then episode) instead of filesystem directory order, so a freshly added TV season plays in the right sequence.
+
+## 1.11.2 - 2026-09-12
+
+### Changed
+- **Help Output Cleanup**: `/help` and `/system help` no longer list owner-only `/admin` commands. Added the previously-missing `/request` group (`movie`, `status`, `clear`) to the listings.
+
+## 1.11.1 - 2026-09-09
+
+### Changed
+- **Public `/playlist play-search`**: The `/playlist play-search` response is no longer ephemeral — other users in the channel can now see which item was loaded.
+- **Root `/help` Slash Command**: Added a top-level `/help` command (outside `/system` and `/admin`) that lists all available commands. Made `/system help` non-ephemeral as well.
+
+## 1.11.0 - 2026-09-09
+
+### Added
+- **Owner Config Overview**: Added `/admin show-config` (owner-only) to quickly glance at the current configuration for the guild the bot is in. Channel IDs and role IDs are resolved to readable names, secrets and voice-chat timing/tuning numbers are omitted, and the output is an ephemeral embed.
+
+## 1.10.1 - 2026-09-03
+
+### Fixed
+- **Stuck "Failed" Movie Requests Never Notifying**: A request that failed once (e.g. Overseerr's grab attempt errored) stopped being polled forever, so if the media later became available anyway (a manual Radarr retry, another request for the same title) the requester was never notified. Declined/failed requests now stay pollable until the media is actually available or the request is removed from Seerr.
+
+## 1.10.0 - 2026-08-31
+
+### Added
+- **Movie Requests (Overseerr/Jellyseerr)**: Added `/request movie <title>`, which searches TMDB, lets you pick the right match, and submits the request to a self-hosted Overseerr/Jellyseerr instance, tracking who requested it.
+- **Movie Request Status & Cleanup**: Added `/request status` to show your own tracked requests with a live status check, and `/request clear` to remove your declined/failed/removed requests from tracking.
+- **Availability & Removal Detection**: Background polling detects when a requested movie becomes available and posts an announcement (with an @mention and metadata) in a configurable channel; it also detects when a request is declined, fails, or is removed on the Seerr side and updates its status quietly, without blocking a future re-request of the same title.
+- **Overseerr Radarr Instance Routing**: Added `OVERSEERR_RADARR_SERVER_ID` to route new requests to a specific Radarr instance configured in Overseerr, for setups with multiple Radarr instances.
+- **No-Results Search Logging**: Added `SEARCH_LOG_CHANNEL_ID` to optionally log searches that return no results (`/request movie`, `/playlist search`, `/playlist play-search`) — query, requester, guild, channel, and a jump link — falling back to the terminal log when unset.
+- **Movie Request Picker Cancel Button**: The `/request movie` picker now has a Cancel button so users aren't stuck waiting out the selection timeout.
+
+### Fixed
+- **Slash Command Interaction Timeouts**: `/playback status` and `/playback speed` now defer before making VLC HTTP calls, preventing "Unknown interaction" errors when VLC is slow to respond.
+- **Duplicate Movie Requests**: Requesting an already-active (or already-available) title now shows its existing status instead of submitting a duplicate request to Overseerr.
+
+## 1.9.31 - 2026-08-07
+
+### Added
+- **First-Time Setup Script**: Added `setup.py` and `scripts/configure_env.py`, a cross-platform one-command setup (`python3 setup.py` / `python setup.py`) that creates the virtual environment, installs dependencies, and walks through the essential `.env` settings (Discord token, allowed roles, command mode, VLC connection, TMDB key) — replacing five manual commands and a hand-edited 58-variable `template.env`.
+
+## 1.9.30 - 2026-08-07
+
+### Changed
+- **Startup Command Mode Messaging**: Updated startup announcement text to show only the active command method(s) and a matching usage hint (prefix-only, slash-only, or hybrid).
+- **Prefix-First Defaults**: Switched default command mode behavior to prefix-first by making slash commands opt-in (`ENABLE_SLASH_COMMANDS=false` by default) for backward compatibility with existing deployments.
+
+## 1.9.29 - 2026-08-05
+
+### Changed
+- **Slash Cleanup Command Placement**: Moved playlist-missing-file cleanup to owner admin scope via `/admin cleanup-playlist`.
+- **Legacy Alias Removal**: Removed the temporary `/playback cleanup` slash alias now that admin cleanup is established.
+
+## 1.9.28 - 2026-08-01
+
+### Changed
+- **Slash Playback Command Cleanup**: Renamed `/playback play-num` to `/playback play-item` for clearer intent when selecting a playlist entry by number.
+- **Speed Command Consolidation**: Merged `/playback speed-status` into `/playback speed`, which now supports both status checks and rate changes from a single command.
+- **Shuffle Command Consolidation**: Replaced separate slash shuffle commands with a single `/playback shuffle` command that supports `status`, `toggle`, `on`, and `off` actions.
+
+## 1.9.27 - 2026-07-29
+
+### Changed
+- **Slash Command Channel Policy Hardening (Tracking Checkpoint)**: Enforced channel restrictions for slash commands using a global CommandTree check so guild slash commands only execute in allowed channels derived from config.
+- **Point-In-Time Marker**: This release marks the enforcement checkpoint for channel-scoped slash execution policy rollout (2026-07-29), including deny-path logging for verification.
+- **Policy Behavior Clarification**: When `COMMAND_CHANNEL_ID>0`, slash commands are restricted to that channel; otherwise they are restricted to `WATCH_ANNOUNCE_CHANNEL_ID`. If both are unset/`0`, guild slash commands are blocked until one is configured.
+
+## 1.9.26 - 2026-07-29
+
+### Added
+- **Startup Sync Scope Warning**: Added a startup warning when both `SLASH_COMMAND_GUILD_ID` and `SYNC_GLOBAL_COMMANDS=true` are configured, to highlight potential duplicate slash command entries (guild + global) in the same server.
+
+### Changed
+- **Dev Slash Sync Scope Control**: In development guild mode (`SLASH_COMMAND_GUILD_ID>0`), slash sync is now guild-only by default and global sync runs only when `SYNC_GLOBAL_COMMANDS=true`.
+- **Sync Diagnostics Output**: Updated owner sync outputs (`!syncslash` and `/system sync`) to explicitly report when global sync is skipped.
+- **Configuration Surface**: Added and documented `SYNC_GLOBAL_COMMANDS` in config logging, template env, and README migration notes.
+
+## 1.9.25 - 2026-07-29
+
+### Added
+- **Playback Advanced Slash Controls (Slice 6)**: Added `/playback speed`, `/playback speed-status`, `/playback shuffle-on`, `/playback shuffle-off`, and `/playback shuffle-toggle`.
+
+### Changed
+- **Slash Help Coverage**: Updated `/system help` to include the new playback advanced controls.
+- **Hybrid Migration Continuation**: Prefix and slash playback advanced controls now run in parallel for staged rollout.
+
+## 1.9.24 - 2026-07-29
+
+### Changed
+- **Shared Query Visibility**: Updated read-only slash query outputs to be channel-visible (non-ephemeral) for `/playlist list`, `/playlist search`, `/queue status`, and `/schedule list` so non-issuers can view results.
+
+## 1.9.23 - 2026-07-29
+
+### Changed
+- **Watch Command Permission Tightening**: Updated watch-folder add command to owner-only for both prefix (`watch_add`) and slash (`/watch add`) usage.
+
+## 1.9.22 - 2026-07-29
+
+### Added
+- **Schedule, Watch, and Admin Slash Commands (Slice 5)**: Added `/schedule` slash group with `add`, `list`, and `remove`; `/watch add`; and owner-only `/admin list-guilds` plus `/admin leave-server`.
+
+### Changed
+- **Slash Help Coverage**: Updated `/system help` to include `/schedule`, `/watch`, and `/admin` command groups.
+- **Hybrid Migration Continuation**: Prefix and slash commands for schedule/watch/admin now run in parallel for staged rollout.
+
+## 1.9.21 - 2026-07-29
+
+### Added
+- **Subtitles and Audio Slash Commands (Slice 4)**: Added `/subtitles` slash group with `list`, `set`, `next`, and `previous`, plus `/audio` slash group with `list` and `set`.
+- **Owner Cleanup Slash Command**: Added owner-only `/playback cleanup` command for removing missing files from VLC playlist.
+
+### Changed
+- **Cleanup Permission Tightening**: Updated prefix `cleanup` command to owner-only.
+- **Slash Help Coverage**: Updated `/system help` to include `/subtitles` and `/audio` command groups.
+- **Hybrid Migration Continuation**: Prefix and slash subtitle/audio commands now run in parallel for staged rollout.
+
+## 1.9.20 - 2026-07-29
+
+### Added
+- **Playlist and Queue Slash Commands (Slice 3)**: Added `/playlist` slash group with `list`, `search`, and `play-search`, plus `/queue` slash group with `add-next`, `status`, `clear`, and `remove`.
+
+### Changed
+- **Slash Help Coverage**: Updated `/system help` to include the new `/playlist` and `/queue` command groups.
+- **Hybrid Migration Continuation**: Prefix and slash commands for playlist and queue now run in parallel for staged rollout.
+
+## 1.9.19 - 2026-07-29
+
+### Added
+- **Playback Slash Commands (Slice 2)**: Added `/playback` slash command group with `play`, `pause`, `stop`, `restart`, `rewind`, `forward`, `next`, `previous`, `play-num`, and `status`.
+
+### Changed
+- **Slash Role Permission Parity**: Added role-check logic for slash playback commands to mirror existing `ALLOWED_ROLES` behavior used by prefix commands.
+- **Hybrid Migration Path**: Prefix commands remain available while slash playback commands are introduced in parallel.
+
+## 1.9.18 - 2026-07-29
+
+### Added
+- **Slash Command Foundation**: Added initial `/system` slash command group with `help`, `version`, `privacy`, `changelog`, and `radarr-recent` commands.
+- **Slash Migration Config Toggles**: Added `ENABLE_PREFIX_COMMANDS`, `ENABLE_SLASH_COMMANDS`, and `SLASH_COMMAND_GUILD_ID` configuration values to support staged migration and faster development sync.
+
+### Changed
+- **Message Content Intent Dependency Control**: Bot now enables `message_content` intent only when prefix commands are enabled. This allows deployments to disable prefix commands and run slash-only mode without Message Content Intent.
+- **Startup Slash Sync Behavior**: Added startup command-tree sync logic for global or guild-scoped slash command registration depending on configuration.
+
 ## 1.9.17 - 2026-07-29
 
 ### Added

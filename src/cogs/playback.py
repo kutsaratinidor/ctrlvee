@@ -13,6 +13,104 @@ from ..utils.command_utils import format_cmd_inline
 # Set up logger for this module
 logger = logging.getLogger(__name__)
 
+def _find_nearby_schedule(scheduled: list, now, window_seconds: float):
+    """Pure lookup for the schedule-proximity guard.
+
+    Returns the *upcoming* scheduled entry starting soonest within `window_seconds`
+    of `now`, or None. Only entries in the future count — a schedule that has already
+    started is not "close to" a new playback request, it has been superseded by it.
+    Ties resolve to whichever starts soonest.
+    """
+    nearest, nearest_delta = None, None
+    for s in scheduled:
+        try:
+            delta = (s['dt'] - now).total_seconds()
+        except Exception:
+            continue
+        if 0 <= delta <= window_seconds and (nearest_delta is None or delta < nearest_delta):
+            nearest, nearest_delta = s, delta
+    return nearest
+
+
+def _schedule_overlap_window(item=None, starts_in: float = 0) -> float:
+    """Seconds from now that the target item would still be playing.
+
+    Uses the item's runtime (plus `starts_in`, the wait before it starts, e.g. for
+    queue-next): VLC's reported duration, or the file probed locally when VLC
+    hasn't parsed it yet. Falls back to the fixed
+    Config.SCHEDULE_PROXIMITY_WINDOW_SECONDS when there is no target or the
+    runtime can't be read.
+    """
+    duration = MediaUtils.resolve_duration(item) if item is not None else None
+    if isinstance(duration, int):
+        return starts_in + duration
+    return float(getattr(Config, 'SCHEDULE_PROXIMITY_WINDOW_SECONDS', 1800))
+
+
+def _decide_playback_allow(
+    room_resolved: bool,
+    requester_in_room: bool,
+    requester_id: int,
+    owner_id: int | None,
+    owner_holds_current: bool,
+    owner_in_room: bool,
+) -> tuple[bool, str]:
+    """Pure rule evaluation for the play-start guard; returns (allowed, reason_code).
+
+    A play request is blocked only when: a room is configured, the requester is not
+    in it, or another user who still occupies the room holds the currently playing item.
+    """
+    if not room_resolved:
+        return True, ""
+    if not requester_in_room:
+        return False, "not_in_room"
+    if owner_id is not None and owner_id != requester_id and owner_holds_current and owner_in_room:
+        return False, "hijack"
+    return True, ""
+
+class ScheduleConfirmView(discord.ui.View):
+    """Continue/Cancel prompt for the schedule-proximity guard.
+
+    `decision` stays None if nobody clicks in time; `on_timeout` then leaves it
+    None, which `_confirm_nearby_schedule` treats as cancelled.
+    """
+
+    def __init__(self, requester_id: int, timeout: float):
+        super().__init__(timeout=timeout)
+        self.requester_id = requester_id
+        self.message = None
+        self.decision: bool | None = None
+
+    def _disable_all(self) -> None:
+        for child in self.children:
+            child.disabled = True
+
+    async def _finish(self, interaction: discord.Interaction, decision: bool, label: str) -> None:
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message("This confirmation isn't for you.", ephemeral=True)
+            return
+        self.decision = decision
+        self._disable_all()
+        await interaction.response.edit_message(content=label, view=self)
+        self.stop()
+
+    @discord.ui.button(label="Continue playback", style=discord.ButtonStyle.primary)
+    async def continue_playback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._finish(interaction, True, "▶️ Continuing playback...")
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger)
+    async def cancel_playback(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._finish(interaction, False, "✕ Playback cancelled.")
+
+    async def on_timeout(self) -> None:
+        self._disable_all()
+        if self.message is not None:
+            try:
+                await self.message.edit(content="⌛ Confirmation timed out — playback cancelled.", view=self)
+            except Exception:
+                pass
+
+
 class PlaybackCommands(commands.Cog):
     def __init__(self, bot, vlc_controller, tmdb_service, watch_service):
         self.bot = bot
@@ -44,6 +142,9 @@ class PlaybackCommands(commands.Cog):
         self.periodic_announce_task = None
         self.playback_started_event = asyncio.Event()
         self.last_queue_auto_play = 0  # Timestamp of last queue auto-play to prevent rapid triggers
+        # Voice-room ownership: who started the currently playing item (per-track, see _playback_guard).
+        self._playback_owner_id = None  # Discord user id of the item's requester
+        self._playback_owner_item_id = None  # VLC playlist id they started
         # Presence/update throttling for bot activity updates
         self._presence_last_set = 0.0
         self._presence_last_name = None  # Track last presence activity name to avoid throttling new titles
@@ -206,19 +307,18 @@ class PlaybackCommands(commands.Cog):
     def _format_voice_status_text(self, title: str | None, state: str | None = None) -> str | None:
         """Build a voice channel status text from current media title and state."""
         try:
-            if title:
+            if title and state != 'stopped':
                 clean = MediaUtils.clean_filename_for_display(title).strip()
                 if not clean:
                     clean = str(title).strip()
                 if not clean:
                     return None
-                prefix = str(getattr(Config, 'VOICE_STATUS_PREFIX', 'Now Playing: '))
+                prefix = str(getattr(Config, 'VOICE_STATUS_PREFIX', '▶'))
+                if state == 'paused' and bool(getattr(Config, 'VOICE_STATUS_SHOW_PAUSED', True)):
+                    prefix = '⏸'
                 if prefix and not prefix.endswith((' ', '-', '•', '|')):
                     prefix = f"{prefix} "
-                label = f"{prefix}{clean}"
-                if state == 'paused' and bool(getattr(Config, 'VOICE_STATUS_SHOW_PAUSED', True)):
-                    label = f"{label} [Paused]"
-                return label[:120]
+                return f"{prefix}{clean}"[:120]
 
             idle_name = str(getattr(Config, 'VOICE_STATUS_IDLE_NAME', '')).strip()
             if idle_name:
@@ -275,8 +375,10 @@ class PlaybackCommands(commands.Cog):
                     return
 
             me = channel.guild.me
-            if me is None or not channel.permissions_for(me).manage_channels:
-                self.logger.debug("Skipping voice status update: missing Manage Channels permission")
+            perms = channel.permissions_for(me) if me is not None else None
+            # SET_VOICE_CHANNEL_STATUS (1 << 48) has no named flag in discord.py; Manage Channels also works.
+            if perms is None or not (perms.manage_channels or perms.value & (1 << 48)):
+                self.logger.debug("Skipping voice status update: missing Set Voice Channel Status permission")
                 return
 
             await channel.edit(status=target_text, reason=(reason or "Update voice status"))
@@ -395,7 +497,15 @@ class PlaybackCommands(commands.Cog):
             # Update presence
             try:
                 await self._set_presence(display_name, reason=f"now playing ({origin})")
-                await self._set_voice_channel_status(display_name, state='playing', reason=f"now playing ({origin})")
+                # Use VLC's real state: monitor/periodic announces also fire while paused or stopped.
+                # Commands just started playback, where VLC can briefly still report 'stopped'.
+                vlc_state = 'playing'
+                if origin != 'command':
+                    vlc_status = self.vlc.get_status()
+                    state_elem = vlc_status.find('state') if vlc_status is not None else None
+                    if state_elem is not None and state_elem.text:
+                        vlc_state = state_elem.text
+                await self._set_voice_channel_status(display_name, state=vlc_state, reason=f"now playing ({origin})")
             except Exception:
                 pass
             # Send to announce channels
@@ -436,6 +546,7 @@ class PlaybackCommands(commands.Cog):
             self.logger.info("Periodic announcement task stopped")
 
     @commands.command(name='cleanup', aliases=['plcleanup','cleanup_missing'])
+    @commands.is_owner()
     async def cleanup_missing(self, ctx: commands.Context):
         """Remove missing/unavailable files from the VLC playlist.
 
@@ -449,7 +560,7 @@ class PlaybackCommands(commands.Cog):
         except Exception:
             pass
         try:
-            result = self.vlc.remove_missing_playlist_items()
+            result = await asyncio.to_thread(self.vlc.remove_missing_playlist_items)
             removed = int(result.get('removed', 0))
             items = result.get('items', []) or []
             if removed == 0:
@@ -671,6 +782,192 @@ class PlaybackCommands(commands.Cog):
                 
         return position, current_item
 
+    def _resolve_room_channel(self, guild) -> discord.VoiceChannel | None:
+        """Resolve the designated voice room (VOICE_JOIN_CHANNEL_ID) for presence checks."""
+        try:
+            channel_id = int(getattr(Config, 'VOICE_JOIN_CHANNEL_ID', 0) or 0)
+            if channel_id <= 0:
+                return None
+            if guild is not None:
+                ch = guild.get_channel(channel_id)
+                if isinstance(ch, discord.VoiceChannel):
+                    return ch
+            ch = self.bot.get_channel(channel_id)
+            return ch if isinstance(ch, discord.VoiceChannel) else None
+        except Exception:
+            return None
+
+    def _current_stream_item_id(self) -> str | None:
+        """VLC playlist id of the currently active stream, or None if nothing is active."""
+        try:
+            status = self.vlc.get_status()
+            if status is None:
+                return None
+            state_elem = status.find('state')
+            state = state_elem.text if state_elem is not None else None
+            if state in (None, 'stopped', 'end'):
+                return None
+            playlist = self.vlc.get_playlist()
+            if playlist is None:
+                return None
+            for leaf in playlist.findall('.//leaf'):
+                if leaf.get('current'):
+                    return leaf.get('id')
+            return None
+        except Exception:
+            return None
+
+    def _playback_guard(self, member: discord.Member, presence_only: bool = False) -> tuple[bool, str]:
+        """Presence + hijack gate for commands that change playback. Call after the role check.
+
+        presence_only skips the hijack check, for commands that don't switch the item
+        (stop, seek, speed, ...).
+
+        Per-track ownership: a requester's claim lives only on the exact item they
+        started. Once that item is no longer 'current' (auto-advance, watch folder,
+        next/stop), the claim is gone and the next play request reseats ownership.
+        """
+        allowed, reason = self._evaluate_playback_guard(member, presence_only)
+        logger.info(
+            f"Playback guard {'allowed' if allowed else 'denied'}: user={member} ({member.id})"
+            + (f" reason={reason}" if reason else "")
+        )
+        return allowed, reason
+
+    def _evaluate_playback_guard(self, member: discord.Member, presence_only: bool) -> tuple[bool, str]:
+        if not bool(getattr(Config, 'ENABLE_VOICE_ROOM_RULES', True)):
+            return True, ""
+        room = self._resolve_room_channel(member.guild)
+        if room is None and int(getattr(Config, 'VOICE_JOIN_CHANNEL_ID', 0) or 0) > 0:
+            # Only an unset channel means "no room". A set one that can't be found must
+            # not open playback to everyone.
+            return False, "Playback control is unavailable: the voice room can't be found. Ask the bot owner to check `VOICE_JOIN_CHANNEL_ID`."
+        voice = getattr(member, 'voice', None)
+        requester_in_room = bool(voice and voice.channel and room is not None and voice.channel.id == room.id)
+        current_id = None if presence_only else self._current_stream_item_id()
+        owner_id = None if presence_only else self._playback_owner_id
+
+        owner_in_room = False
+        owner = None
+        if owner_id is not None and owner_id != member.id:
+            owner = member.guild.get_member(owner_id)
+            ovoice = getattr(owner, 'voice', None) if owner is not None else None
+            owner_in_room = bool(ovoice and ovoice.channel and room is not None and ovoice.channel.id == room.id)
+
+        allowed, reason = _decide_playback_allow(
+            room_resolved=room is not None,
+            requester_in_room=requester_in_room,
+            requester_id=member.id,
+            owner_id=owner_id,
+            owner_holds_current=bool(current_id and current_id == self._playback_owner_item_id),
+            owner_in_room=owner_in_room,
+        )
+        if allowed:
+            return True, ""
+        if reason == "not_in_room":
+            return False, f"You must be in **{room.name}** to control playback."
+        name = getattr(owner, 'display_name', 'This user') if owner else 'This user'
+        return False, f"⏳ **{name}** is watching this one — ask before switching the playback."
+
+    async def _check_room(self, ctx) -> bool:
+        """Presence gate for prefix commands; replies with the reason when denied."""
+        ok, reason = self._playback_guard(ctx.author, presence_only=True)
+        if not ok:
+            await ctx.send(reason)
+        return ok
+
+    def _seat_playback_owner(self, member: discord.Member, item_id: str | None) -> None:
+        """Claim ownership of the item just started, for the hijack guard."""
+        if not bool(getattr(Config, 'ENABLE_VOICE_ROOM_RULES', True)):
+            return
+        self._playback_owner_id = member.id
+        self._playback_owner_item_id = item_id
+
+    def _nearby_schedule_notice(self, member: discord.Member, item=None, starts_in: float = 0) -> str | None:
+        """Non-blocking advisory for play-start commands: is an upcoming schedule close?
+
+        Unlike `_playback_guard`, this never blocks the request — it only returns a
+        heads-up message (movie info + who scheduled it) when a scheduled item is due
+        to start before the target `item` would finish (see `_schedule_overlap_window`;
+        without a known runtime, within Config.SCHEDULE_PROXIMITY_WINDOW_SECONDS). A
+        schedule that has already started does not trigger this — see
+        `_find_nearby_schedule`.
+        """
+        if not bool(getattr(Config, 'ENABLE_SCHEDULE_PROXIMITY_GUARD', True)):
+            return None
+        scheduler_cog = self.bot.get_cog('Scheduler')
+        scheduled = getattr(scheduler_cog, 'scheduled', None) if scheduler_cog else None
+        if not scheduled:
+            return None
+        from datetime import datetime
+        from .scheduler import PH_TZ, format_schedule_time
+        window = _schedule_overlap_window(item, starts_in)
+        now = datetime.now(PH_TZ)
+        nearest = _find_nearby_schedule(scheduled, now, window)
+        if not nearest:
+            return None
+        who = f"<@{nearest['user']}>" if nearest.get('user') else "someone"
+        when = format_schedule_time(nearest['dt'])
+        duration = MediaUtils.resolve_duration(item) if item is not None else None
+        if isinstance(duration, int):
+            end = int(now.timestamp() + window)
+            clash = f"This one runs {MediaUtils.format_time(duration)} and would end <t:{end}:t>, overlapping it."
+        else:
+            clash = "Playing something else may run into it."
+        return (
+            f"📅 Heads up, {member.mention}: **#{nearest['number']} — {nearest.get('title', 'Unknown')}** "
+            f"is scheduled to start at {when} by {who}. {clash}"
+        )
+
+    def _playlist_leaf(self, number: int | None = None, item_id: str | None = None):
+        """Look up a playlist item by 1-based number or VLC id; None if not found."""
+        playlist = self.vlc.get_playlist()
+        items = playlist.findall('.//leaf') if playlist is not None else []
+        if number is not None:
+            return items[number - 1] if 1 <= number <= len(items) else None
+        return next((leaf for leaf in items if leaf.get('id') == item_id), None)
+
+    def _queue_next_starts_in(self) -> float:
+        """Seconds until a newly queued item would start: the rest of the current item
+        plus everything already queued ahead of it."""
+        total = 0.0
+        status = self.vlc.get_status()
+        try:
+            total += max(0, int(status.find('length').text) - int(status.find('time').text))
+        except Exception:
+            pass
+        playlist = self.vlc.get_playlist()
+        by_id = {leaf.get('id'): leaf for leaf in playlist.findall('.//leaf')} if playlist is not None else {}
+        for queued_id in self.vlc.get_queue_status().get('queued_items', {}):
+            # ponytail: runtimes that can't be read even by probing count as 0, so the window can come up short
+            duration = MediaUtils.resolve_duration(by_id[queued_id]) if queued_id in by_id else None
+            if isinstance(duration, int):
+                total += duration
+        return total
+
+    async def _confirm_nearby_schedule(self, sendable, member: discord.Member, item=None, starts_in: float = 0) -> bool:
+        """Gate a play-start command behind the schedule-proximity prompt.
+
+        Returns True to proceed. When there's nothing nearby (or nowhere to prompt),
+        proceeds immediately with no message. Otherwise sends the notice with
+        Continue/Cancel buttons and waits; Cancel or a timeout returns False.
+        """
+        # Off the event loop: the notice may probe a file's runtime (MediaUtils.probe_duration)
+        notice = await asyncio.to_thread(self._nearby_schedule_notice, member, item, starts_in)
+        if not notice or sendable is None:
+            return True
+        timeout = float(getattr(Config, 'SCHEDULE_PROXIMITY_CONFIRM_TIMEOUT_SECONDS', 30))
+        view = ScheduleConfirmView(member.id, timeout=timeout)
+        view.message = await sendable.send(notice, view=view)
+        await view.wait()
+        if not view.decision:
+            return False
+        # The prompt can wait a while: they may have left, or someone else may have started something.
+        ok, reason = await asyncio.to_thread(self._playback_guard, member)
+        if not ok:
+            await sendable.send(reason)
+        return ok
+
     async def _check_cooldown(self, ctx):
         """Check if enough time has passed since last state change"""
         guild_id = str(ctx.guild.id) if ctx.guild else 'dm'
@@ -715,6 +1012,9 @@ class PlaybackCommands(commands.Cog):
                 )
                 embed.add_field(name="Aliases", value="spd, speed15, speednorm", inline=True)
                 await ctx.send(embed=embed)
+                return
+
+            if not await self._check_room(ctx):
                 return
 
             t = target.strip().lower()
@@ -786,6 +1086,8 @@ class PlaybackCommands(commands.Cog):
                 status = self.vlc.get_status()
                 if status:
                     current_state = status.find('state').text
+                    if current_state == 'playing':
+                        self.vlc.queue_held = False  # any resume (play, next, VLC UI) releases a stop's hold on the queue
                     # If VLC is stopped, clear the bot's presence (throttled)
                     # BUT: do not clear it if we are still waiting for the initial scan to complete
                     try:
@@ -815,46 +1117,22 @@ class PlaybackCommands(commands.Cog):
                     # Check for state changes
                     if self.last_known_state is not None:
                         state_changed = current_state != self.last_known_state
-                        position_changed = current_position != self.last_known_position
+                        # Compare item IDs, not positions: deleting items above the current one (playlist
+                        # cleanup) shifts its position, which used to re-announce Now Playing on every delete.
+                        last_item = self.last_known_playing_item
+                        position_changed = (
+                            (current_item.get('id') if current_item is not None else None)
+                            != (last_item.get('id') if last_item is not None else None)
+                        )
                         
                         # Handle queue transitions when track changes OR when state changes to stopped/paused
                         if (position_changed and current_item is not None) or (state_changed and current_state in ['stopped', 'paused']):
-                            current_item_id = current_item.get('id') if current_item else None
-                            
-                            # Priority 1: Handle position changes (track transitions)
-                            if position_changed and current_item_id:
-                                # Check if there's a queue and this is a natural track progression
-                                next_queued = self.vlc.get_next_queued_item()
-                                if next_queued:
-                                    # There's a queued item - check if the current track is NOT the queued item
-                                    if current_item_id != next_queued['item_id']:
-                                        if self._check_queue_auto_play_cooldown():
-                                            logger.info(f"Track changed to {current_item_id} but we have queued item {next_queued['item_id']} - interrupting to play queued item")
-                                            try:
-                                                play_result = self.vlc.play_next_queued_item()
-                                                logger.info(f"Auto-play result: {play_result}")
-                                                
-                                                if play_result.get("success"):
-                                                    logger.info(f"Auto-played next queued item: {play_result.get('item_name', 'Unknown')}")
-                                                    
-                                                    # Optionally notify in Discord if notification channel is set
-                                                    channel_id = getattr(Config, 'WATCH_ANNOUNCE_CHANNEL_ID', 0)
-                                                    if channel_id:
-                                                        try:
-                                                            channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
-                                                            if channel:
-                                                                await channel.send(f"Auto-playing next queued item: **{play_result.get('item_name', 'Unknown')}**")
-                                                        except Exception as e:
-                                                            logger.error(f"Failed to send auto-play notification: {e}")
-                                                        
-                                                else:
-                                                    logger.warning(f"Auto-play failed: {play_result.get('error', 'Unknown error')}")
-                                            except Exception as e:
-                                                logger.error(f"Error auto-playing next queued item: {e}")
-                            
+                            # Note: an XML <leaf/> has no children, so it's falsy; always compare with None
+                            current_item_id = current_item.get('id') if current_item is not None else None
+
                             # Priority 2: For state changes to stopped OR paused, check if we should auto-play next queued item
                             # (movies often go to paused state when they end, not stopped)
-                            elif state_changed and current_state in ['stopped', 'paused'] and self.vlc.get_next_queued_item():
+                            if not (position_changed and current_item_id) and state_changed and current_state in ['stopped', 'paused'] and not self.vlc.queue_held and self.vlc.get_next_queued_item():
                                 if self._check_queue_auto_play_cooldown():
                                     try:
                                         logger.info(f"Track {current_state} - checking for next queued item to auto-play")
@@ -916,6 +1194,15 @@ class PlaybackCommands(commands.Cog):
                                     # Log any queue transitions
                                     if queue_result.get("transitions"):
                                         for transition in queue_result["transitions"]:
+                                            if transition["action"] == "auto_play_next_queued":
+                                                channel_id = getattr(Config, 'WATCH_ANNOUNCE_CHANNEL_ID', 0)
+                                                if channel_id:
+                                                    try:
+                                                        channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
+                                                        if channel:
+                                                            await channel.send(f"Auto-playing next queued item: **{transition['item_name']}**")
+                                                    except Exception as e:
+                                                        logger.error(f"Failed to send auto-play notification: {e}")
                                             if transition["action"] == "shuffle_restored":
                                                 logger.info(f"Queue system restored shuffle after item {transition['item_id']} finished")
                                                 
@@ -965,6 +1252,9 @@ class PlaybackCommands(commands.Cog):
                                 if position_changed and item_name:
                                     await self._set_presence(item_name, reason="track change")
                                     await self._set_voice_channel_status(item_name, state=current_state, reason="track change")
+                                elif state_changed and item_name and current_state in ('playing', 'paused'):
+                                    # Pause/resume: swap the ▶/⏸ prefix on the voice status
+                                    await self._set_voice_channel_status(item_name, state=current_state, reason=f"state change ({current_state})")
                             except Exception:
                                 pass
                             
@@ -1029,6 +1319,7 @@ class PlaybackCommands(commands.Cog):
                                     if total_length > 0 and (total_length - current_time) <= 3:
                                         # Near end while paused and nothing queued -> clear presence
                                         await self._set_presence(None, reason="paused at end")
+                                        await self._set_voice_channel_status(None, state='stopped', reason="paused at end")
                                         logger.info("Cleared presence: VLC paused at track end and no queued items")
                     except Exception as e:
                         logger.debug(f"Paused-end presence clear check failed: {e}")
@@ -1036,8 +1327,8 @@ class PlaybackCommands(commands.Cog):
                     # Enhanced periodic check: If we have queued items, ensure they get played
                     next_queued = self.vlc.get_next_queued_item()
                     if next_queued:
-                        # Case 1: VLC is stopped and we have queued items
-                        if current_state == 'stopped':
+                        # Case 1: VLC is stopped and we have queued items (unless a user stop is holding the queue)
+                        if current_state == 'stopped' and not self.vlc.queue_held:
                             # Reset playback rate when VLC has stopped (file finished)
                             try:
                                 self.vlc.set_rate(1.0)
@@ -1069,24 +1360,6 @@ class PlaybackCommands(commands.Cog):
                                 except Exception as e:
                                     logger.error(f"Error auto-playing from stopped state: {e}")
                         
-                        # Case 2: VLC is playing but wrong item (queue was bypassed)
-                        elif current_state == 'playing' and current_item:
-                            current_item_id = current_item.get('id')
-                            if current_item_id != next_queued['item_id']:
-                                if self._check_queue_auto_play_cooldown():
-                                    try:
-                                        logger.info(f"Periodic check: Wrong item playing ({current_item_id}), should be queued item ({next_queued['item_id']}) - correcting")
-                                        play_result = self.vlc.play_next_queued_item()
-                                        
-                                        if play_result.get("success"):
-                                            logger.info(f"Periodic correction successful: {play_result.get('item_name', 'Unknown')}")
-                                            try:
-                                                await self._set_presence(play_result.get('item_name'), reason="periodic correction (wrong item)")
-                                                await self._set_voice_channel_status(play_result.get('item_name'), state='playing', reason="periodic correction (wrong item)")
-                                            except Exception:
-                                                pass
-                                    except Exception as e:
-                                        logger.error(f"Error in periodic queue correction: {e}")
                     
             except Exception as e:
                 logger.error(f"Error in VLC monitoring task: {e}")
@@ -1750,6 +2023,9 @@ class PlaybackCommands(commands.Cog):
         if not await self._check_cooldown(ctx):
             return
 
+        if not await self._check_room(ctx):
+            return
+
         status = self.vlc.get_status()
         if not status:
             await ctx.send('Error: Could not access VLC')
@@ -1802,6 +2078,9 @@ class PlaybackCommands(commands.Cog):
     @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def stop(self, ctx):
         """Stop playback"""
+        if not await self._check_room(ctx):
+            return
+
         if self.vlc.stop():
             logger.info("Playback stopped")
             embed = discord.Embed(
@@ -1823,6 +2102,9 @@ class PlaybackCommands(commands.Cog):
     @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def restart(self, ctx):
         """Restart current file from the beginning"""
+        if not await self._check_room(ctx):
+            return
+
         if self.vlc.seek("0"):
             logger.info("Restarted current file from beginning")
             await ctx.send('Restarted current file from the beginning')
@@ -1834,6 +2116,9 @@ class PlaybackCommands(commands.Cog):
     @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def rewind(self, ctx, seconds: int = 10):
         """Rewind playback by specified number of seconds"""
+        if not await self._check_room(ctx):
+            return
+
         if seconds <= 0:
             embed = discord.Embed(
                 title="⏪ Rewind failed",
@@ -1862,6 +2147,9 @@ class PlaybackCommands(commands.Cog):
     @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def forward(self, ctx, seconds: int = 10):
         """Fast forward playback by specified number of seconds"""
+        if not await self._check_room(ctx):
+            return
+
         if seconds <= 0:
             embed = discord.Embed(
                 title="⏩ Fast-forward failed",
@@ -1895,6 +2183,13 @@ class PlaybackCommands(commands.Cog):
                 await ctx.send('Please provide a number greater than 0')
                 return
 
+            ok, reason = self._playback_guard(ctx.author)
+            if not ok:
+                await ctx.send(reason)
+                return
+            if not await self._confirm_nearby_schedule(ctx, ctx.author, self._playlist_leaf(number)):
+                return
+
             playlist = self.vlc.get_playlist()
             if not playlist:
                 await ctx.send('Could not access VLC playlist')
@@ -1913,6 +2208,7 @@ class PlaybackCommands(commands.Cog):
             item_id = item.get('id')
 
             if self.vlc.play_item(item_id):
+                self._seat_playback_owner(ctx.author, item_id)
                 logger.info(f"Loading playlist item #{number}")
                 await ctx.send(f'Loading item #{number}...')
                 await asyncio.sleep(3)  # Give VLC time to load and start playing the file
@@ -1953,9 +2249,16 @@ class PlaybackCommands(commands.Cog):
         """Play next track in playlist (prioritizes queued items)"""
         if not await self._check_cooldown(ctx):
             return
-        
-        # First check if there are any queued items to play
+
+        ok, reason = self._playback_guard(ctx.author)
+        if not ok:
+            await ctx.send(reason)
+            return
         next_queued = self.vlc.get_next_queued_item()
+        if not await self._confirm_nearby_schedule(ctx, ctx.author, self._playlist_leaf(item_id=next_queued['item_id']) if next_queued else None):
+            return
+
+        # First check if there are any queued items to play
         if next_queued:
             logger.info(f"Playing next queued item: {next_queued['item_name']}")
             result = self.vlc.play_next_queued_item()
@@ -2026,7 +2329,14 @@ class PlaybackCommands(commands.Cog):
         """Play previous track in playlist"""
         if not await self._check_cooldown(ctx):
             return
-            
+
+        ok, reason = self._playback_guard(ctx.author)
+        if not ok:
+            await ctx.send(reason)
+            return
+        if not await self._confirm_nearby_schedule(ctx, ctx.author):
+            return
+
         if self.vlc.previous():
             logger.info("Loading previous track")
             await ctx.send('Loading previous track...')
@@ -2398,6 +2708,13 @@ class PlaybackCommands(commands.Cog):
                 await ctx.send('Please provide a number greater than 0')
                 return
 
+            ok, reason = self._playback_guard(ctx.author)
+            if not ok:
+                await ctx.send(reason)
+                return
+            if not await self._confirm_nearby_schedule(ctx, ctx.author, self._playlist_leaf(number), await asyncio.to_thread(self._queue_next_starts_in)):
+                return
+
             playlist = self.vlc.get_playlist()
             if not playlist:
                 await ctx.send('Could not access VLC playlist')
@@ -2522,6 +2839,9 @@ class PlaybackCommands(commands.Cog):
     @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def clear_queue(self, ctx):
         """Clear all queue tracking (useful for reset)"""
+        if not await self._check_room(ctx):
+            return
+
         try:
             self.vlc.clear_queue_tracking()
             embed = discord.Embed(
@@ -2552,6 +2872,9 @@ class PlaybackCommands(commands.Cog):
 
         (Commands are shown with the configured prefix in the help output.)
         """
+        if not await self._check_room(ctx):
+            return
+
         try:
             if ref.startswith('#'):
                 num = int(ref[1:])
@@ -2581,6 +2904,9 @@ class PlaybackCommands(commands.Cog):
     @commands.command(name='shuffle_on', aliases=['shuffle_enable'])
     async def shuffle_on(self, ctx):
         """Enable shuffle mode"""
+        if not await self._check_room(ctx):
+            return
+
         try:
             current_shuffle = self.vlc.get_shuffle_state()
             
@@ -2610,6 +2936,9 @@ class PlaybackCommands(commands.Cog):
     @commands.command(name='shuffle_off', aliases=['shuffle_disable'])
     async def shuffle_off(self, ctx):
         """Disable shuffle mode"""
+        if not await self._check_room(ctx):
+            return
+
         try:
             current_shuffle = self.vlc.get_shuffle_state()
             
@@ -2639,6 +2968,9 @@ class PlaybackCommands(commands.Cog):
     @commands.command(name='shuffle_toggle', aliases=['shuffle'])
     async def shuffle_toggle(self, ctx):
         """Toggle shuffle mode on/off"""
+        if not await self._check_room(ctx):
+            return
+
         try:
             current_shuffle = self.vlc.get_shuffle_state()
             

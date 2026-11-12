@@ -56,6 +56,65 @@ class MediaUtils:
             except Exception as e:
                 logger.debug(f"Error parsing duration element: {e}")
         return None
+
+    _probed_durations: dict = {}
+
+    @staticmethod
+    def probe_duration(uri: str | None, timeout_ms: int = 2000) -> int | None:
+        """Read a file's runtime (seconds) by parsing it locally with libvlc.
+
+        For playlist entries VLC hasn't parsed yet. Successful results are cached
+        per URI; failures (no libvlc, unreachable file, timeout) return None and
+        are retried next time.
+        """
+        if not uri:
+            return None
+        cached = MediaUtils._probed_durations.get(uri)
+        if cached:
+            return cached
+        try:
+            import time
+            import vlc
+            media = vlc.Media(uri)
+            flags = vlc.MediaParseFlag(vlc.MediaParseFlag.local.value | vlc.MediaParseFlag.network.value)
+            media.parse_with_options(flags, timeout_ms)
+            deadline = time.monotonic() + timeout_ms / 1000 + 0.5
+            # Blocks up to timeout_ms on slow shares; callers run this off the event loop (asyncio.to_thread)
+            while media.get_parsed_status() == 0 and time.monotonic() < deadline:
+                time.sleep(0.05)
+            ms = media.get_duration()
+            media.release()
+        except Exception:
+            return None
+        if ms and ms > 0:
+            MediaUtils._probed_durations[uri] = ms // 1000
+            return ms // 1000
+        return None
+
+    @staticmethod
+    def resolve_duration(item) -> int | None:
+        """Runtime in seconds from VLC's playlist entry, else by probing the file."""
+        duration = MediaUtils.get_media_duration(item)
+        if isinstance(duration, int):
+            return duration
+        return MediaUtils.probe_duration(item.get('uri'))
+
+    @staticmethod
+    def _strip_brackets(name: str) -> str:
+        """Pre-clean a filename stem for title/year parsing.
+
+        - Keeps a bracketed year as a plain token: "Title [1988]" -> "Title 1988"
+        - Drops other [bracketed] tracker/release tags
+        - Drops a parenthesized non-Latin alternate title: "Red Sorghum (紅高粱)" -> "Red Sorghum",
+          unless that would leave no Latin title to search with
+        """
+        name = re.sub(r'\[\s*((?:19|20)\d{2})\s*\]', r' \1 ', name)
+        name = re.sub(r'\[[^\]]*\]', ' ', name)
+        without_alt = re.sub(r'\(\s*[^\x00-\x7F()]+\s*\)', ' ', name)
+        if re.search(r'[A-Za-z]', without_alt):
+            name = without_alt
+        return name
+
     @staticmethod
     def parse_movie_filename(filename: str) -> Tuple[str, Optional[int]]:
         """Parse a movie filename into a clean title and optional release year.
@@ -77,8 +136,7 @@ class MediaUtils:
         # Remove only known video extensions (avoid splitext confusion with scene tags like [eztv.re]).
         name = re.sub(r'(?i)\.(mkv|mp4|avi|mov|m4v|ts|m2ts|wmv|flv|webm)$', '', basename)
 
-        # Remove bracketed tracker/release suffixes often appended by indexers.
-        name = re.sub(r'\[[^\]]*\]', ' ', name)
+        name = MediaUtils._strip_brackets(name)
 
         # Normalize separators and remove brackets to simplify tokenization
         normalized = name.replace('.', ' ').replace('_', ' ')
@@ -195,8 +253,7 @@ class MediaUtils:
         # Remove only known video extensions (avoid splitext() confusion with scene tags like [eztv.re]).
         name = re.sub(r'(?i)\.(mkv|mp4|avi|mov|m4v|ts|m2ts|wmv|flv|webm)$', '', base)
 
-        # Remove bracketed tracker/release suffixes and normalize separators.
-        name = re.sub(r'\[[^\]]*\]', ' ', name)
+        name = MediaUtils._strip_brackets(name)
         work = name.replace('.', ' ').replace('_', ' ')
         work = re.sub(r'\s+', ' ', work).strip()
         
@@ -228,6 +285,8 @@ class MediaUtils:
         work = re.sub(r'\b(?:nf|amzn|atvp|dsnp|hulu|max|hbo)\b', ' ', work, flags=re.IGNORECASE)
         # Remove trailing release-group style suffixes (e.g., -iKA)
         work = re.sub(r'\s*[-–]\s*[A-Za-z0-9]{2,}$', ' ', work)
+        # Drop brackets emptied by the removals above, e.g. "Show (2023)" -> "Show ( )"
+        work = re.sub(r'\(\s*\)', ' ', work)
         work = re.sub(r'\s+', ' ', work).strip()
         # Cleanup trailing separators like '-' or '–'
         work = re.sub(r'[\-–]+\s*$', '', work).strip()

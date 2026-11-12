@@ -2,14 +2,14 @@
 
 A Discord bot that controls a local VLC player and exposes playback controls, playlist search, queueing, scheduling, watch-folder ingestion, and metadata lookups.
 
-Current app version: `1.9.17`.
+Current app version: `1.17.7`.
 
 ## What It Does
 
 - Controls VLC playback from Discord (`play`, `pause`, `next`, `rewind`, speed, shuffle, etc.)
 - Lets users browse/search the active VLC playlist with paginated embeds
 - Supports a soft queue system that works with VLC shuffle behavior
-- Schedules playlist items using Philippines time (`Asia/Manila`)
+- Schedules playlist items using Philippines time (`Asia/Manila`); schedule times are also shown in each viewer's local timezone
 - Watches folders for new media and enqueues files automatically
 - Enriches now-playing/status messages with TMDB movie/TV metadata
 - Optionally shows recent downloads from one or more Radarr instances
@@ -17,12 +17,51 @@ Current app version: `1.9.17`.
 
 ## Requirements
 
-- Python `3.10+`
+- Python `3.10+`, with the `venv` and `pip` modules available (see below)
 - VLC Media Player with HTTP interface enabled
 - A Discord bot token
-- TMDB API key (recommended; required for full metadata features)
+- TMDB API key (required — the bot won't start without one)
+
+### Installing Python
+
+- **macOS**: `brew install python3` (includes `venv`/`pip`), or download from [python.org](https://www.python.org/downloads/).
+- **Windows**: download from [python.org](https://www.python.org/downloads/) and check "Add python.exe to PATH" during install.
+- **Debian/Ubuntu**: the system `python3` package alone is not enough — `venv` and `pip` are separate packages:
+  ```bash
+  sudo apt install python3 python3-venv python3-pip
+  ```
+  If you already ran `setup.py` before installing `python3-pip`, delete `.venv` and re-run it.
 
 ## Quick Setup
+
+The fastest way to get running is the setup script, which creates the virtual environment, installs dependencies, and walks you through the essential `.env` settings:
+
+```bash
+# macOS/Linux
+python3 setup.py
+
+# Windows
+python setup.py
+```
+
+Then start the bot:
+
+```bash
+# macOS/Linux
+source .venv/bin/activate
+# Windows PowerShell
+# .\.venv\Scripts\Activate.ps1
+
+python bot.py
+```
+
+Re-running `setup.py` is safe — it won't recreate an existing `.venv` or overwrite an existing `.env`.
+
+The setup script only configures the essentials needed to get online (Discord token, allowed roles, command mode, VLC connection, TMDB key — required, not optional, since the bot won't start without it). It also disables voice auto-join by default, since no voice channel is collected. For watch folders, Radarr, voice auto-join, and other optional features, edit `.env` directly — see [Configuration](#configuration) below.
+
+### Manual Setup
+
+If you'd rather do it by hand:
 
 1. Clone this repository.
 2. Create and activate a virtual environment.
@@ -67,13 +106,76 @@ Use `.env` values for connection:
 
 ## Discord Setup
 
-In Discord Developer Portal, ensure your bot has:
+### Privileged intents (Developer Portal → Bot)
 
-- `MESSAGE CONTENT INTENT` enabled
-- Permissions to read/send messages and embeds in the channels you use
+- **Message Content Intent**: only needed when `ENABLE_PREFIX_COMMANDS=true`. Slash-only setups can leave it off.
+- **Server Members** and **Presence** intents are not needed.
+
+### Invite scopes and permissions
+
+Invite with the `bot` and `applications.commands` scopes (the latter is required for slash commands).
+
+| Permission | Why | Needed? |
+|---|---|---|
+| View Channels | See the command, announcement, and voice channels | Required |
+| Send Messages | Prefix replies, now-playing, watch and schedule announcements | Required |
+| Embed Links | Nearly every reply is an embed; without it they show up blank | Required |
+| Attach Files | Announcements attach the bot avatar as a thumbnail | Required |
+| Connect | Voice auto-join | Required if voice auto-join is on |
+| Set Voice Channel Status | The `▶ Title (Year)` voice channel status (Manage Channels also works but is much broader) | Required for voice status |
+| Mention Everyone | Only so `WATCH_ANNOUNCE_ROLE_ID` pings land when that role isn't set to "Allow anyone to @mention" | Optional |
+
+Not needed: **Speak** (the bot joins self-muted and self-deafened; VLC plays locally), **Manage Messages** (the bot only deletes its own messages), **Read Message History**, **Add Reactions**.
+
+Permission integer: `281474977811456` (recommended), or `281474977942528` with Mention Everyone.
+
+```
+https://discord.com/oauth2/authorize?client_id=<APP_ID>&scope=bot+applications.commands&permissions=281474977811456
+```
+
+Per-server notes:
+
+- Channel-level overrides beat server-wide grants. Check the announcement and voice channels for denies.
+- Slash command replies work even where the bot can't post, but now-playing and watch announcements are regular messages and need the channel permissions above.
+- Roles in `ALLOWED_ROLES` must exist in the server; the bot logs a startup warning for any it can't find.
 
 For larger bots (including bots approaching or exceeding 10k servers), Discord may require stronger justification and transparency for privileged intents.
 CtrlVee requests Message Content Intent strictly for prefix command parsing, and includes an in-bot privacy statement via `!privacy`.
+
+### Slash Migration Note
+
+CtrlVee now supports hybrid prefix+slash operation during v2 migration.
+
+Default mode is prefix commands for backward compatibility. Slash commands are opt-in.
+
+- `ENABLE_PREFIX_COMMANDS=true|false`
+- `ENABLE_SLASH_COMMANDS=true|false`
+- `SLASH_COMMAND_GUILD_ID=<guild_id_or_0>`
+- `SYNC_GLOBAL_COMMANDS=true|false` (recommended `false` when `SLASH_COMMAND_GUILD_ID` is set)
+
+If you set `ENABLE_PREFIX_COMMANDS=false` and keep slash commands enabled, the bot can run without Message Content Intent dependency for command parsing.
+
+Run `/help` anytime for a list of all available slash commands (the prefix equivalent is `!controls`).
+
+Owner slash maintenance commands:
+
+- `/admin cleanup-playlist` removes missing files from VLC playlist entries.
+- `/admin show-config` shows a human-readable config overview for the current server (resolves channel/role IDs to names; owner-only).
+- `/admin reconnect-voice` forces an immediate voice channel reconnect attempt without restarting the bot process (owner-only).
+- `/system clear-global-slash` performs one-time global slash cleanup in dev-guild mode.
+
+### Troubleshooting: Duplicate Slash Commands in Dev Guild
+
+If you see duplicate slash commands in a development server, it usually means both global and guild registrations exist for the same app.
+
+Use this one-time cleanup flow:
+
+1. Set `SLASH_COMMAND_GUILD_ID` to your test guild and `SYNC_GLOBAL_COMMANDS=false`.
+2. Restart the bot.
+3. Run owner cleanup command once: `/system clear-global-slash` (or `!clearglobalslash`).
+4. Restart Discord client once to refresh local command cache.
+
+You do not need to reinvite the bot for this issue.
 
 ## Configuration
 
@@ -88,6 +190,14 @@ Edit `.env` (starting from `template.env`).
 ### Core Behavior
 
 - `DISCORD_COMMAND_PREFIX` (default `!`)
+- `ENABLE_PREFIX_COMMANDS` (default `true`)
+- `ENABLE_SLASH_COMMANDS` (default `true`)
+- `SLASH_COMMAND_GUILD_ID` (default `0`, global sync)
+- `SYNC_GLOBAL_COMMANDS` (default `false`; avoids duplicate guild+global entries in dev guild mode)
+- `COMMAND_CHANNEL_ID` (comma-separated; if set, slash commands are restricted to these channels, independent of where announcements go)
+- `WATCH_ANNOUNCE_CHANNEL_ID` (when `COMMAND_CHANNEL_ID=0`, slash commands are restricted to these channels)
+- If both are unset/0, guild slash commands are blocked until one is configured.
+- `SEARCH_LOG_CHANNEL_ID` (default `0`): channel to log searches that returned no results (movie requests, playlist search/play-search). Logs to the terminal instead when unset.
 - `ITEMS_PER_PAGE` (default `20`)
 - `QUEUE_BACKUP_FILE` (default `queue_backup.json`)
 - `PLAYLIST_AUTOSAVE_FILE` + `PLAYLIST_AUTOSAVE_INTERVAL` (optional autosave)
@@ -135,6 +245,38 @@ Edit `.env` (starting from `template.env`).
 - `ENABLE_VOICE_GUARD`
 - `ENABLE_VOICE_EVENTS_RECONNECT`
 
+The **voice room rules** (`ENABLE_VOICE_ROOM_RULES`, default `true`) make the
+commands that start or switch playback behave like a music bot tied to the room
+voice channel: the person using `play-item`/`play-search` must be inside
+`VOICE_JOIN_CHANNEL_ID`, and a different user can't take over the currently
+playing item while the person who started it is still in the room. `next`/`previous`
+and `queue add-next`/`!queue_next` are guarded the same way, so a non-owner can't
+skip or queue an item past the current watcher. Ownership resets automatically
+when the item actually changes — auto-advanced/watch-folder screens, `stop`, or
+the watcher's own `next` free the slot.
+
+The other playback commands also require being in the room: `play`, `stop`, `restart`,
+`rewind`, `forward`, changing `speed` or `shuffle`, and clearing or removing queue items.
+`pause` stays open to anyone with an allowed role, and only ever pauses.
+Commands that just show status are also open. If `VOICE_JOIN_CHANNEL_ID` is `0` these rules do
+nothing, and if it's set to a channel the bot can't find, guarded commands are refused until
+that's fixed. Either case logs a startup warning. Every command and guard decision is logged
+with the user who ran it.
+
+The **schedule proximity guard** (`ENABLE_SCHEDULE_PROXIMITY_GUARD`, default `true`)
+prompts whoever runs `play-item`/`play-search`, `next`/`previous`, or `queue
+add-next`/`!queue_next` when an **upcoming** scheduled movie would start before the
+item being played finishes, using that item's runtime from VLC (for queue add-next, counted
+from when it would actually start: after the current item and anything already queued).
+If VLC hasn't parsed the file yet, the bot reads its runtime from the file directly.
+When the runtime still isn't known (the file can't be read, `next` without a queued item,
+`previous`, or a multi-result `play-search`), it falls back to
+`SCHEDULE_PROXIMITY_WINDOW_SECONDS` (default `1800`, i.e. 30 minutes). A schedule that
+has already started does not trigger it. The prompt names the scheduled movie and who
+scheduled it, with **Continue**/**Cancel** buttons — pick Continue to play anyway, Cancel
+(or letting it sit for `SCHEDULE_PROXIMITY_CONFIRM_TIMEOUT_SECONDS`, default 30s) to leave
+the schedule alone and skip the command.
+
 ### Radarr (Optional)
 
 Single instance:
@@ -164,6 +306,29 @@ RADARR_ANIME_USE_SSL=true
 RADARR_ANIME_DISPLAY_NAME=Anime
 ```
 
+### Movie and TV Requests (Overseerr/Jellyseerr, Optional)
+
+Lets allowed users request movies via `/request movie <title>` and TV series via
+`/request tv <title>` (slash-only), tracked locally and announced when available. Availability is checked by polling — no
+inbound webhook is needed.
+
+```bash
+OVERSEERR_URL=http://localhost:5055
+OVERSEERR_API_KEY=your_overseerr_or_jellyseerr_api_key
+REQUEST_CHANNEL_ID=123456789012345678
+REQUEST_ANNOUNCE_CHANNEL_ID=0
+REQUEST_POLL_INTERVAL=900
+REQUEST_STORE_FILE=movie_requests.json
+# Optional: route every request to a specific Radarr instance configured in Overseerr
+# (Settings > Services > find its server ID). Blank uses Overseerr's own default instance.
+OVERSEERR_RADARR_SERVER_ID=
+# Same for /request tv, using the Sonarr instance's server ID. Sonarr has its own IDs.
+OVERSEERR_SONARR_SERVER_ID=
+```
+
+`/request tv` asks for every season. A series is announced once Overseerr marks the
+whole request available, and can be requested again later to pick up new seasons.
+
 ## Commands
 
 Prefix shown as `!` below; replace with your configured `DISCORD_COMMAND_PREFIX`.
@@ -182,7 +347,7 @@ Prefix shown as `!` below; replace with your configured `DISCORD_COMMAND_PREFIX`
 
 - `!list`
 - `!search <query>`
-- `!play_search <query>`
+- `!play_search <query>` — shows a picker when multiple results are found; plays directly if only one match
 - `!cleanup` (aliases: `plcleanup`, `cleanup_missing`) removes missing files from VLC playlist
 
 ### Subtitles and Audio
@@ -202,6 +367,8 @@ Prefix shown as `!` below; replace with your configured `DISCORD_COMMAND_PREFIX`
 
 ### Scheduling
 
+Scheduling commands need an allowed role, but you don't need to be in the voice room.
+
 - `!schedule <number> <YYYY-MM-DD> <HH:MM>`
 - `!schedules`
 - `!unschedule <number>`
@@ -213,6 +380,22 @@ Prefix shown as `!` below; replace with your configured `DISCORD_COMMAND_PREFIX`
 - `!privacy` (aliases: `policy`, `data_policy`)
 - `!changelog` (aliases: `changes`, `whatsnew`)
 - `!controls`
+- `!stats` (alias: `leaderboard`), or `/stats` — open to everyone
+
+### Watch Leaderboard
+
+`/stats` and `!stats` show the top 10 by hours watched and by titles finished. Everyone in `VOICE_JOIN_CHANNEL_ID`, apart from bots, is credited every 30 seconds while VLC is playing, so this measures presence in the room, not attention. Nothing is tracked if that channel isn't set.
+
+A title counts as finished once a person has been present for 85% of its minutes, across as many sittings as it takes. Each title counts once per person, and each TV episode is its own title. Rewatching still adds hours. Totals are kept in `watch_stats.json`.
+
+To keep an account off the board, such as the one you stream from, add its Discord user ID to `STATS_EXCLUDED_USER_IDS` (comma-separated) and restart. It's hidden from both ladders, including anything it already earned. Removing the ID brings it back with its totals.
+
+### Movie and TV Requests (Slash Only)
+
+- `/request movie <title>` — search and request a movie via Overseerr/Jellyseerr
+- `/request tv <title>` — search and request every season of a TV series
+- `/request status` — check the status of your own requests
+- `/request clear` — remove your own declined/failed/removed requests from tracking
 
 ## Privacy Statement
 
@@ -246,6 +429,7 @@ For public deployments, set these in `.env`:
 ### Watch Folders
 
 - `!watch_add <path>`
+- `!watch_remove [path]` (no path shows a folder picker; append `--keep` to leave its files in the playlist; slash: `/watch remove`)
 
 ### Radarr
 

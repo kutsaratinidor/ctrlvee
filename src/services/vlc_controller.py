@@ -38,6 +38,8 @@ class VLCController:
         # Queue management state
         self._queued_items = {}  # item_id -> queue_info
         self._shuffle_restore_queue = []  # List of items that need shuffle restored after playing
+        self.queue_held = False  # Set by stop() so the monitor doesn't auto-start the queue; cleared once VLC plays again
+        self._expected_item_id = None  # Item we asked VLC to play; a track change to it is deliberate, not auto-advance
         
         # Load queue state from backup file
         self._load_queue_backup()
@@ -156,8 +158,8 @@ class VLCController:
         if playlist is None:
             playlist = self.get_playlist()
         
-        if not playlist:
-            return {}
+        if playlist is None:
+            return {}, None
         
         playlist_map = {}
         current_item_id = None
@@ -364,6 +366,30 @@ class VLCController:
             self.logger.error(f"remove_missing_playlist_items error: {e}")
             return result
 
+    def remove_playlist_items_under(self, folder: str) -> dict:
+        """Remove playlist items whose file lives under folder. The currently playing
+        item is left alone so playback isn't cut off.
+
+        Returns { 'removed': int, 'items': [ { 'id', 'name' } ], 'skipped_current': bool }
+        """
+        from ..config import path_is_under
+        result = {'removed': 0, 'items': [], 'skipped_current': False}
+        playlist = self.get_playlist()
+        if not playlist:
+            return result
+        for leaf in playlist.findall('.//leaf'):
+            path = self._uri_to_path(leaf.get('uri'))
+            item_id = leaf.get('id')
+            if not path or not item_id or not path_is_under(path, folder):
+                continue
+            if leaf.get('current') is not None:
+                result['skipped_current'] = True
+                continue
+            if self.delete_playlist_item(item_id):
+                result['removed'] += 1
+                result['items'].append({'id': item_id, 'name': leaf.get('name', '')})
+        return result
+
     def export_playlist_xspf(self) -> Optional[str]:
         """Export current playlist in XSPF format (as a UTF-8 XML string).
 
@@ -419,15 +445,20 @@ class VLCController:
         return self.send_command("pl_play")
         
     def pause(self):
-        """Pause playback"""
-        return self.send_command("pl_pause")
+        """Pause playback. pl_pause is a toggle that also resumes or starts it, so never use that here."""
+        return self.send_command("pl_forcepause")
         
     def stop(self):
-        """Stop playback"""
+        """Stop playback. Holds the soft queue so a user stop isn't undone by queue auto-play."""
+        self.queue_held = True
         return self.send_command("pl_stop")
         
     def next(self):
-        """Play next track"""
+        """Play next track: the soft queue's head if anything is queued, else VLC's next playlist item."""
+        if self._queued_items:
+            result = self.play_next_queued_item()
+            if result.get("success"):
+                return result
         return self.send_command("pl_next")
         
     def previous(self):
@@ -473,7 +504,7 @@ class VLCController:
         
     def play_item(self, item_id):
         """Play a specific item from the playlist"""
-        # Send direct play command with the item id
+        self._expected_item_id = str(item_id)
         return self.send_command("pl_play", {"id": str(item_id)})
     
     def get_shuffle_state(self):
@@ -515,6 +546,7 @@ class VLCController:
     
     def play_item_by_id(self, item_id):
         """Play a specific playlist item by its ID"""
+        self._expected_item_id = str(item_id)
         result = self.send_command("pl_play", {"id": str(item_id)})
         if result is not None:
             self.logger.debug(f"Play command sent for item {item_id}")
@@ -1076,12 +1108,19 @@ class VLCController:
         Returns:
             dict: Result of playing the next queued item
         """
-        next_item = self.get_next_queued_item()
-        if not next_item:
-            return {"success": False, "error": "No items in queue"}
-        
-        item_id = next_item["item_id"]
-        item_name = next_item["item_name"]
+        playlist_map, _ = self._parse_playlist_info()
+        while True:
+            next_item = self.get_next_queued_item()
+            if not next_item:
+                return {"success": False, "error": "No items in queue"}
+            item_id = next_item["item_id"]
+            item_name = next_item["item_name"]
+            live = playlist_map.get(str(item_id))
+            if live and live["name"] == item_name:
+                break
+            # VLC ignores pl_play for an unknown id, so playing it would silently do nothing
+            self.logger.warning(f"Dropping stale queued item {item_name} (ID: {item_id}): no longer in the VLC playlist")
+            self._remove_from_queue(item_id)
         
         # Check if this is the last item in the queue before playing it
         remaining_queue_items = len(self._queued_items)
@@ -1129,52 +1168,25 @@ class VLCController:
             dict: Information about any queue transitions that occurred
         """
         transitions = []
-        
-        # First, check if the current item is one we were tracking
-        # If so, it means it just started playing (either queued or natural progression)
-        current_is_queued = current_item_id in self._queued_items
-        
-        # For soft queue, we need different logic:
-        # 1. If current item is a queued item, remove it from tracking
-        # 2. Check if there are more items in the queue to play
-        
-        if current_is_queued:
-            # This queued item just started playing
-            if current_item_id in self._queued_items:
-                queue_info = self._queued_items[current_item_id]
-                item_name = queue_info.get("item_name", "Unknown")
-                
-                self.logger.info(f"Soft-queued item now playing: {item_name} (ID: {current_item_id})")
-                
-                # Use the centralized removal method
-                self._remove_from_queue(current_item_id)
-                
-                transitions.append({
-                    "action": "queued_item_started",
-                    "item_id": current_item_id,
-                    "item_name": item_name,
-                    "success": True
-                })
-            else:
-                self.logger.debug(f"Queued item {current_item_id} already removed from queue")
-        
-        # Check if we should play the next queued item
-        # This happens when the current track is about to end or has ended
-        next_queued = self.get_next_queued_item()
-        if next_queued and not current_is_queued:
-            # There's a next item to play and current item is not a queued item
-            # This suggests the previous track ended naturally
-            
+        current_item_id = str(current_item_id)
+        deliberate = current_item_id == self._expected_item_id
+        self._expected_item_id = None
+
+        if current_item_id in self._queued_items:
+            # A queued item is now playing (reached naturally or picked directly): it's no longer pending
+            item_name = self._queued_items[current_item_id].get("item_name", "Unknown")
+            self.logger.info(f"Soft-queued item now playing: {item_name} (ID: {current_item_id})")
+            self._remove_from_queue(current_item_id)
+            transitions.append({"action": "queued_item_started", "item_id": current_item_id,
+                                "item_name": item_name, "success": True})
+        elif not deliberate and self._queued_items:
+            # VLC auto-advanced (or pl_next) to some other item: the queue takes priority
             play_result = self.play_next_queued_item()
             if play_result.get("success"):
-                transitions.append({
-                    "action": "auto_play_next_queued",
-                    "item_id": play_result["item_id"],
-                    "item_name": play_result["item_name"],
-                    "success": True
-                })
+                transitions.append({"action": "auto_play_next_queued", "item_id": play_result["item_id"],
+                                    "item_name": play_result["item_name"], "success": True})
                 self.logger.info(f"Automatically playing next queued item: {play_result['item_name']}")
-        
+
         # Save backup after any queue state changes (if any transitions occurred)
         if transitions:
             self._save_queue_backup()
