@@ -126,6 +126,27 @@ async def main():
     assert vlc.cur == "3" and vlc.state == "playing", "a natural stop must still start the queue"
     vlc.clear_queue_tracking()
 
+    announced = []
+
+    async def announce(source, item, position):
+        announced.append(item.get('id'))
+    cog._announce_now_playing = announce
+    vlc.items = {"1": "a", "2": "b", "3": "c", "4": "d", "5": "e"}
+    vlc.cur, vlc.state = "4", "playing"
+    await ticks(cog)
+    announced.clear()
+    vlc.queue_item_next("5")
+    for gone in ("1", "2", "3"):  # cleanup deletes missing files above the current item, one per poll
+        del vlc.items[gone]
+        await ticks(cog, 1)
+    assert not announced, f"cleanup shifting positions must not re-announce Now Playing, got {announced}"
+    assert vlc.cur == "4" and list(vlc._queued_items) == ["5"], "cleanup must not trigger queue auto-play"
+    vlc.items = {"1": "a", "2": "b", "3": "c", "4": "d", "5": "e"}
+    vlc.cur = "1"
+    vlc.clear_queue_tracking()
+    await ticks(cog)
+    cog._announce_now_playing = _noop
+
     vlc.queue_item_next("99")  # id no longer in VLC (playlist reloaded / VLC restarted)
     vlc.queue_item_next("3")
     vlc._queued_items["3"]["item_name"] = "renamed"  # same id now points at a different file

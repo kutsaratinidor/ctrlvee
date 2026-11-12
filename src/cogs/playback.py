@@ -1117,7 +1117,13 @@ class PlaybackCommands(commands.Cog):
                     # Check for state changes
                     if self.last_known_state is not None:
                         state_changed = current_state != self.last_known_state
-                        position_changed = current_position != self.last_known_position
+                        # Compare item IDs, not positions: deleting items above the current one (playlist
+                        # cleanup) shifts its position, which used to re-announce Now Playing on every delete.
+                        last_item = self.last_known_playing_item
+                        position_changed = (
+                            (current_item.get('id') if current_item is not None else None)
+                            != (last_item.get('id') if last_item is not None else None)
+                        )
                         
                         # Handle queue transitions when track changes OR when state changes to stopped/paused
                         if (position_changed and current_item is not None) or (state_changed and current_state in ['stopped', 'paused']):

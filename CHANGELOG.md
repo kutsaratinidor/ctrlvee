@@ -1,3 +1,8 @@
+## 1.20.3 - 2026-11-12
+
+### Fixed
+- **Playlist cleanup re-sent Now Playing over and over**: The bot spotted track changes by the current item's position number in the playlist. Removing missing files above it shifted that number on each delete, so the same title was announced repeatedly. If something was queued, it could also jump to the queued item mid-cleanup. Track changes are now spotted by the item's VLC ID.
+
 ## 1.20.2 - 2026-11-10
 
 ### Fixed
