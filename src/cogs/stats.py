@@ -2,6 +2,7 @@ import asyncio
 import io
 import logging
 import time
+from datetime import datetime, time as dtime
 from urllib.parse import unquote
 
 import discord
@@ -9,7 +10,7 @@ from discord.ext import commands, tasks
 
 from ..config import Config
 from ..utils.media_utils import MediaUtils
-from .scheduler import _title_key
+from .scheduler import PH_TZ, _title_key
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +131,23 @@ async def build_stats_message(stats) -> dict:
     return {"embeds": [board, card], "file": discord.File(io.BytesIO(jpeg), filename=GRID_FILENAME)}
 
 
+def announce_time() -> dtime | None:
+    """STATS_ANNOUNCE_TIME as a Philippines-time time of day, or None when it's off or invalid."""
+    raw = Config.STATS_ANNOUNCE_TIME
+    if raw.lower() in {"", "off", "0", "false", "no"}:
+        return None
+    try:
+        return datetime.strptime(raw, "%H:%M").time().replace(tzinfo=PH_TZ)
+    except ValueError:
+        logger.warning(f"STATS_ANNOUNCE_TIME={raw!r} isn't HH:MM; the daily stats post is off")
+        return None
+
+
+def _announce_text() -> str:
+    command = "`/stats`" if Config.ENABLE_SLASH_COMMANDS else f"`{Config.DISCORD_COMMAND_PREFIX}stats`"
+    return f"📊 **Daily watch stats** · run {command} anytime to see the latest"
+
+
 class StatsCommands(commands.Cog):
     """Tracks who is in the voice room during playback and shows the leaderboard."""
 
@@ -141,9 +159,35 @@ class StatsCommands(commands.Cog):
 
     async def cog_load(self):
         self._track.start()
+        when = announce_time()
+        if when:
+            # A fixed time of day rather than an interval, so restarts don't move it
+            self._announce.change_interval(time=when)
+            self._announce.start()
+            logger.info(f"Daily stats post at {when.strftime('%H:%M')} PH time")
 
     async def cog_unload(self):
         self._track.cancel()
+        self._announce.cancel()
+
+    @tasks.loop(hours=24)  # replaced by the configured time of day in cog_load
+    async def _announce(self):
+        """Post the leaderboard to the watch announce channels, once there's anything on it."""
+        if not self.stats.ladders()[0]:
+            return
+        for channel_id in Config.get_announce_channel_ids():
+            try:
+                channel = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
+                # Built per channel: an attached file can only be sent once (the grid image is cached)
+                await channel.send(content=_announce_text(), **await build_stats_message(self.stats))
+                logger.info(f"Posted daily stats to channel {channel_id}")
+            except Exception:
+                # One bad channel mustn't stop the others, or end the loop
+                logger.exception(f"Daily stats post to channel {channel_id} failed")
+
+    @_announce.before_loop
+    async def _before_announce(self):
+        await self.bot.wait_until_ready()
 
     @tasks.loop(seconds=TICK_SECONDS)
     async def _track(self):

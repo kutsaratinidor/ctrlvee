@@ -1,3 +1,8 @@
+## 1.24.0 - 2026-11-15
+
+### Added
+- **Daily stats post**: Once a day the bot posts the `/stats` leaderboard and poster grid to the watch announce channels, with a reminder that `/stats` works anytime, so people know it's there. It runs at `STATS_ANNOUNCE_TIME` (HH:MM, Philippines time, default `20:00`), a fixed time of day so restarts don't move it. Nothing is posted until someone has watch time. Set `STATS_ANNOUNCE_TIME=off` to turn it off.
+
 ## 1.23.0 - 2026-11-15
 
 ### Added

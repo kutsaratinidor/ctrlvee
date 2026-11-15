@@ -141,6 +141,7 @@ def main():
     check_recently_viewed()
     check_tick()
     check_poster_grid()
+    check_daily_announcement()
 
     # An upgraded file is the same title; another year or episode is not
     assert stats_title_key(_leaf("Heat (1995) 720p.mkv")) == stats_title_key(_leaf("Heat.1995.2160p.UHD.BluRay.x265.mkv"))
@@ -368,6 +369,55 @@ def check_poster_grid():
         # Bytes that aren't an image become a grey tile and are dropped from the cache
         poster_grid._posters["https://image.tmdb.org/t/p/w500/a.jpg"] = b"not a jpeg"
         assert poster_grid.render(tiles[:1])[1] is False and not poster_grid._posters
+
+
+def check_daily_announcement():
+    from src.cogs.scheduler import PH_TZ
+
+    # STATS_ANNOUNCE_TIME: HH:MM in PH time; empty, "off" or garbage turn it off
+    for raw, expected in (("20:00", (20, 0)), ("07:30", (7, 30)), ("", None), ("off", None), ("8pm", None), ("25:00", None)):
+        with mock.patch.object(Config, "STATS_ANNOUNCE_TIME", raw):
+            when = stats_cog.announce_time()
+        assert (when and (when.hour, when.minute)) == expected, (raw, when)
+        assert when is None or when.tzinfo is PH_TZ
+
+    with tempfile.TemporaryDirectory() as tmp, mock.patch.object(poster_grid.requests, "get", _Downloads()):
+        stats = StatsService(os.path.join(tmp, "stats.json"))
+        sent = {}
+
+        class Channel:
+            def __init__(self, cid):
+                self.cid = cid
+
+            async def send(self, **kwargs):
+                if self.cid == 2:
+                    raise discord.HTTPException(types.SimpleNamespace(status=403, reason="Forbidden"), "no access")
+                sent[self.cid] = kwargs
+
+        bot = types.SimpleNamespace(get_channel=lambda cid: Channel(cid))
+        cog = StatsCommands(bot, mock.Mock(), stats)
+        cog._announce.change_interval(time=stats_cog.announce_time())
+        assert [(t.hour, t.minute) for t in cog._announce.time] == [(20, 0)]
+
+        with mock.patch.object(Config, "get_announce_channel_ids", lambda: [1, 2, 3]):
+            # Nothing watched yet: nothing posted
+            asyncio.run(cog._announce.coro(cog))
+            assert sent == {}
+
+            # Each channel gets the leaderboard and the grid; one failing doesn't stop the rest
+            stats.record({1: "Ann"}, None, 0, 0, 3600)
+            stats.record_view(*view_info(_leaf("Heat (1995).mkv")), {1: "Ann"}, 300)
+            stats.recent[0]["poster"] = "https://image.tmdb.org/t/p/w500/heat.jpg"
+            stats_cog._grid_cache[:] = [None, None]
+            with mock.patch.object(Config, "ENABLE_SLASH_COMMANDS", True):
+                asyncio.run(cog._announce.coro(cog))
+        assert sorted(sent) == [1, 3]
+        assert sent[1]["content"].startswith("📊 **Daily watch stats**") and "`/stats`" in sent[1]["content"]
+        assert [e.title for e in sent[3]["embeds"]] == ["🏆 Watch Leaderboard", "🎬 Recently Watched"]
+        assert sent[1]["file"] is not sent[3]["file"]  # a discord.File can only be sent once
+
+    with mock.patch.object(Config, "ENABLE_SLASH_COMMANDS", False), mock.patch.object(Config, "DISCORD_COMMAND_PREFIX", "?"):
+        assert "`?stats`" in stats_cog._announce_text()
 
 
 if __name__ == "__main__":

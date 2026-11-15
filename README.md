@@ -393,6 +393,8 @@ To keep an account off the board, such as the one you stream from, add its Disco
 
 Below the ladders, a Recently Watched card lists the last titles people actually watched over one image of their TMDB posters, numbered to match the list. The grid grows with what's been watched (1, 2x1, 2x2, 3x2, 3x3) up to `STATS_POSTER_GRID_MAX` posters across and down (default 3, so 9 titles; 1-4 allowed). A title with no poster gets a grey tile with its name. The image is drawn with Pillow; if that fails, the card falls back to Discord's own 4-poster layout. A poster TMDB couldn't find is tried again every hour, on the 30-second updates that run while something is playing. A title is listed once someone other than the excluded accounts has been in the room for 5 minutes of it, so playback to an empty room (or just the streamer) never shows up. Episodes of the same show and season share one line showing the latest episode. The list is kept in `watch_stats_recent.json`.
 
+So people know the board exists, the bot posts it to `WATCH_ANNOUNCE_CHANNEL_ID` once a day at `STATS_ANNOUNCE_TIME` (HH:MM, Philippines time, default `20:00`), with a reminder that `/stats` works anytime. It's a fixed time of day rather than an interval, so restarting the bot doesn't move it. Nothing is posted until someone has watch time. Set `STATS_ANNOUNCE_TIME=off` to turn it off.
+
 ### Movie and TV Requests (Slash Only)
 
 - `/request movie <title>` — search and request a movie via Overseerr/Jellyseerr
