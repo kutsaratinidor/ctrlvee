@@ -47,17 +47,10 @@ def _placeholder(title: str) -> Image.Image:
     return tile
 
 
-def _badge(tile: Image.Image, number: int) -> None:
-    """Number in the top-left corner, matching the list above the image."""
-    draw = ImageDraw.Draw(tile)
-    draw.rounded_rectangle((6, 6, 40, 36), radius=8, fill=(0, 0, 0))
-    draw.text((23, 21), str(number), fill="white", font=ImageFont.load_default(20), anchor="mm")
-
-
 def render(tiles: list[tuple[str, str | None]]) -> tuple[bytes, bool]:
     """JPEG of (title, poster URL or None) tiles in order, and whether every poster loaded.
 
-    A missing or broken poster becomes a grey tile with the title, so the numbering still lines up.
+    A missing or broken poster becomes a grey tile with the title, so the order still matches the list.
     """
     started = time.perf_counter()
     urls = [url for _, url in tiles if url]
@@ -81,7 +74,6 @@ def render(tiles: list[tuple[str, str | None]]) -> tuple[bytes, bool]:
         if tile is None:
             tile = _placeholder(title)
             complete = False
-        _badge(tile, i + 1)
         grid.paste(tile, (GAP + (i % cols) * (CELL_W + GAP), GAP + (i // cols) * (CELL_H + GAP)))
 
     out = io.BytesIO()

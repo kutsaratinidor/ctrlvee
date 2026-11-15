@@ -1,3 +1,8 @@
+## 1.24.1 - 2026-11-15
+
+### Changed
+- **Cleaner poster grid**: The number badges on the `/stats` posters are gone for a more minimal look. The posters stay in the same order as the numbered list above them.
+
 ## 1.24.0 - 2026-11-15
 
 ### Added
