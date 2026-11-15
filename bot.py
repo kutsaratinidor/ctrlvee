@@ -1570,6 +1570,7 @@ async def on_command_error(ctx, error):
             'queue_next': f"Missing playlist number. Example: `{prefix}queue_next 42`",
             'rewind': f"Example: `{prefix}rewind 15`",
             'forward': f"Example: `{prefix}forward 15`",
+            'seek': f"Missing timestamp. Example: `{prefix}seek 1:23:45`",
             'schedule': f"Missing arguments. Example: `{prefix}schedule 42 2026-08-15 21:30`",
             'unschedule': f"Missing movie number. Example: `{prefix}unschedule 42`",
             'remove_queue': f"Missing queue reference. Examples: `{prefix}remove_queue 1` or `{prefix}remove_queue #42`",
@@ -1627,6 +1628,7 @@ async def controls(ctx):
 `{prefix}previous` - Play previous track
 `{prefix}rewind [seconds]` - Rewind by specified seconds (default: 10)
 `{prefix}forward [seconds]` - Fast forward by specified seconds (default: 10)
+`{prefix}seek <timestamp>` - Jump to a timestamp (h:mm:ss, mm:ss or seconds)
 `{prefix}shuffle` - Toggle shuffle mode on/off
 `{prefix}shuffle_on` - Enable shuffle mode
 `{prefix}shuffle_off` - Disable shuffle mode
@@ -2288,6 +2290,7 @@ def _build_system_help_embed() -> discord.Embed:
             "• `/playback restart`\n"
             "• `/playback rewind`\n"
             "• `/playback forward`\n"
+            "• `/playback seek`\n"
             "• `/playback next`\n"
             "• `/playback previous`\n"
             "• `/playback play-item`\n"
@@ -2606,6 +2609,18 @@ async def playback_forward(interaction: discord.Interaction, seconds: app_comman
         await interaction.response.send_message(f"Fast forwarded {seconds} seconds.")
     else:
         await interaction.response.send_message("Could not fast forward playback.")
+
+
+@playback_group.command(name="seek", description="Jump to a timestamp in the current item")
+@app_commands.describe(timestamp="h:mm:ss, mm:ss or seconds, e.g. 1:23:45")
+async def playback_seek(interaction: discord.Interaction, timestamp: str):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+    if not await _check_room_for_interaction(interaction):
+        return
+
+    ok, message = vlc.seek_to(timestamp)
+    await interaction.response.send_message(message, ephemeral=not ok)
 
 
 @playback_group.command(name="next", description="Play next track")

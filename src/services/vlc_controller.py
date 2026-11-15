@@ -1,6 +1,7 @@
 from typing import Optional, Dict, Any
 import os
 import json
+from datetime import timedelta
 import xml.etree.ElementTree as ET
 import requests
 import logging
@@ -468,6 +469,36 @@ class VLCController:
     def seek(self, seconds):
         """Seek to a specific position"""
         return self.send_command("seek", {"val": str(seconds)})
+
+    def seek_to(self, timestamp):
+        """Seek to an absolute timestamp ('1:23:45', '83:10' or plain seconds) within the current item.
+
+        Returns (ok, message) for the caller to show the user.
+        """
+        try:
+            parts = [int(p) for p in str(timestamp).strip().split(":")]
+            if not 1 <= len(parts) <= 3 or any(p < 0 for p in parts):
+                raise ValueError
+        except ValueError:
+            return False, "Invalid timestamp. Use `h:mm:ss`, `mm:ss` or seconds, e.g. `1:23:45`."
+        target = 0
+        for p in parts:
+            target = target * 60 + p
+
+        status = self.get_status()
+        try:
+            length = int(status.findtext("length")) if status is not None else 0
+        except (TypeError, ValueError):
+            length = 0
+        if length <= 0:
+            return False, "Nothing with a known length is playing."
+        fmt = lambda s: str(timedelta(seconds=s))
+        # Seeking to the very end makes VLC auto-advance, so the last second is out of bounds too.
+        if target >= length:
+            return False, f"`{timestamp}` is past the end of this item ({fmt(length)})."
+        if self.seek(target) is None:
+            return False, "Could not seek."
+        return True, f"Jumped to {fmt(target)} / {fmt(length)}."
 
     def get_status(self, enhanced: bool = False):
         """Get current VLC status

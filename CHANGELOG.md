@@ -1,3 +1,8 @@
+## 1.21.0 - 2026-11-15
+
+### Added
+- **Seek to a timestamp**: `/playback seek` and `!seek` (alias `!goto`) jump to an exact point in the current item. Timestamps can be `h:mm:ss`, `mm:ss` or plain seconds. A time at or past the end of the item is refused, as is seeking when nothing with a known length is playing. Same role and voice room rules as `rewind` and `forward`.
+
 ## 1.20.4 - 2026-11-12
 
 ### Fixed

@@ -106,7 +106,7 @@ def check_prefix_commands():
         with mock.patch.object(Config, "VOICE_JOIN_CHANNEL_ID", ROOM_ID):
             for command, args, method in (
                 (P.play, (), "play"), (P.stop, (), "stop"), (P.restart, (), "seek"),
-                (P.rewind, (10,), "seek"), (P.forward, (99999,), "seek"), (P.speed, ("1.5",), "set_rate"),
+                (P.rewind, (10,), "seek"), (P.forward, (99999,), "seek"), (P.seek, ("1:00",), "seek_to"), (P.speed, ("1.5",), "set_rate"),
                 (P.shuffle_on, (), "toggle_shuffle"), (P.shuffle_off, (), "toggle_shuffle"),
                 (P.shuffle_toggle, (), "toggle_shuffle"), (P.clear_queue, (), "clear_queue_tracking"),
                 (P.remove_queue, ("1",), "remove_from_queue_by_order"),
@@ -180,7 +180,7 @@ def check_slash_handlers():
     with open(bot_path, encoding="utf-8") as f:
         handlers = {n.name: ast.unparse(n) for n in ast.parse(f.read()).body if isinstance(n, ast.AsyncFunctionDef)}
     role, room = "_check_allowed_roles_for_interaction", "_check_room_for_interaction"
-    for name in ("playback_play", "playback_stop", "playback_restart", "playback_rewind", "playback_forward",
+    for name in ("playback_play", "playback_stop", "playback_restart", "playback_rewind", "playback_forward", "playback_seek",
                  "playback_speed", "playback_shuffle", "queue_clear", "queue_remove"):
         assert role in handlers[name] and room in handlers[name], name
     # Schedules can be planned from outside the room

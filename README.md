@@ -256,7 +256,7 @@ when the item actually changes — auto-advanced/watch-folder screens, `stop`, o
 the watcher's own `next` free the slot.
 
 The other playback commands also require being in the room: `play`, `stop`, `restart`,
-`rewind`, `forward`, changing `speed` or `shuffle`, and clearing or removing queue items.
+`rewind`, `forward`, `seek`, changing `speed` or `shuffle`, and clearing or removing queue items.
 `pause` stays open to anyone with an allowed role, and only ever pauses.
 Commands that just show status are also open. If `VOICE_JOIN_CHANNEL_ID` is `0` these rules do
 nothing, and if it's set to a channel the bot can't find, guarded commands are refused until
@@ -338,6 +338,7 @@ Prefix shown as `!` below; replace with your configured `DISCORD_COMMAND_PREFIX`
 - `!play`, `!pause`, `!stop`, `!restart`
 - `!next`, `!previous`
 - `!rewind [seconds]`, `!forward [seconds]`
+- `!seek <timestamp>` (`h:mm:ss`, `mm:ss` or seconds; rejected if past the end of the current item)
 - `!play_num <number>`
 - `!shuffle`, `!shuffle_on`, `!shuffle_off`
 - `!speed <rate|preset>` (resets to 1.0 when a new item starts)

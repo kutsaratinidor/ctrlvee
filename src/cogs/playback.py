@@ -2173,7 +2173,21 @@ class PlaybackCommands(commands.Cog):
                 color=discord.Color.dark_red()
             )
             await ctx.send(embed=embed)
-    
+
+    @commands.command(name='seek', aliases=['goto'])
+    @commands.has_any_role(*Config.ALLOWED_ROLES)
+    async def seek(self, ctx, timestamp: str):
+        """Jump to a timestamp in the current item (h:mm:ss, mm:ss or seconds)"""
+        if not await self._check_room(ctx):
+            return
+
+        ok, message = self.vlc.seek_to(timestamp)
+        await ctx.send(embed=discord.Embed(
+            title="⏱️ Seeked" if ok else "⏱️ Seek failed",
+            description=message,
+            color=discord.Color.green() if ok else discord.Color.red()
+        ))
+
     @commands.command(name='play_num')
     @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def play_number(self, ctx, number: int):
