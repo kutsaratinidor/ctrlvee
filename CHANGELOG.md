@@ -1,3 +1,8 @@
+## 1.22.2 - 2026-11-15
+
+### Fixed
+- **Excluded users still showed on recently viewed cards**: Adding someone to `STATS_EXCLUDED_USER_IDS` hid them from the ladders but not from cards recorded before, and a title only they watched kept its card. They're now left out of every card, and a card with nobody else left drops off. Cards show each viewer's own time instead of one room total, so an excluded person's time goes too. Entries saved by 1.22.0 give each viewer the old room total.
+
 ## 1.22.1 - 2026-11-15
 
 ### Changed

@@ -389,9 +389,9 @@ Scheduling commands need an allowed role, but you don't need to be in the voice 
 
 A title counts as finished once a person has been present for 85% of its minutes, across as many sittings as it takes. Each title counts once per person, and each TV episode is its own title. Rewatching still adds hours. Totals are kept in `watch_stats.json`.
 
-To keep an account off the board, such as the one you stream from, add its Discord user ID to `STATS_EXCLUDED_USER_IDS` (comma-separated) and restart. It's hidden from both ladders, including anything it already earned. Removing the ID brings it back with its totals.
+To keep an account off the board, such as the one you stream from, add its Discord user ID to `STATS_EXCLUDED_USER_IDS` (comma-separated) and restart. It's hidden from both ladders and from the recently viewed cards, including anything it already earned. Removing the ID brings it back with its totals.
 
-Below the ladders, the last 5 titles people actually watched get a card each, with the TMDB poster, who was in the room, and when. A title is listed once someone other than the excluded accounts has been in the room for 5 minutes of it, so playback to an empty room (or just the streamer) never shows up. Episodes of the same show and season share one card showing the latest episode. The list is kept in `watch_stats_recent.json`.
+Below the ladders, the last 5 titles people actually watched get a card each, with the TMDB poster, who was in the room and for how long, and when. A title is listed once someone other than the excluded accounts has been in the room for 5 minutes of it, so playback to an empty room (or just the streamer) never shows up. Episodes of the same show and season share one card showing the latest episode. The list is kept in `watch_stats_recent.json`.
 
 ### Movie and TV Requests (Slash Only)
 

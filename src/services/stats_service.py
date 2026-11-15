@@ -21,6 +21,12 @@ class StatsService:
         self.recent_path = f"{os.path.splitext(path)[0]}_recent.json"
         self.users = self._load(self.path, {})
         self.recent = self._load(self.recent_path, [])
+        for entry in self.recent:
+            # 1.22 kept {user_id: name} and one room total; the total becomes each viewer's time
+            total = entry.pop("seconds", 0)
+            for user_id, viewer in entry["viewers"].items():
+                if isinstance(viewer, str):
+                    entry["viewers"][user_id] = {"name": viewer, "seconds": total}
 
     @staticmethod
     def _load(path: str, empty):
@@ -46,25 +52,40 @@ class StatsService:
         """Note that non-excluded `viewers` ({user_id: name}) watched `key` for `seconds`.
 
         Playback with only excluded accounts (the streamer) in the room is ignored, so an
-        empty room never shows up as viewed. Returns the entry, newest first in `self.recent`.
+        empty room never shows up as viewed. Time is kept per viewer, so excluding someone
+        later removes their share too. Returns the entry, newest first in `self.recent`.
         """
         watchers = {str(u): n for u, n in viewers.items() if str(u) not in self.excluded}
         if not key or not watchers:
             return None
         entry = next((e for e in self.recent if e["key"] == key), None)
         if entry is None:
-            entry = {"key": key, "name": name, "seconds": 0, "viewers": {}}
+            entry = {"key": key, "name": name, "viewers": {}}
         else:
             self.recent.remove(entry)
         self.recent.insert(0, entry)
         entry.update(name=name, episode=episode, last=int(time.time()))
-        entry["seconds"] += seconds
-        entry["viewers"].update(watchers)
+        for user_id, viewer_name in watchers.items():
+            viewer = entry["viewers"].setdefault(user_id, {"name": viewer_name, "seconds": 0})
+            viewer["name"] = viewer_name
+            viewer["seconds"] += seconds
         del self.recent[RECENT_KEEP:]
         return entry
 
+    def is_viewed(self, entry: dict) -> bool:
+        """Someone not excluded has been in the room for RECENT_MIN_SECONDS of it."""
+        return any(
+            v["seconds"] >= RECENT_MIN_SECONDS
+            for user_id, v in entry["viewers"].items() if user_id not in self.excluded
+        )
+
     def recently_viewed(self, limit: int = 5) -> list:
-        return [e for e in self.recent if e["seconds"] >= RECENT_MIN_SECONDS][:limit]
+        """Newest viewed entries, as copies holding only viewers who aren't excluded now,
+        so adding someone to STATS_EXCLUDED_USER_IDS hides them from past cards too."""
+        return [
+            {**e, "viewers": {u: v for u, v in e["viewers"].items() if u not in self.excluded}}
+            for e in self.recent if self.is_viewed(e)
+        ][:limit]
 
     def record(self, viewers: dict, title_key: str | None, position: int, length: int, seconds: int) -> None:
         """Credit each viewer ({user_id: name}) for `seconds` at `position` of a `length`-second title.

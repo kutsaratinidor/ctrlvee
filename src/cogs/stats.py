@@ -6,7 +6,6 @@ import discord
 from discord.ext import commands, tasks
 
 from ..config import Config
-from ..services.stats_service import RECENT_MIN_SECONDS
 from ..utils.media_utils import MediaUtils
 from .scheduler import _title_key
 
@@ -69,10 +68,11 @@ def build_stats_embed(stats) -> discord.Embed:
 
 
 def _recent_embed(entry: dict) -> discord.Embed:
-    watchers = ", ".join(discord.utils.escape_markdown(n) for n in entry["viewers"].values())
+    viewers = sorted(entry["viewers"].values(), key=lambda v: -v["seconds"])
+    watchers = ", ".join(f"{discord.utils.escape_markdown(v['name'])} · {v['seconds'] / 3600:.1f} h" for v in viewers)
     lines = [f"📺 Last episode **{entry['episode']}**"] if entry.get("episode") else []
     lines.append(f"👥 {watchers}")
-    lines.append(f"🕒 <t:{entry['last']}:R> · {entry['seconds'] / 3600:.1f} h in the room")
+    lines.append(f"🕒 <t:{entry['last']}:R>")
     embed = discord.Embed(
         title=entry.get("title") or entry["name"],
         url=entry.get("url"),
@@ -134,7 +134,7 @@ class StatsCommands(commands.Cog):
             if item is not None:
                 entry = self.stats.record_view(*view_info(item), viewers, TICK_SECONDS)
                 # Look the poster up once, and only after it counts as viewed
-                if entry and self.tmdb and "poster" not in entry and entry["seconds"] >= RECENT_MIN_SECONDS:
+                if entry and self.tmdb and "poster" not in entry and self.stats.is_viewed(entry):
                     try:
                         entry.update(await asyncio.to_thread(tmdb_card, self.tmdb, item))
                     except Exception:

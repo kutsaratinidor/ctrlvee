@@ -3,6 +3,7 @@
 Run from the repo root:  python tests/test_watch_stats.py
 """
 import asyncio
+import json
 import os
 import sys
 import types
@@ -137,7 +138,7 @@ def check_recently_viewed():
         assert stats.recently_viewed() == []
         entry = stats.record_view(*heat, {**streamer, **ann}, 30)
         assert [e["key"] for e in stats.recently_viewed()] == [heat[0]]
-        assert entry["viewers"] == {"1": "Ann"}
+        assert entry["viewers"] == {"1": {"name": "Ann", "seconds": 300}}
 
         # Episodes of a season share one entry that shows the latest episode, newest first
         ep1 = view_info(_leaf("Show.Name.S02E03.1080p.mkv"))
@@ -163,7 +164,35 @@ def check_recently_viewed():
         assert heat_card.title == "Heat" and heat_card.thumbnail.url == "https://image.tmdb.org/p.jpg"
         assert heat_card.url.endswith("/949") and "Ann" in heat_card.description
         assert show_card.title == "Show Name" and show_card.thumbnail.url is None
-        assert "S02E04" in show_card.description and "Bob" in show_card.description
+        assert "S02E04" in show_card.description and "Bob · 0.1 h" in show_card.description
+
+        # Excluding someone later hides them from past cards, along with their time;
+        # a card nobody else watched drops off. The stored entries keep them.
+        stats.record_view(*heat, {3: "Cy"}, 30)
+        stats.excluded = {"9", "1"}
+        recent = stats.recently_viewed()
+        assert [e["key"] for e in recent] == [ep1[0]], recent
+        assert "Ann" not in str(build_stats_embeds(stats)[1].to_dict())
+        stats.excluded = {"9", "2"}
+        assert stats.recently_viewed()[0]["viewers"] == {
+            "1": {"name": "Ann", "seconds": 330}, "3": {"name": "Cy", "seconds": 30}}
+        assert "2" in stats.recent[1]["viewers"]
+        # Cy alone (30 s) isn't enough to keep Heat listed once Ann is excluded
+        for _ in range(9):
+            stats.record_view(*heat, {3: "Cy"}, 30)
+        stats.excluded = {"9", "1"}
+        assert [e["viewers"] for e in stats.recently_viewed()] == [
+            {"3": {"name": "Cy", "seconds": 300}}, {"2": {"name": "Bob", "seconds": 300}}]
+
+    # A 1.22.0 file (names only, one room total) loads with that total per viewer
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "stats.json")
+        with open(os.path.join(tmp, "stats_recent.json"), "w", encoding="utf-8") as f:
+            json.dump([{"key": "heat|1995", "name": "Heat", "seconds": 600, "last": 1,
+                        "episode": None, "viewers": {"1": "Ann", "9": "Streamer"}}], f)
+        stats = StatsService(path, excluded=[9])
+        assert stats.recently_viewed()[0]["viewers"] == {"1": {"name": "Ann", "seconds": 600}}
+        assert "seconds" not in stats.recent[0]
 
     # Posters use the Now Playing match: SxxEyy goes straight to TV, otherwise the better score wins
     assert tmdb_card(_tmdb(), _leaf("Heat (1995).mkv")) == {"poster": None}
@@ -215,7 +244,7 @@ def check_tick():
             asyncio.run(ticks(5))
         tmdb.get_movie_metadata.assert_called_once()
         saved = StatsService(stats.path).recently_viewed()
-        assert saved[0]["poster"] == "https://p" and saved[0]["viewers"] == {"1": "Ann"}, saved
+        assert saved[0]["poster"] == "https://p" and saved[0]["viewers"] == {"1": {"name": "Ann", "seconds": 420}}, saved
 
 
 if __name__ == "__main__":
