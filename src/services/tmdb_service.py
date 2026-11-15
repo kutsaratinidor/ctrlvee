@@ -200,6 +200,38 @@ class TMDBService:
             embed.set_thumbnail(url=f"https://image.tmdb.org/t/p/w500{movie_info['poster_path']}")
         return embed
 
+    def lookup_media_embed(self, name: str, uri: str | None = None) -> tuple:
+        """(embed, is_movie) for a playlist file, picked the way Now Playing does.
+
+        An explicit episode marker (S01E02 / 1x02) goes straight to TV. Otherwise both
+        movie and TV are looked up and the better match score wins, with a plain TV
+        lookup by the movie title as the last resort.
+        """
+        from ..utils.media_utils import MediaUtils
+        title, year = MediaUtils.parse_movie_filename(name)
+        tv_title, tv_season, tv_episode, tv_year = MediaUtils.parse_tv_filename(name)
+        has_explicit_episode = bool(tv_episode) or bool(re.search(r"(?i)(s\d{1,2}e\d{1,2}|\d{1,2}x\d{1,2})", name))
+        if has_explicit_episode and tv_title:
+            return self.get_tv_metadata(tv_title, tv_season, tv_year), False
+
+        movie_embed, movie_score = None, 0.0
+        tv_embed, tv_score = None, 0.0
+        if title:
+            movie_embed = self.get_movie_metadata(title, year, file_path=uri)
+            movie_score = getattr(self, '_last_match_score', 0.0)
+        if tv_title:
+            tv_embed = self.get_tv_metadata(tv_title, tv_season, tv_year)
+            tv_score = getattr(self, '_last_match_score', 0.0)
+
+        if tv_embed and movie_embed:
+            chosen = tv_embed if tv_score > movie_score else movie_embed
+            return chosen, chosen is movie_embed
+        if tv_embed:
+            return tv_embed, False
+        if movie_embed:
+            return movie_embed, True
+        return (self.get_tv_metadata(title) if title else None), False
+
     def get_movie_metadata(self, title: str, year: int | None = None, file_path: str | None = None):
         """Get movie metadata from TMDB.
 

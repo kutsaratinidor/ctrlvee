@@ -17,6 +17,25 @@ import discord  # noqa: E402
 
 from src.cogs.stats import StatsCommands, build_stats_embed, build_stats_embeds, stats_title_key, tmdb_card, view_info  # noqa: E402
 from src.services.stats_service import StatsService  # noqa: E402
+from src.services.tmdb_service import TMDBService  # noqa: E402
+
+
+def _card(title, poster):
+    return discord.Embed(title=title, url=f"https://t/{title}").set_thumbnail(url=poster)
+
+
+def _tmdb(movie=None, tv=None):
+    """Real TMDBService matching over stubbed lookups. movie/tv: (embed, match score)."""
+    tmdb = TMDBService.__new__(TMDBService)
+
+    def stub(hit):
+        def lookup(*args, **kwargs):
+            tmdb._last_match_score = hit[1] if hit else 0.0
+            return hit[0] if hit else None
+        return mock.Mock(side_effect=lookup)
+
+    tmdb.get_movie_metadata, tmdb.get_tv_metadata = stub(movie), stub(tv)
+    return tmdb
 
 
 def _leaf(filename):
@@ -146,14 +165,20 @@ def check_recently_viewed():
         assert show_card.title == "Show Name" and show_card.thumbnail.url is None
         assert "S02E04" in show_card.description and "Bob" in show_card.description
 
-    # TMDB lookups: SxxEyy goes to TV, anything else to movies; no match is remembered as no poster
-    tmdb = mock.Mock()
-    tmdb.get_movie_metadata.return_value = None
-    assert tmdb_card(tmdb, _leaf("Heat (1995).mkv")) == {"poster": None}
-    tmdb.get_movie_metadata.assert_called_once()
-    tmdb.get_tv_metadata.return_value.thumbnail.url = "x"
-    assert tmdb_card(tmdb, _leaf("Show.Name.S02E03.mkv"))["poster"] == "x"
+    # Posters use the Now Playing match: SxxEyy goes straight to TV, otherwise the better score wins
+    assert tmdb_card(_tmdb(), _leaf("Heat (1995).mkv")) == {"poster": None}
+    tmdb = _tmdb(movie=(_card("Heat", "m"), 90.0), tv=(_card("Show", "t"), 95.0))
+    assert tmdb_card(tmdb, _leaf("Show.Name.S02E03.mkv"))["poster"] == "t"
+    tmdb.get_movie_metadata.assert_not_called()
     assert tmdb.get_tv_metadata.call_args.args[:2] == ("Show Name", 2)
+    # A special with no episode number: both are looked up and the better TV score wins
+    tmdb = _tmdb(movie=(_card("Heat", "m"), 90.0), tv=(_card("Show", "t"), 95.0))
+    assert tmdb_card(tmdb, _leaf("Show.Name.Christmas.Special.mkv"))["poster"] == "t"
+    assert tmdb.get_movie_metadata.call_count == tmdb.get_tv_metadata.call_count == 1
+    movie_wins = _tmdb(movie=(_card("Heat", "m"), 95.0), tv=(_card("Heat", "t"), 40.0))
+    assert tmdb_card(movie_wins, _leaf("Heat (1995).mkv"))["poster"] == "m"
+    # No movie match at all falls back to a TV lookup by the title
+    assert tmdb_card(_tmdb(tv=(_card("Heat", "t"), 10.0)), _leaf("Heat (1995).mkv"))["poster"] == "t"
 
 
 class Room(discord.VoiceChannel):
@@ -177,8 +202,7 @@ def check_tick():
         playlist.append(_leaf("Heat (1995).mkv"))
         playlist[0].set("current", "current")
         vlc.get_playlist.return_value = playlist
-        tmdb = mock.Mock()
-        tmdb.get_movie_metadata.return_value = discord.Embed(title="Heat", url="https://t/949").set_thumbnail(url="https://p")
+        tmdb = _tmdb(movie=(_card("Heat", "https://p"), 90.0))
         cog = StatsCommands(bot, vlc, stats, tmdb)
 
         async def ticks(n):

@@ -421,8 +421,7 @@ class PlaybackCommands(commands.Cog):
             has_explicit_episode = False
             episode_label = None
             try:
-                title, year = MediaUtils.parse_movie_filename(metadata_name)
-                tv_title, tv_season, tv_episode, tv_year = MediaUtils.parse_tv_filename(metadata_name)
+                _, tv_season, tv_episode, _ = MediaUtils.parse_tv_filename(metadata_name)
                 edition_tag = MediaUtils.extract_edition_tag(metadata_name)
                 if tv_season and tv_episode:
                     episode_label = f"S{int(tv_season):02d}E{int(tv_episode):02d}"
@@ -430,37 +429,7 @@ class PlaybackCommands(commands.Cog):
                 # Detect if there's an explicit episode marker
                 has_explicit_episode = bool(tv_episode) or bool(re.search(r"(?i)(s\d{1,2}e\d{1,2}|\d{1,2}x\d{1,2})", metadata_name))
                 
-                if has_explicit_episode and tv_title:
-                    # Has explicit episode: prefer TV
-                    tmdb_embed = self.tmdb.get_tv_metadata(tv_title, tv_season, tv_year)
-                else:
-                    # No explicit episode: try both and compare scores
-                    movie_embed = None
-                    tv_embed = None
-                    movie_score = 0.0
-                    tv_score = 0.0
-                    
-                    if title:
-                        movie_embed = self.tmdb.get_movie_metadata(title, year, file_path=uri)
-                        movie_score = getattr(self.tmdb, '_last_match_score', 0.0)
-                    
-                    if tv_title:
-                        tv_embed = self.tmdb.get_tv_metadata(tv_title, tv_season, tv_year)
-                        tv_score = getattr(self.tmdb, '_last_match_score', 0.0)
-                    
-                    # Choose the better match
-                    if tv_embed and movie_embed:
-                        tmdb_embed = tv_embed if tv_score > movie_score else movie_embed
-                        is_movie_embed = (tmdb_embed == movie_embed)
-                    elif tv_embed:
-                        tmdb_embed = tv_embed
-                    elif movie_embed:
-                        tmdb_embed = movie_embed
-                        is_movie_embed = True
-                    else:
-                        # Fallback: try generic TV lookup
-                        if title:
-                            tmdb_embed = self.tmdb.get_tv_metadata(title)
+                tmdb_embed, is_movie_embed = self.tmdb.lookup_media_embed(metadata_name, uri)
             except Exception:
                 tmdb_embed = None
             if tmdb_embed:

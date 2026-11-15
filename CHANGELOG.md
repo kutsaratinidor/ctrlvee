@@ -1,3 +1,8 @@
+## 1.22.1 - 2026-11-15
+
+### Changed
+- **Recently viewed posters use the Now Playing match**: Files without an `SxxEyy` episode number were looked up as movies only, so a TV special could get the wrong poster. They now go through the same movie-vs-TV comparison as Now Playing, and the better match wins.
+
 ## 1.22.0 - 2026-11-15
 
 ### Added

@@ -40,14 +40,7 @@ def view_info(item):
 def tmdb_card(tmdb, item) -> dict:
     """Title, link and poster from TMDB; empty values when there's no match, so it isn't retried."""
     raw = unquote(item.get('uri') or item.get('name') or '')
-    # ponytail: files without SxxEyy are looked up as movies only; reuse the Now Playing
-    # movie-vs-TV scoring if TV specials without episode numbers show the wrong poster.
-    tv_title, season, episode, tv_year = MediaUtils.parse_tv_filename(raw)
-    if tv_title and episode:
-        embed = tmdb.get_tv_metadata(tv_title, season, tv_year)
-    else:
-        title, year = MediaUtils.parse_movie_filename(raw)
-        embed = tmdb.get_movie_metadata(title, year, file_path=item.get('uri')) if title else None
+    embed, _ = tmdb.lookup_media_embed(raw, item.get('uri'))
     if not embed:
         return {"poster": None}
     return {"title": embed.title, "url": embed.url, "poster": embed.thumbnail.url}
