@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import time
 from urllib.parse import unquote
 
 import discord
@@ -37,7 +38,8 @@ def view_info(item):
 
 
 def tmdb_card(tmdb, item) -> dict:
-    """Title, link and poster from TMDB; empty values when there's no match, so it isn't retried."""
+    """Title, link and poster from TMDB for a playlist leaf or a recent entry (both have
+    uri/name); {"poster": None} when nothing matched."""
     raw = unquote(item.get('uri') or item.get('name') or '')
     embed, _ = tmdb.lookup_media_embed(raw, item.get('uri'))
     if not embed:
@@ -67,30 +69,39 @@ def build_stats_embed(stats) -> discord.Embed:
     return embed
 
 
-def _recent_embed(entry: dict) -> discord.Embed:
-    viewers = sorted(entry["viewers"].values(), key=lambda v: -v["seconds"])
-    watchers = ", ".join(f"{discord.utils.escape_markdown(v['name'])} · {v['seconds'] / 3600:.1f} h" for v in viewers)
-    lines = [f"📺 Last episode **{entry['episode']}**"] if entry.get("episode") else []
-    lines.append(f"👥 {watchers}")
-    lines.append(f"🕒 <t:{entry['last']}:R>")
-    embed = discord.Embed(
-        title=entry.get("title") or entry["name"],
-        url=entry.get("url"),
-        description="\n".join(lines),
-        color=discord.Color.blurple(),
-    )
-    if entry.get("poster"):
-        embed.set_thumbnail(url=entry["poster"])
-    return embed
+# Discord merges up to 4 embeds that share a url into one card with an image grid.
+# ponytail: that merge is client behaviour, not documented API; if it stops, the extra
+# posters show as image-only embeds under the list, which still reads fine.
+GALLERY_URL = "https://www.themoviedb.org/"
+GALLERY_SIZE = 4
+
+
+def _recent_line(rank: int, entry: dict) -> str:
+    title = discord.utils.escape_markdown(entry.get("title") or entry["name"])
+    if entry.get("url"):
+        title = f"[{title}]({entry['url']})"
+    episode = f" · {entry['episode']}" if entry.get("episode") else ""
+    return f"**{rank}.** {title}{episode}"
 
 
 def build_stats_embeds(stats) -> list[discord.Embed]:
-    """Leaderboard, then one card per recently viewed title (Discord allows 10 embeds a message)."""
+    """Leaderboard, then one "Recently Watched" card: the titles over a 2x2 poster grid.
+    Who watched and for how long is left to the leaderboard."""
     embeds = [build_stats_embed(stats)]
-    recent = stats.recently_viewed()
-    if recent:
-        embeds[0].set_footer(text="Recently viewed ↓")
-        embeds += [_recent_embed(e) for e in recent]
+    recent = stats.recently_viewed(limit=GALLERY_SIZE)
+    if not recent:
+        return embeds
+    card = discord.Embed(
+        title="🎬 Recently Watched",
+        url=GALLERY_URL,
+        description="\n".join(_recent_line(rank, e) for rank, e in enumerate(recent, 1)),
+        color=discord.Color.blurple(),
+    )
+    embeds.append(card)
+    posters = [e["poster"] for e in recent if e.get("poster")]
+    if posters:
+        card.set_image(url=posters[0])
+    embeds += [discord.Embed(url=GALLERY_URL).set_image(url=p) for p in posters[1:]]
     return embeds
 
 
@@ -133,17 +144,28 @@ class StatsCommands(commands.Cog):
             )
             if item is not None:
                 entry = self.stats.record_view(*view_info(item), viewers, TICK_SECONDS)
-                # Look the poster up once, and only after it counts as viewed
-                if entry and self.tmdb and "poster" not in entry and self.stats.is_viewed(entry):
-                    try:
-                        entry.update(await asyncio.to_thread(tmdb_card, self.tmdb, item))
-                    except Exception:
-                        # Retried next tick; a TMDB outage mustn't stop the save below
-                        logger.exception("Poster lookup failed")
+                if entry:
+                    entry["uri"] = item.get('uri')  # so a later poster retry can look it up
+            if self.tmdb:
+                await self._fill_poster()
             self.stats.save()
         except Exception:
             # An unhandled error would stop the loop for the rest of the session
             logger.exception("Watch stats tick failed")
+
+    async def _fill_poster(self):
+        """At most one TMDB lookup a tick, for the first title in the grid still missing its poster."""
+        now = time.time()
+        entry = self.stats.poster_due(GALLERY_SIZE, now)
+        if entry is None:
+            return
+        entry["poster_checked"] = int(now)
+        try:
+            entry.update(await asyncio.to_thread(tmdb_card, self.tmdb, entry))
+        except Exception:
+            # Counts as an empty result and is retried later; it mustn't stop the save
+            logger.exception("Poster lookup failed")
+            entry.setdefault("poster", None)
 
     @_track.before_loop
     async def _before_track(self):

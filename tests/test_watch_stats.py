@@ -155,16 +155,29 @@ def check_recently_viewed():
         stats = StatsService(path, excluded=[9])
         assert [e["key"] for e in stats.recently_viewed()] == [heat[0], ep1[0]]
 
-        # Cards: poster, link and episode when known; the plain name when TMDB had no match
+        # One "Recently Watched" card: a line per title (linked when TMDB matched, the
+        # parsed name when not) and the posters it has as one grid sharing the card's url
         stats.recent[0].update(title="Heat", url="https://www.themoviedb.org/movie/949", poster="https://image.tmdb.org/p.jpg")
         stats.recent[1]["poster"] = None
         stats.users = {"1": {"name": "Ann", "seconds": 60, "finished": [], "progress": {}}}
-        board, heat_card, show_card = build_stats_embeds(stats)
-        assert board.footer.text == "Recently viewed ↓"
-        assert heat_card.title == "Heat" and heat_card.thumbnail.url == "https://image.tmdb.org/p.jpg"
-        assert heat_card.url.endswith("/949") and "Ann" in heat_card.description
-        assert show_card.title == "Show Name" and show_card.thumbnail.url is None
-        assert "S02E04" in show_card.description and "Bob · 0.1 h" in show_card.description
+        board, card = build_stats_embeds(stats)
+        assert board.title == "🏆 Watch Leaderboard" and card.title == "🎬 Recently Watched"
+        first, second = card.description.split("\n**2.**")
+        # Titles only: who watched and for how long is the leaderboard's job
+        assert first == "**1.** [Heat](https://www.themoviedb.org/movie/949)", first
+        assert second == " Show Name · S02E04", second
+        assert card.image.url == "https://image.tmdb.org/p.jpg"
+
+        # Four titles with posters: the card holds the first, three more embeds share its url
+        for n, name in enumerate(("Alien (1979).mkv", "Dune (2021).mkv", "Up (2009).mkv")):
+            stats.record_view(*view_info(_leaf(name)), {4: "Di"}, 300)
+            stats.recent[0]["poster"] = f"https://p/{n}"
+        stats.recent[3]["poster"] = "https://p/heat"
+        embeds = build_stats_embeds(stats)
+        assert len(embeds) == 5 and embeds[1].description.count("\n**") == 3  # list stops at 4
+        assert {e.url for e in embeds[1:]} == {"https://www.themoviedb.org/"}
+        assert [e.image.url for e in embeds[1:]] == ["https://p/2", "https://p/1", "https://p/0", "https://p/heat"]
+        del stats.recent[:3]
 
         # Excluding someone later hides them from past cards, along with their time;
         # a card nobody else watched drops off. The stored entries keep them.
@@ -172,7 +185,7 @@ def check_recently_viewed():
         stats.excluded = {"9", "1"}
         recent = stats.recently_viewed()
         assert [e["key"] for e in recent] == [ep1[0]], recent
-        assert "Ann" not in str(build_stats_embeds(stats)[1].to_dict())
+        assert "Heat" not in build_stats_embeds(stats)[1].description
         stats.excluded = {"9", "2"}
         assert stats.recently_viewed()[0]["viewers"] == {
             "1": {"name": "Ann", "seconds": 330}, "3": {"name": "Cy", "seconds": 30}}
@@ -218,11 +231,15 @@ class Room(discord.VoiceChannel):
 
 
 def check_tick():
-    """The 30s tick: the poster is looked up once, after 5 minutes, and saved with the entry."""
+    """The 30s tick: the poster is looked up after 5 minutes, saved with the entry, and an
+    empty result is retried an hour later, including for titles no longer playing."""
     from src.config import Config
 
     with tempfile.TemporaryDirectory() as tmp:
         stats = StatsService(os.path.join(tmp, "stats.json"), excluded=[9])
+        # A 1.22 entry whose lookup came back empty, before retries existed: no uri, no check time
+        stats.recent.append({"key": "alien|1979", "name": "Alien (1979)", "episode": None, "last": 1,
+                             "poster": None, "viewers": {"1": {"name": "Ann", "seconds": 600}}})
         people = [types.SimpleNamespace(id=i, display_name=n, bot=False) for i, n in ((9, "Streamer"), (1, "Ann"))]
         bot = types.SimpleNamespace(get_channel=lambda _id: Room(people))
         vlc = mock.Mock()
@@ -231,20 +248,48 @@ def check_tick():
         playlist.append(_leaf("Heat (1995).mkv"))
         playlist[0].set("current", "current")
         vlc.get_playlist.return_value = playlist
-        tmdb = _tmdb(movie=(_card("Heat", "https://p"), 90.0))
-        cog = StatsCommands(bot, vlc, stats, tmdb)
+        cog = StatsCommands(bot, vlc, stats, _tmdb())  # TMDB returns nothing at first
+        clock = [1_000_000.0]
 
-        async def ticks(n):
-            for _ in range(n):
-                await cog._track.coro(cog)
+        def ticks(n):
+            async def run():
+                for _ in range(n):
+                    await cog._track.coro(cog)
+            with mock.patch.object(Config, "VOICE_JOIN_CHANNEL_ID", 1), \
+                    mock.patch("src.cogs.stats.time.time", lambda: clock[0]):
+                asyncio.run(run())
 
-        with mock.patch.object(Config, "VOICE_JOIN_CHANNEL_ID", 1):
-            asyncio.run(ticks(9))
-            tmdb.get_movie_metadata.assert_not_called()
-            asyncio.run(ticks(5))
-        tmdb.get_movie_metadata.assert_called_once()
-        saved = StatsService(stats.path).recently_viewed()
-        assert saved[0]["poster"] == "https://p" and saved[0]["viewers"] == {"1": {"name": "Ann", "seconds": 420}}, saved
+        def entry(key):
+            return next(e for e in StatsService(stats.path).recent if e["key"] == key)
+
+        # First tick retries the old empty entry by its name; one lookup a tick at most
+        ticks(1)
+        assert cog.tmdb.get_movie_metadata.call_args.args[:2] == ("Alien", 1979)
+        assert entry("alien|1979")["poster"] is None and entry("alien|1979")["poster_checked"] == 1_000_000
+        # Heat isn't viewed until 5 minutes in; then it's looked up once and comes back empty too
+        ticks(8)
+        assert cog.tmdb.get_movie_metadata.call_count == 1
+        ticks(1)
+        assert cog.tmdb.get_movie_metadata.call_count == 2 and entry("heat|1995")["poster"] is None
+        assert entry("heat|1995")["uri"].endswith("Heat%20(1995).mkv")
+        ticks(20)
+        assert cog.tmdb.get_movie_metadata.call_count == 2  # no hammering inside the hour
+
+        # An hour on, TMDB answers: one title per tick, newest first, then nothing left to do
+        cog.tmdb = _tmdb(movie=(_card("Found", "https://p"), 90.0))
+        clock[0] += 3600
+        ticks(1)
+        assert entry("heat|1995")["poster"] == "https://p" and entry("alien|1979")["poster"] is None
+        ticks(3)
+        assert entry("alien|1979")["poster"] == "https://p"
+        assert cog.tmdb.get_movie_metadata.call_count == 2
+        assert entry("heat|1995")["viewers"] == {"1": {"name": "Ann", "seconds": 1020}}
+
+        # A lookup that raises counts as empty and still lets the tick save
+        stats.recent[0].pop("poster")
+        cog.tmdb.lookup_media_embed = mock.Mock(side_effect=RuntimeError("TMDB down"))
+        ticks(1)
+        assert entry("heat|1995")["poster"] is None and entry("heat|1995")["viewers"]["1"]["seconds"] == 1050
 
 
 if __name__ == "__main__":

@@ -391,7 +391,7 @@ A title counts as finished once a person has been present for 85% of its minutes
 
 To keep an account off the board, such as the one you stream from, add its Discord user ID to `STATS_EXCLUDED_USER_IDS` (comma-separated) and restart. It's hidden from both ladders and from the recently viewed cards, including anything it already earned. Removing the ID brings it back with its totals.
 
-Below the ladders, the last 5 titles people actually watched get a card each, with the TMDB poster, who was in the room and for how long, and when. A title is listed once someone other than the excluded accounts has been in the room for 5 minutes of it, so playback to an empty room (or just the streamer) never shows up. Episodes of the same show and season share one card showing the latest episode. The list is kept in `watch_stats_recent.json`.
+Below the ladders, a Recently Watched card shows the last 4 titles people actually watched as a grid of their TMDB posters, with the titles listed above it. A poster TMDB couldn't find is tried again every hour, on the 30-second updates that run while something is playing. A title is listed once someone other than the excluded accounts has been in the room for 5 minutes of it, so playback to an empty room (or just the streamer) never shows up. Episodes of the same show and season share one line showing the latest episode. The list is kept in `watch_stats_recent.json`.
 
 ### Movie and TV Requests (Slash Only)
 

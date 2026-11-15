@@ -9,6 +9,7 @@ FINISHED_FRACTION = 0.85  # Share of the runtime a viewer must see; leaves room 
 BUCKET_SECONDS = 60
 RECENT_MIN_SECONDS = 300  # Room time before a title counts as viewed, so a channel-hop doesn't list it
 RECENT_KEEP = 20
+POSTER_RETRY_SECONDS = 3600  # TMDB returns nothing on errors as well as on no match, so try again later
 
 
 class StatsService:
@@ -78,6 +79,16 @@ class StatsService:
             v["seconds"] >= RECENT_MIN_SECONDS
             for user_id, v in entry["viewers"].items() if user_id not in self.excluded
         )
+
+    def poster_due(self, limit: int, now: float) -> dict | None:
+        """First of the `limit` shown entries still without a poster: never looked up, or
+        looked up with no result over POSTER_RETRY_SECONDS ago."""
+        shown = [e for e in self.recent if self.is_viewed(e)][:limit]
+        return next((
+            e for e in shown
+            if "poster" not in e
+            or (e["poster"] is None and now - e.get("poster_checked", 0) >= POSTER_RETRY_SECONDS)
+        ), None)
 
     def recently_viewed(self, limit: int = 5) -> list:
         """Newest viewed entries, as copies holding only viewers who aren't excluded now,

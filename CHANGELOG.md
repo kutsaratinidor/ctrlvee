@@ -1,3 +1,11 @@
+## 1.22.3 - 2026-11-15
+
+### Changed
+- **Recently watched is one poster grid**: Instead of a card per title, `/stats` and `!stats` show one Recently Watched card with the last 4 titles and their TMDB posters in a 2x2 grid. It lists titles only (and the episode for TV), since the leaderboard already covers who watched and for how long.
+
+### Fixed
+- **A missed poster never came back**: TMDB returns nothing both when there's no match and when the lookup fails, and either was kept as "no poster" for good. Missing posters are now tried again every hour, one title per stats update, including entries saved without one by 1.22.0–1.22.2.
+
 ## 1.22.2 - 2026-11-15
 
 ### Fixed
