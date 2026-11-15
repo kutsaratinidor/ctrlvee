@@ -1,10 +1,13 @@
 import asyncio
 import logging
+from urllib.parse import unquote
 
 import discord
 from discord.ext import commands, tasks
 
 from ..config import Config
+from ..services.stats_service import RECENT_MIN_SECONDS
+from ..utils.media_utils import MediaUtils
 from .scheduler import _title_key
 
 logger = logging.getLogger(__name__)
@@ -21,6 +24,33 @@ def stats_title_key(item) -> str | None:
         return None
     key = _title_key(item.get('uri') or item.get('name'))
     return f"{key[0]}|{key[1] or ''}" if key else None
+
+
+def view_info(item):
+    """(key, name, episode label) for the recently viewed list. Episodes of one show
+    and season share an entry, so a binge doesn't push everything else off the list."""
+    raw = unquote(item.get('uri') or item.get('name') or '')
+    tv_title, season, episode, _ = MediaUtils.parse_tv_filename(raw)
+    if tv_title and episode:
+        return f"tv|{tv_title.lower()}|{season}", tv_title, f"S{int(season or 0):02d}E{int(episode):02d}"
+    title, year = MediaUtils.parse_movie_filename(raw)
+    return stats_title_key(item), f"{title} ({year})" if year else (title or raw), None
+
+
+def tmdb_card(tmdb, item) -> dict:
+    """Title, link and poster from TMDB; empty values when there's no match, so it isn't retried."""
+    raw = unquote(item.get('uri') or item.get('name') or '')
+    # ponytail: files without SxxEyy are looked up as movies only; reuse the Now Playing
+    # movie-vs-TV scoring if TV specials without episode numbers show the wrong poster.
+    tv_title, season, episode, tv_year = MediaUtils.parse_tv_filename(raw)
+    if tv_title and episode:
+        embed = tmdb.get_tv_metadata(tv_title, season, tv_year)
+    else:
+        title, year = MediaUtils.parse_movie_filename(raw)
+        embed = tmdb.get_movie_metadata(title, year, file_path=item.get('uri')) if title else None
+    if not embed:
+        return {"poster": None}
+    return {"title": embed.title, "url": embed.url, "poster": embed.thumbnail.url}
 
 
 def _format_ladder(rows: list, value) -> str:
@@ -45,13 +75,40 @@ def build_stats_embed(stats) -> discord.Embed:
     return embed
 
 
+def _recent_embed(entry: dict) -> discord.Embed:
+    watchers = ", ".join(discord.utils.escape_markdown(n) for n in entry["viewers"].values())
+    lines = [f"📺 Last episode **{entry['episode']}**"] if entry.get("episode") else []
+    lines.append(f"👥 {watchers}")
+    lines.append(f"🕒 <t:{entry['last']}:R> · {entry['seconds'] / 3600:.1f} h in the room")
+    embed = discord.Embed(
+        title=entry.get("title") or entry["name"],
+        url=entry.get("url"),
+        description="\n".join(lines),
+        color=discord.Color.blurple(),
+    )
+    if entry.get("poster"):
+        embed.set_thumbnail(url=entry["poster"])
+    return embed
+
+
+def build_stats_embeds(stats) -> list[discord.Embed]:
+    """Leaderboard, then one card per recently viewed title (Discord allows 10 embeds a message)."""
+    embeds = [build_stats_embed(stats)]
+    recent = stats.recently_viewed()
+    if recent:
+        embeds[0].set_footer(text="Recently viewed ↓")
+        embeds += [_recent_embed(e) for e in recent]
+    return embeds
+
+
 class StatsCommands(commands.Cog):
     """Tracks who is in the voice room during playback and shows the leaderboard."""
 
-    def __init__(self, bot: commands.Bot, vlc, stats):
+    def __init__(self, bot: commands.Bot, vlc, stats, tmdb=None):
         self.bot = bot
         self.vlc = vlc
         self.stats = stats
+        self.tmdb = tmdb
 
     async def cog_load(self):
         self._track.start()
@@ -81,6 +138,15 @@ class StatsCommands(commands.Cog):
                 int(status.findtext('length') or 0),
                 TICK_SECONDS,
             )
+            if item is not None:
+                entry = self.stats.record_view(*view_info(item), viewers, TICK_SECONDS)
+                # Look the poster up once, and only after it counts as viewed
+                if entry and self.tmdb and "poster" not in entry and entry["seconds"] >= RECENT_MIN_SECONDS:
+                    try:
+                        entry.update(await asyncio.to_thread(tmdb_card, self.tmdb, item))
+                    except Exception:
+                        # Retried next tick; a TMDB outage mustn't stop the save below
+                        logger.exception("Poster lookup failed")
             self.stats.save()
         except Exception:
             # An unhandled error would stop the loop for the rest of the session
@@ -96,4 +162,4 @@ class StatsCommands(commands.Cog):
     @commands.guild_only()
     async def stats_cmd(self, ctx: commands.Context):
         """Show the watch leaderboard."""
-        await ctx.send(embed=build_stats_embed(self.stats))
+        await ctx.send(embeds=build_stats_embeds(self.stats))

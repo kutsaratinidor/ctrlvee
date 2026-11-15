@@ -1,3 +1,8 @@
+## 1.22.0 - 2026-11-15
+
+### Added
+- **Recently viewed titles on `/stats` and `!stats`**: Below the leaderboard, the last 5 titles people actually watched each get a card with the TMDB poster, who was in the room, and when. A title counts once someone other than the `STATS_EXCLUDED_USER_IDS` accounts has been in the voice room for 5 minutes of it, so playback to an empty room or just the streamer is left out. Episodes of the same show and season share one card showing the latest episode. Kept in `watch_stats_recent.json`.
+
 ## 1.21.0 - 2026-11-15
 
 ### Added

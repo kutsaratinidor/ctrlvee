@@ -450,7 +450,7 @@ from src.cogs.playback import PlaybackCommands
 from src.cogs.playlist import PlaylistCommands, PlaylistView, SearchResultsView
 from src.cogs.scheduler import Scheduler, PH_TZ, format_schedule_time
 from src.cogs.watch import WatchCommands, _write_env_watch_folders, build_watch_remove_picker
-from src.cogs.stats import StatsCommands, build_stats_embed
+from src.cogs.stats import StatsCommands, build_stats_embeds
 from src.version import __version__
 from changelog_helper import parse_changelog
 from src.config import get_watch_folders_from_env
@@ -905,7 +905,7 @@ async def setup_hook():
         await bot.add_cog(PlaylistCommands(bot, vlc, tmdb_service, watch_service))
         await bot.add_cog(Scheduler(bot, vlc))
         await bot.add_cog(WatchCommands(bot, watch_service, vlc))
-        await bot.add_cog(StatsCommands(bot, vlc, stats_service))
+        await bot.add_cog(StatsCommands(bot, vlc, stats_service, tmdb_service))
         logger.info("Cogs loaded successfully")
 
         # Sync slash commands (global or development guild).
@@ -2391,7 +2391,7 @@ async def root_help(interaction: discord.Interaction):
 @bot.tree.command(name="stats", description="Show the watch leaderboard")
 @app_commands.guild_only()
 async def root_stats(interaction: discord.Interaction):
-    await interaction.response.send_message(embed=build_stats_embed(stats_service))
+    await interaction.response.send_message(embeds=build_stats_embeds(stats_service))
 
 
 @system_group.command(name="version", description="Show CtrlVee version and configuration summary")

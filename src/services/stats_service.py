@@ -1,11 +1,14 @@
 import json
 import logging
 import os
+import time
 
 logger = logging.getLogger(__name__)
 
 FINISHED_FRACTION = 0.85  # Share of the runtime a viewer must see; leaves room for credits
 BUCKET_SECONDS = 60
+RECENT_MIN_SECONDS = 300  # Room time before a title counts as viewed, so a channel-hop doesn't list it
+RECENT_KEEP = 20
 
 
 class StatsService:
@@ -14,25 +17,54 @@ class StatsService:
     def __init__(self, path: str = "watch_stats.json", excluded=()):
         self.path = path
         self.excluded = {str(user_id) for user_id in excluded}
-        self.users = self._load()
+        # Recently viewed titles live in their own file so the ladder file keeps its format
+        self.recent_path = f"{os.path.splitext(path)[0]}_recent.json"
+        self.users = self._load(self.path, {})
+        self.recent = self._load(self.recent_path, [])
 
-    def _load(self) -> dict:
+    @staticmethod
+    def _load(path: str, empty):
         try:
-            with open(self.path, encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 return json.load(f)
         except FileNotFoundError:
-            return {}
+            return empty
         except ValueError as e:
-            # Keep the bad file: the next save would otherwise wipe the ladder for good
-            logger.error(f"Unreadable {self.path}, moving it to {self.path}.corrupt: {e}")
-            os.replace(self.path, f"{self.path}.corrupt")
-            return {}
+            # Keep the bad file: the next save would otherwise wipe it for good
+            logger.error(f"Unreadable {path}, moving it to {path}.corrupt: {e}")
+            os.replace(path, f"{path}.corrupt")
+            return empty
 
     def save(self) -> None:
-        tmp_path = f"{self.path}.tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(self.users, f)
-        os.replace(tmp_path, self.path)
+        for path, data in ((self.path, self.users), (self.recent_path, self.recent)):
+            tmp_path = f"{path}.tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            os.replace(tmp_path, path)
+
+    def record_view(self, key: str | None, name: str, episode: str | None, viewers: dict, seconds: int) -> dict | None:
+        """Note that non-excluded `viewers` ({user_id: name}) watched `key` for `seconds`.
+
+        Playback with only excluded accounts (the streamer) in the room is ignored, so an
+        empty room never shows up as viewed. Returns the entry, newest first in `self.recent`.
+        """
+        watchers = {str(u): n for u, n in viewers.items() if str(u) not in self.excluded}
+        if not key or not watchers:
+            return None
+        entry = next((e for e in self.recent if e["key"] == key), None)
+        if entry is None:
+            entry = {"key": key, "name": name, "seconds": 0, "viewers": {}}
+        else:
+            self.recent.remove(entry)
+        self.recent.insert(0, entry)
+        entry.update(name=name, episode=episode, last=int(time.time()))
+        entry["seconds"] += seconds
+        entry["viewers"].update(watchers)
+        del self.recent[RECENT_KEEP:]
+        return entry
+
+    def recently_viewed(self, limit: int = 5) -> list:
+        return [e for e in self.recent if e["seconds"] >= RECENT_MIN_SECONDS][:limit]
 
     def record(self, viewers: dict, title_key: str | None, position: int, length: int, seconds: int) -> None:
         """Credit each viewer ({user_id: name}) for `seconds` at `position` of a `length`-second title.
