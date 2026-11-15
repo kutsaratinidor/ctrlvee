@@ -173,6 +173,10 @@ class Config:
         int(u) for u in os.getenv('STATS_EXCLUDED_USER_IDS', '').split(',') if u.strip()
     ]
 
+    # Recently Watched poster grid on /stats is at most this many posters across and down
+    # (3 → up to 9 titles). Clamped to 1-4.
+    STATS_POSTER_GRID_MAX: int = min(4, max(1, int(os.getenv('STATS_POSTER_GRID_MAX', '3') or 3)))
+
     # Optional channel to log searches that returned no results (movie requests,
     # playlist search/play-search). Set to 0 to log to the terminal instead.
     SEARCH_LOG_CHANNEL_ID: int = int(os.getenv('SEARCH_LOG_CHANNEL_ID', '0'))
@@ -470,6 +474,7 @@ class Config:
             f"Voice Join Enabled: {cls.ENABLE_VOICE_JOIN}",
             f"Voice Channel ID: {cls.VOICE_JOIN_CHANNEL_ID if cls.VOICE_JOIN_CHANNEL_ID else 'Not Configured'}",
             f"Stats Excluded Users: {', '.join(map(str, cls.STATS_EXCLUDED_USER_IDS)) or 'None'}",
+            f"Stats Poster Grid Max: {cls.STATS_POSTER_GRID_MAX}x{cls.STATS_POSTER_GRID_MAX}",
             f"Auto Join On Start: {cls.VOICE_AUTO_JOIN_ON_START}",
             f"Voice Max Reconnects: {cls.VOICE_MAX_RECONNECTS}",
             f"Voice Reconnect Window: {cls.VOICE_RECONNECT_WINDOW}s",

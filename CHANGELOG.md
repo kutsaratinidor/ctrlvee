@@ -1,3 +1,12 @@
+## 1.23.0 - 2026-11-15
+
+### Added
+- **Bigger poster grid on `/stats`**: Recently Watched is now one image of TMDB posters, up to 3x3 (9 titles) by default, numbered to match the list above it. The grid grows with what's been watched (1, 2x1, 2x2, 3x2, 3x3), and `STATS_POSTER_GRID_MAX` sets the largest size (1-4). A title without a poster gets a grey tile with its name. If the image can't be made, the card falls back to Discord's 4-poster layout.
+
+### Changed
+- **New dependency: Pillow**, used to draw the grid. Run `pip install -r requirements.txt` after updating; without it, `/stats` keeps the 4-poster layout.
+- **`/stats` shows "thinking…" briefly** while a new grid is drawn, so slow poster downloads can't run past Discord's reply window.
+
 ## 1.22.3 - 2026-11-15
 
 ### Changed

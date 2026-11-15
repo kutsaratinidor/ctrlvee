@@ -3,6 +3,7 @@
 Run from the repo root:  python tests/test_watch_stats.py
 """
 import asyncio
+import io
 import json
 import os
 import sys
@@ -16,7 +17,12 @@ from unittest import mock  # noqa: E402
 
 import discord  # noqa: E402
 
-from src.cogs.stats import StatsCommands, build_stats_embed, build_stats_embeds, stats_title_key, tmdb_card, view_info  # noqa: E402
+from PIL import Image  # noqa: E402
+
+from src.cogs import stats as stats_cog  # noqa: E402
+from src.cogs.stats import StatsCommands, build_stats_embed, stats_title_key, tmdb_card, view_info  # noqa: E402
+from src.config import Config  # noqa: E402
+from src.utils import poster_grid  # noqa: E402
 from src.services.stats_service import StatsService  # noqa: E402
 from src.services.tmdb_service import TMDBService  # noqa: E402
 
@@ -37,6 +43,30 @@ def _tmdb(movie=None, tv=None):
 
     tmdb.get_movie_metadata, tmdb.get_tv_metadata = stub(movie), stub(tv)
     return tmdb
+
+
+def build_stats_embeds(stats):
+    """The embeds /stats sends, with poster downloads faked (see _fake_downloads)."""
+    return asyncio.run(stats_cog.build_stats_message(stats))["embeds"]
+
+
+def _jpeg(color):
+    out = io.BytesIO()
+    Image.new("RGB", (500, 750), color).save(out, "JPEG")
+    return out.getvalue()
+
+
+class _Downloads:
+    """Stands in for requests.get: serves a solid-colour poster per URL, or fails for 'bad' ones."""
+
+    def __init__(self):
+        self.urls = []
+
+    def __call__(self, url, timeout):
+        self.urls.append(url)
+        if "bad" in url:
+            raise poster_grid.requests.ConnectionError("down")
+        return types.SimpleNamespace(content=_jpeg((200, 30, 30)), raise_for_status=lambda: None)
 
 
 def _leaf(filename):
@@ -110,6 +140,7 @@ def main():
 
     check_recently_viewed()
     check_tick()
+    check_poster_grid()
 
     # An upgraded file is the same title; another year or episode is not
     assert stats_title_key(_leaf("Heat (1995) 720p.mkv")) == stats_title_key(_leaf("Heat.1995.2160p.UHD.BluRay.x265.mkv"))
@@ -120,7 +151,9 @@ def main():
 
 
 def check_recently_viewed():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory() as tmp, mock.patch.object(poster_grid.requests, "get", _Downloads()) as fake:
+        stats_cog._downloads = fake
+        stats_cog._grid_cache[:] = [None, None]
         path = os.path.join(tmp, "stats.json")
         stats = StatsService(path, excluded=[9])
         streamer, ann = {9: "Streamer"}, {1: "Ann"}
@@ -156,28 +189,49 @@ def check_recently_viewed():
         assert [e["key"] for e in stats.recently_viewed()] == [heat[0], ep1[0]]
 
         # One "Recently Watched" card: a line per title (linked when TMDB matched, the
-        # parsed name when not) and the posters it has as one grid sharing the card's url
-        stats.recent[0].update(title="Heat", url="https://www.themoviedb.org/movie/949", poster="https://image.tmdb.org/p.jpg")
+        # parsed name when not) over one attached grid image
+        stats.recent[0].update(title="Heat", url="https://www.themoviedb.org/movie/949", poster="https://image.tmdb.org/t/p/w500/heat.jpg")
         stats.recent[1]["poster"] = None
         stats.users = {"1": {"name": "Ann", "seconds": 60, "finished": [], "progress": {}}}
-        board, card = build_stats_embeds(stats)
+        message = asyncio.run(stats_cog.build_stats_message(stats))
+        board, card = message["embeds"]
         assert board.title == "🏆 Watch Leaderboard" and card.title == "🎬 Recently Watched"
         first, second = card.description.split("\n**2.**")
         # Titles only: who watched and for how long is the leaderboard's job
         assert first == "**1.** [Heat](https://www.themoviedb.org/movie/949)", first
         assert second == " Show Name · S02E04", second
-        assert card.image.url == "https://image.tmdb.org/p.jpg"
+        assert card.image.url == "attachment://recently-watched.jpg"
+        assert message["file"].filename == "recently-watched.jpg"
+        grid = Image.open(message["file"].fp)
+        assert grid.size == (2 * 200 + 3 * 6, 300 + 2 * 6)  # 2 titles: 2x1
+        assert grid.getpixel((6 + 100, 6 + 150))[0] > 150  # Heat's (red) poster, first cell
+        assert stats_cog._downloads.urls == ["https://image.tmdb.org/t/p/w342/heat.jpg"]  # smaller size
 
-        # Four titles with posters: the card holds the first, three more embeds share its url
-        for n, name in enumerate(("Alien (1979).mkv", "Dune (2021).mkv", "Up (2009).mkv")):
-            stats.record_view(*view_info(_leaf(name)), {4: "Di"}, 300)
-            stats.recent[0]["poster"] = f"https://p/{n}"
-        stats.recent[3]["poster"] = "https://p/heat"
-        embeds = build_stats_embeds(stats)
-        assert len(embeds) == 5 and embeds[1].description.count("\n**") == 3  # list stops at 4
-        assert {e.url for e in embeds[1:]} == {"https://www.themoviedb.org/"}
-        assert [e.image.url for e in embeds[1:]] == ["https://p/2", "https://p/1", "https://p/0", "https://p/heat"]
-        del stats.recent[:3]
+        # The grid follows STATS_POSTER_GRID_MAX: 9 titles at most by default, then 4 at 2
+        for n in range(10):
+            stats.record_view(*view_info(_leaf(f"Film {n} (20{n:02d}).mkv")), {4: "Di"}, 300)
+            stats.recent[0]["poster"] = f"https://image.tmdb.org/t/p/w500/{n}.jpg"
+        message = asyncio.run(stats_cog.build_stats_message(stats))
+        assert message["embeds"][1].description.count("\n**") == 8
+        assert Image.open(message["file"].fp).size == (3 * 200 + 4 * 6, 3 * 300 + 4 * 6)
+        with mock.patch.object(Config, "STATS_POSTER_GRID_MAX", 2):
+            message = asyncio.run(stats_cog.build_stats_message(stats))
+        assert message["embeds"][1].description.count("\n**") == 3
+        assert Image.open(message["file"].fp).size == (2 * 200 + 3 * 6, 2 * 300 + 3 * 6)
+
+        # Same list again: served from the render cache, not drawn again
+        with mock.patch.object(Config, "STATS_POSTER_GRID_MAX", 2), \
+                mock.patch.object(poster_grid, "render", wraps=poster_grid.render) as render:
+            asyncio.run(stats_cog.build_stats_message(stats))
+        render.assert_not_called()
+
+        # No Pillow, or the render breaks: Discord's 4-poster gallery instead
+        with mock.patch.object(poster_grid, "render", side_effect=RuntimeError("boom")):
+            stats_cog._grid_cache[:] = [None, None]
+            embeds = build_stats_embeds(stats)
+        assert len(embeds) == 5 and {e.url for e in embeds[1:]} == {"https://www.themoviedb.org/"}
+        assert [e.image.url for e in embeds[1:]] == [f"https://image.tmdb.org/t/p/w500/{n}.jpg" for n in (9, 8, 7, 6)]
+        del stats.recent[:10]
 
         # Excluding someone later hides them from past cards, along with their time;
         # a card nobody else watched drops off. The stored entries keep them.
@@ -233,8 +287,6 @@ class Room(discord.VoiceChannel):
 def check_tick():
     """The 30s tick: the poster is looked up after 5 minutes, saved with the entry, and an
     empty result is retried an hour later, including for titles no longer playing."""
-    from src.config import Config
-
     with tempfile.TemporaryDirectory() as tmp:
         stats = StatsService(os.path.join(tmp, "stats.json"), excluded=[9])
         # A 1.22 entry whose lookup came back empty, before retries existed: no uri, no check time
@@ -290,6 +342,32 @@ def check_tick():
         cog.tmdb.lookup_media_embed = mock.Mock(side_effect=RuntimeError("TMDB down"))
         ticks(1)
         assert entry("heat|1995")["poster"] is None and entry("heat|1995")["viewers"]["1"]["seconds"] == 1050
+
+
+def check_poster_grid():
+    assert [poster_grid.grid_shape(n) for n in (1, 2, 3, 4, 5, 6, 7, 9, 16)] == [
+        (1, 1), (2, 1), (2, 2), (2, 2), (3, 2), (3, 2), (3, 3), (3, 3), (4, 4)]
+    with mock.patch.object(poster_grid.requests, "get", _Downloads()) as fake:
+        poster_grid._posters.clear()
+        tiles = [("A", "https://image.tmdb.org/t/p/w500/a.jpg"), ("B", None), ("C", "https://bad/c.jpg")]
+        jpeg, complete = poster_grid.render(tiles)
+        grid = Image.open(io.BytesIO(jpeg))
+        assert grid.size == (2 * 200 + 3 * 6, 2 * 300 + 3 * 6) and not complete
+        cell = lambda i: grid.getpixel((6 + (i % 2) * 206 + 100, 6 + (i // 2) * 306 + 200))
+        near = lambda a, b: all(abs(x - y) <= 6 for x, y in zip(a, b))  # JPEG shifts colours slightly
+        assert cell(0)[0] > 150  # A's poster
+        assert near(cell(1), poster_grid.PLACEHOLDER) and near(cell(2), poster_grid.PLACEHOLDER)
+        assert near(cell(3), poster_grid.BACKGROUND)  # empty 4th cell
+
+        # Posters are cached between renders and pruned to the current grid
+        poster_grid.render(tiles[:1] + [("D", "https://image.tmdb.org/t/p/w500/d.jpg")])
+        assert len(fake.urls) == 3 and set(poster_grid._posters) == {
+            "https://image.tmdb.org/t/p/w500/a.jpg", "https://image.tmdb.org/t/p/w500/d.jpg"}
+        assert poster_grid.render(tiles[:1])[1] is True and len(fake.urls) == 3
+
+        # Bytes that aren't an image become a grey tile and are dropped from the cache
+        poster_grid._posters["https://image.tmdb.org/t/p/w500/a.jpg"] = b"not a jpeg"
+        assert poster_grid.render(tiles[:1])[1] is False and not poster_grid._posters
 
 
 if __name__ == "__main__":

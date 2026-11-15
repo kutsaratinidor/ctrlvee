@@ -1,4 +1,5 @@
 import asyncio
+import io
 import logging
 import time
 from urllib.parse import unquote
@@ -69,11 +70,14 @@ def build_stats_embed(stats) -> discord.Embed:
     return embed
 
 
-# Discord merges up to 4 embeds that share a url into one card with an image grid.
-# ponytail: that merge is client behaviour, not documented API; if it stops, the extra
-# posters show as image-only embeds under the list, which still reads fine.
+# Fallback when the grid image can't be made: Discord merges up to 4 embeds that share a
+# url into one card with an image grid. That's client behaviour, not documented API.
 GALLERY_URL = "https://www.themoviedb.org/"
 GALLERY_SIZE = 4
+GRID_FILENAME = "recently-watched.jpg"
+
+# Last rendered grid: (tiles, jpeg). /stats reuses it until the list or a poster changes.
+_grid_cache: list = [None, None]
 
 
 def _recent_line(rank: int, entry: dict) -> str:
@@ -84,25 +88,46 @@ def _recent_line(rank: int, entry: dict) -> str:
     return f"**{rank}.** {title}{episode}"
 
 
-def build_stats_embeds(stats) -> list[discord.Embed]:
-    """Leaderboard, then one "Recently Watched" card: the titles over a 2x2 poster grid.
-    Who watched and for how long is left to the leaderboard."""
-    embeds = [build_stats_embed(stats)]
-    recent = stats.recently_viewed(limit=GALLERY_SIZE)
+def grid_cells() -> int:
+    """Titles in the Recently Watched card: STATS_POSTER_GRID_MAX squared."""
+    return Config.STATS_POSTER_GRID_MAX ** 2
+
+
+def _render_grid(tiles: tuple) -> bytes:
+    if _grid_cache[0] == tiles:
+        return _grid_cache[1]
+    from ..utils import poster_grid  # Pillow; if it's missing, /stats falls back to the gallery
+    jpeg, complete = poster_grid.render(list(tiles))
+    # Keep a grid with a failed download only for this reply, so the next /stats tries again
+    _grid_cache[:] = [tiles, jpeg] if complete else [None, None]
+    return jpeg
+
+
+async def build_stats_message(stats) -> dict:
+    """Keyword arguments for send(): the leaderboard, then one "Recently Watched" card with
+    the titles over a poster grid image. Who watched and for how long is the leaderboard's job."""
+    board = build_stats_embed(stats)
+    recent = stats.recently_viewed(limit=grid_cells())
     if not recent:
-        return embeds
+        return {"embeds": [board]}
     card = discord.Embed(
         title="🎬 Recently Watched",
         url=GALLERY_URL,
         description="\n".join(_recent_line(rank, e) for rank, e in enumerate(recent, 1)),
         color=discord.Color.blurple(),
     )
-    embeds.append(card)
-    posters = [e["poster"] for e in recent if e.get("poster")]
-    if posters:
+    if not any(e.get("poster") for e in recent):
+        return {"embeds": [board, card]}
+    tiles = tuple((e.get("title") or e["name"], e.get("poster")) for e in recent)
+    try:
+        jpeg = await asyncio.to_thread(_render_grid, tiles)
+    except Exception:
+        logger.exception("Poster grid failed; using Discord's 4-poster gallery instead")
+        posters = [e["poster"] for e in recent[:GALLERY_SIZE] if e.get("poster")]
         card.set_image(url=posters[0])
-    embeds += [discord.Embed(url=GALLERY_URL).set_image(url=p) for p in posters[1:]]
-    return embeds
+        return {"embeds": [board, card] + [discord.Embed(url=GALLERY_URL).set_image(url=p) for p in posters[1:]]}
+    card.set_image(url=f"attachment://{GRID_FILENAME}")
+    return {"embeds": [board, card], "file": discord.File(io.BytesIO(jpeg), filename=GRID_FILENAME)}
 
 
 class StatsCommands(commands.Cog):
@@ -156,7 +181,7 @@ class StatsCommands(commands.Cog):
     async def _fill_poster(self):
         """At most one TMDB lookup a tick, for the first title in the grid still missing its poster."""
         now = time.time()
-        entry = self.stats.poster_due(GALLERY_SIZE, now)
+        entry = self.stats.poster_due(grid_cells(), now)
         if entry is None:
             return
         entry["poster_checked"] = int(now)
@@ -177,4 +202,6 @@ class StatsCommands(commands.Cog):
     @commands.guild_only()
     async def stats_cmd(self, ctx: commands.Context):
         """Show the watch leaderboard."""
-        await ctx.send(embeds=build_stats_embeds(self.stats))
+        async with ctx.typing():
+            message = await build_stats_message(self.stats)
+        await ctx.send(**message)

@@ -450,7 +450,7 @@ from src.cogs.playback import PlaybackCommands
 from src.cogs.playlist import PlaylistCommands, PlaylistView, SearchResultsView
 from src.cogs.scheduler import Scheduler, PH_TZ, format_schedule_time
 from src.cogs.watch import WatchCommands, _write_env_watch_folders, build_watch_remove_picker
-from src.cogs.stats import StatsCommands, build_stats_embeds
+from src.cogs.stats import StatsCommands, build_stats_message
 from src.version import __version__
 from changelog_helper import parse_changelog
 from src.config import get_watch_folders_from_env
@@ -2391,7 +2391,9 @@ async def root_help(interaction: discord.Interaction):
 @bot.tree.command(name="stats", description="Show the watch leaderboard")
 @app_commands.guild_only()
 async def root_stats(interaction: discord.Interaction):
-    await interaction.response.send_message(embeds=build_stats_embeds(stats_service))
+    # A fresh poster grid downloads posters, which can take longer than Discord's 3 s reply window
+    await interaction.response.defer()
+    await interaction.followup.send(**await build_stats_message(stats_service))
 
 
 @system_group.command(name="version", description="Show CtrlVee version and configuration summary")
