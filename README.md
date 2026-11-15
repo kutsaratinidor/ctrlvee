@@ -264,18 +264,28 @@ that's fixed. Either case logs a startup warning. Every command and guard decisi
 with the user who ran it.
 
 The **schedule proximity guard** (`ENABLE_SCHEDULE_PROXIMITY_GUARD`, default `true`)
-prompts whoever runs `play-item`/`play-search`, `next`/`previous`, or `queue
-add-next`/`!queue_next` when an **upcoming** scheduled movie would start before the
+prompts whoever runs `play-item`/`play-search`, picks from a `play-search` or `genre` list,
+`next`/`previous`, or `queue add-next`/`!queue_next` when an **upcoming** scheduled movie would start before the
 item being played finishes, using that item's runtime from VLC (for queue add-next, counted
 from when it would actually start: after the current item and anything already queued).
 If VLC hasn't parsed the file yet, the bot reads its runtime from the file directly.
 When the runtime still isn't known (the file can't be read, `next` without a queued item,
-`previous`, or a multi-result `play-search`), it falls back to
+or `previous`), it falls back to
 `SCHEDULE_PROXIMITY_WINDOW_SECONDS` (default `1800`, i.e. 30 minutes). A schedule that
 has already started does not trigger it. The prompt names the scheduled movie and who
 scheduled it, with **Continue**/**Cancel** buttons — pick Continue to play anyway, Cancel
 (or letting it sit for `SCHEDULE_PROXIMITY_CONFIRM_TIMEOUT_SECONDS`, default 30s) to leave
 the schedule alone and skip the command.
+
+### Browsing by Genre
+
+`/playlist genre` and `!genre` list the playlist's movies in one genre, so you don't have to scroll the whole playlist. TV episodes are left out.
+
+Genres come from Radarr: every configured instance's movie list is loaded in the background and again every hour, and each playlist file is matched to it by folder and file name, then file name, then title and year (Radarr's original title counts too, and accents and capitals don't matter). If an instance is down, its last list is kept and it's tried again in 5 minutes.
+
+Movies Radarr can't settle go to TMDB, 20 every two minutes, and the answers are remembered in `genre_cache.json`, so each movie is only looked up once. That covers movies Radarr doesn't have, ones it has without genres, and cases where two Radarr movies share a title and year but disagree on genres. TMDB answers are only used when the title matches closely and the year is within one, since wrong genres are worse than none. A failed lookup is tried again on the next run, and "no match" after 30 days. Without Radarr, everything comes from TMDB, which takes longer to fill in on a big playlist. Genres appear a few minutes after startup.
+
+Left out on purpose: TV episodes, streams, non-video files (audio, subtitles, images), and file names too generic to identify (like `movie.mkv` without a year) when their folder doesn't match Radarr's. A file that's in the playlist twice is listed once.
 
 ### Radarr (Optional)
 
@@ -349,6 +359,7 @@ Prefix shown as `!` below; replace with your configured `DISCORD_COMMAND_PREFIX`
 - `!list`
 - `!search <query>`
 - `!play_search <query>` — shows a picker when multiple results are found; plays directly if only one match
+- `!genre [genre]` (alias `genres`), or `/playlist genre` — the playlist's movies in a genre, 20 per page, with a picker to play one. Leave the genre out to see every genre and how many movies it has; part of a name works (`!genre sci`). Slash autocompletes the genre.
 - `!cleanup` (aliases: `plcleanup`, `cleanup_missing`) removes missing files from VLC playlist
 
 ### Subtitles and Audio

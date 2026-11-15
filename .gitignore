@@ -43,6 +43,7 @@ watch_stats.json
 watch_stats.json.corrupt
 watch_stats_recent.json
 watch_stats_recent.json.corrupt
+genre_cache.json
 
 # IDE specific files
 .idea/

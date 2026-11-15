@@ -123,6 +123,38 @@ class TMDBService:
 
         return best
 
+    def movie_genres(self, title: str, year: int | None = None) -> list[str] | None:
+        """Genre names of the best TMDB movie match: [] when nothing matched, None on an error
+        (so the caller can try again later). Search results carry genre ids, so this is one
+        search plus a once-only fetch of the genre names."""
+        if not self.api_key or not title:
+            return None
+        try:
+            if getattr(self, '_genre_names', None) is None:
+                self._genre_names = {g['id']: g['name'] for g in tmdb.Genres().movie_list().get('genres', [])}
+            best = self._find_best_movie_result(title, year)
+            if best is None:
+                return []
+            result = best[1]
+            # Best isn't always right: the search returns something for nearly any title.
+            # Wrong genres are worse than none, so require the title to match closely (exact,
+            # or containing most of it) and the year to be within one (festival vs release).
+            title_score = self._compute_title_score(
+                title, result.get('title') or '', result.get('original_title') or '', None, None, 0, 0
+            ) - 5.0  # no-year bonus
+            release = (result.get('release_date') or '')[:4]
+            result_year = int(release) if release.isdigit() else None
+            if title_score < 40 or (year and result_year and abs(result_year - year) > 1):
+                self.logger.info(
+                    f"TMDB genre lookup: '{result.get('title')}' ({result_year}) too far from "
+                    f"'{title}' ({year}); treating as no match"
+                )
+                return []
+            return [self._genre_names[i] for i in result.get('genre_ids') or [] if i in self._genre_names]
+        except Exception as e:
+            self.logger.error(f"TMDB genre lookup failed for title='{title}' year={year}: {e}")
+            return None
+
     def search_movies(self, title: str, limit: int = 5) -> list[dict]:
         """Search TMDB for movies matching a title, for user-facing pick lists."""
         return self._search_candidates('movie', title, limit)

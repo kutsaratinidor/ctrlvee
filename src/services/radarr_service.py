@@ -86,6 +86,12 @@ class RadarrService:
                 "error": describe_request_error("Radarr", e)
             }
     
+    def list_movies(self) -> List[dict]:
+        """Every movie in this Radarr, with genres and file (blocking). Raises on failure."""
+        response = requests.get(urljoin(self.base_url, "movie"), headers={"X-Api-Key": self.api_key}, timeout=30)
+        response.raise_for_status()
+        return response.json()
+
     async def get_recent_downloads(self, days: int = 7, limit: int = 20) -> Dict[str, any]:
         """Get recently downloaded movies from Radarr
         

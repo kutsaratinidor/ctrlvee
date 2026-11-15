@@ -72,6 +72,7 @@ from src.services.radarr_service import RadarrService
 from src.services.overseerr_service import OverseerrService, STATUS_LABELS, REQUEST_STATUS_DECLINED, REQUEST_STATUS_FAILED
 from src.services.movie_request_tracker import MovieRequestTracker
 from src.services.stats_service import StatsService
+from src.services.genre_service import GenreService
 
 vlc = VLCController(bot=bot)
 tmdb_service = TMDBService()
@@ -96,6 +97,7 @@ try:
         logger.info("No Radarr instances configured")
 except Exception as e:
     logger.warning(f"Failed to initialize Radarr services: {e}")
+genre_service = GenreService([i['service'] for i in _radarr_services], tmdb_service)
 _startup_announced = False
 
 # Shared voice reconnect debounce
@@ -902,7 +904,7 @@ async def setup_hook():
     try:
         # Add cogs
         await bot.add_cog(PlaybackCommands(bot, vlc, tmdb_service, watch_service))
-        await bot.add_cog(PlaylistCommands(bot, vlc, tmdb_service, watch_service))
+        await bot.add_cog(PlaylistCommands(bot, vlc, tmdb_service, watch_service, genre_service))
         await bot.add_cog(Scheduler(bot, vlc))
         await bot.add_cog(WatchCommands(bot, watch_service, vlc))
         await bot.add_cog(StatsCommands(bot, vlc, stats_service, tmdb_service))
@@ -1642,6 +1644,7 @@ async def controls(ctx):
 `{prefix}list` - Show playlist with interactive navigation
 `{prefix}search <query>` - Search for items in playlist
 `{prefix}play_search <query>` - Search and play a specific item
+`{prefix}genre [genre]` - Movies in a genre, with a picker to play one
 `{prefix}play_num <number>` - Play item by its number in playlist
         """
         embed.add_field(name="📋 Playlist Management", value=playlist_commands, inline=False)
@@ -2306,6 +2309,7 @@ def _build_system_help_embed() -> discord.Embed:
             "• `/playlist list`\n"
             "• `/playlist search`\n"
             "• `/playlist play-search`\n"
+            "• `/playlist genre`\n"
             "• `/playlist radarr-recent`"
         ),
         inline=False,
@@ -3006,8 +3010,11 @@ async def playlist_play_search(interaction: discord.Interaction, query: str):
 
     # Single match: check against its runtime. Multiple: the pick isn't known yet,
     # so fall back to the fixed proximity window.
-    target = results[0][1] if len(results) == 1 else None
-    if playback_cog and not await _confirm_nearby_schedule_for_interaction(playback_cog, interaction, target):
+    # A single match is checked against its runtime here; with several, the picker
+    # checks whichever one gets picked.
+    if len(results) == 1 and playback_cog and not await _confirm_nearby_schedule_for_interaction(
+        playback_cog, interaction, results[0][1]
+    ):
         return
 
     if len(results) == 1:
@@ -3053,6 +3060,36 @@ async def playlist_play_search(interaction: discord.Interaction, query: str):
         embed.set_footer(text="Select an item from the dropdown below")
     await _reply(interaction, embed=embed, view=view)
     view.message = await interaction.original_response()
+
+
+@playlist_group.command(name="genre", description="List the playlist's movies in a genre and pick one to play")
+@app_commands.describe(genre="A genre, e.g. Comedy. Leave empty to see every genre.")
+async def playlist_genre(interaction: discord.Interaction, genre: str = ""):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+    playlist_cog = bot.get_cog("PlaylistCommands")
+    if not playlist_cog or not playlist_cog.genres:
+        await _reply(interaction, "Genre browsing isn't available right now.", ephemeral=True)
+        return
+    await _defer_if_needed(interaction)
+    reply = await playlist_cog.genre_reply(interaction.user.id, genre)
+    await _reply(interaction, **reply)
+    if "view" in reply:
+        reply["view"].message = await interaction.original_response()
+
+
+@playlist_genre.autocomplete("genre")
+async def _playlist_genre_autocomplete(interaction: discord.Interaction, current: str):
+    playlist_cog = bot.get_cog("PlaylistCommands")
+    if not playlist_cog or not playlist_cog.genres:
+        return []
+    index = await playlist_cog.genre_index()
+    typed = current.strip().lower()
+    return [
+        # Discord caps choice names and values at 100 characters
+        app_commands.Choice(name=f"{genre[:85]} ({len(movies)})", value=genre[:100])
+        for genre, movies in sorted(index.items()) if typed in genre.lower()
+    ][:25]
 
 
 @queue_group.command(name="add-next", description="Queue a playlist item to play next")

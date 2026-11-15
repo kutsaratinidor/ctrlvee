@@ -1,3 +1,12 @@
+## 1.25.0 - 2026-11-15
+
+### Added
+- **Browse the playlist by genre**: `/playlist genre` (genre autocompletes with counts) and `!genre` (alias `genres`; part of a name works, like `!genre sci`) list the playlist's movies in a genre, 20 per page, with a picker to play one. Without a genre they list every genre and how many movies it has. TV episodes are left out.
+- **Where the genres come from**: Radarr's movie lists, loaded in the background and hourly, matched by folder and file name, then title and year (original titles and accented names included). Movies Radarr can't settle (not in Radarr, no genres there, or two Radarr movies that disagree) are looked up on TMDB a few at a time, accepted only on a close title and year match, and cached in `genre_cache.json`. A Radarr instance that's down keeps its last list and is retried in 5 minutes.
+
+### Changed
+- **The play-search picker checks for a nearby schedule when you pick**, using the picked item's runtime, instead of before showing the list with the fixed 30-minute window. Genre picks work the same way.
+
 ## 1.24.1 - 2026-11-15
 
 ### Changed
