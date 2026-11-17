@@ -1644,7 +1644,7 @@ async def controls(ctx):
 `{prefix}list` - Show playlist with interactive navigation
 `{prefix}search <query>` - Search for items in playlist
 `{prefix}play_search <query>` - Search and play a specific item
-`{prefix}genre [genre]` - Movies in a genre, with a picker to play one
+`{prefix}genre [genre]` - Movies in a genre, with pickers to play one or queue it next
 `{prefix}play_num <number>` - Play item by its number in playlist
         """
         embed.add_field(name="📋 Playlist Management", value=playlist_commands, inline=False)
@@ -3062,7 +3062,7 @@ async def playlist_play_search(interaction: discord.Interaction, query: str):
     view.message = await interaction.original_response()
 
 
-@playlist_group.command(name="genre", description="List the playlist's movies in a genre and pick one to play")
+@playlist_group.command(name="genre", description="List the playlist's movies in a genre to play or queue next")
 @app_commands.describe(genre="A genre, e.g. Comedy. Leave empty to see every genre.")
 async def playlist_genre(interaction: discord.Interaction, genre: str = ""):
     if not await _check_allowed_roles_for_interaction(interaction):
@@ -3580,28 +3580,8 @@ async def schedule_list(interaction: discord.Interaction):
         await interaction.response.send_message("Scheduler is unavailable.")
         return
 
-    if not scheduler_cog.scheduled:
-        await interaction.response.send_message("No movies scheduled.")
-        return
-
-    embed = discord.Embed(title="Upcoming Scheduled Movies", color=discord.Color.purple())
-    for s in sorted(scheduler_cog.scheduled, key=lambda x: x["dt"]):
-        dt_str = format_schedule_time(s["dt"])
-        duration = s.get("duration")
-        if duration == 'Loading...' or duration == 0:
-            dur_str = 'Loading...'
-        elif duration:
-            dur_str = MediaUtils.format_time(duration)
-        else:
-            dur_str = "Unknown"
-        scheduled_by = f"<@{s['user']}>" if s.get('user') else "Unknown"
-        embed.add_field(
-            name=f"#{s['number']} — {s.get('title', 'Unknown')}",
-            value=f"Scheduled for {dt_str}\nDuration: {dur_str}\nScheduled by: {scheduled_by}",
-            inline=False,
-        )
-
-    await interaction.response.send_message(embed=embed)
+    await _defer_if_needed(interaction)  # the first list after scheduling looks up posters
+    await _reply(interaction, **await scheduler_cog.schedule_list_message())
 
 
 @schedule_group.command(name="remove", description="Remove all schedules for a playlist number")

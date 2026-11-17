@@ -281,6 +281,8 @@ the schedule alone and skip the command.
 
 `/playlist genre` and `!genre` list the playlist's movies in one genre, so you don't have to scroll the whole playlist. TV episodes are left out.
 
+The reply has two dropdowns over the current page: one plays the movie now, the other queues it to play after the current item (same room and schedule checks as `/queue add-next`). Queueing leaves the picker open, so you can line up several movies from one list; playing closes it.
+
 Genres come from Radarr: every configured instance's movie list is loaded in the background and again every hour, and each playlist file is matched to it by folder and file name, then file name, then title and year (Radarr's original title counts too, and accents and capitals don't matter). If an instance is down, its last list is kept and it's tried again in 5 minutes.
 
 Movies Radarr can't settle go to TMDB, 20 every two minutes, and the answers are remembered in `genre_cache.json`, so each movie is only looked up once. That covers movies Radarr doesn't have, ones it has without genres, and cases where two Radarr movies share a title and year but disagree on genres. TMDB answers are only used when the title matches closely and the year is within one, since wrong genres are worse than none. A failed lookup is tried again on the next run, and "no match" after 30 days. Without Radarr, everything comes from TMDB, which takes longer to fill in on a big playlist. Genres appear a few minutes after startup.
@@ -384,6 +386,8 @@ Scheduling commands need an allowed role, but you don't need to be in the voice 
 - `!schedule <number> <YYYY-MM-DD> <HH:MM>`
 - `!schedules`
 - `!unschedule <number>`
+
+`!schedules` / `/schedule list` show one card per movie, soonest first (up to 10): TMDB poster, title linked to TMDB, rating and genres, start time in your own timezone and in PH time, runtime and end time, and who scheduled it. The colour shows how soon it starts: orange within the hour, green later today, blurple after that. TMDB details are looked up the first time a schedule is listed and kept with the schedule.
 
 ### Info / Utility
 

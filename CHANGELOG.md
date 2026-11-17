@@ -1,3 +1,11 @@
+## 1.26.0 - 2026-11-16
+
+### Added
+- **Queue from the genre picker**: `/playlist genre` and `!genre` now have a second dropdown that queues the picked movie to play after the current one, with the same room and schedule checks as `/queue add-next` (the schedule check uses when the movie would actually start). The picker stays open after queueing, so several movies can be lined up from one list.
+
+### Changed
+- **Schedule list as poster cards**: `/schedule list` and `!schedules` show one card per scheduled movie, soonest first (up to 10): TMDB poster, title linked to TMDB, rating and genres, start time in each viewer's timezone and in PH time, runtime and end time, and who scheduled it. The card colour shows how soon it starts: orange within the hour, green later today, blurple after that. TMDB details are looked up the first time a schedule is listed and kept with it.
+
 ## 1.25.0 - 2026-11-15
 
 ### Added

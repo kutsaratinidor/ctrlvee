@@ -247,20 +247,22 @@ class PlaySearchView(discord.ui.View):
         self._disable_all()
         await interaction.response.edit_message(content='Playback selection cancelled.', embed=None, view=self)
 
-    async def _on_select(self, interaction: discord.Interaction):
+    async def _picked(self, interaction: discord.Interaction):
+        """(playlist number, item) chosen in a select, or None (someone else's picker, or stale)."""
         if interaction.user.id != self.requester_id:
             await interaction.response.send_message('That picker belongs to someone else.', ephemeral=True)
-            return
-
+            return None
         try:
             playlist_num = int(interaction.data['values'][0])
         except (KeyError, IndexError, TypeError, ValueError):
-            return
+            return None
+        return next((p for p in self.results if p[0] == playlist_num), None)
 
-        pair = next((p for p in self.results if p[0] == playlist_num), None)
+    async def _on_select(self, interaction: discord.Interaction):
+        pair = await self._picked(interaction)
         if pair is None:
             return
-        _, item = pair
+        playlist_num, item = pair
 
         playback_cog = self.cog.bot.get_cog('PlaybackCommands')
         if playback_cog:
@@ -314,6 +316,13 @@ class GenrePickerView(PlaySearchView):
 
     def __init__(self, cog, requester_id: int, genre: str, results: List[Tuple[int, dict]]):
         super().__init__(cog, requester_id, results[:GENRE_PAGE_SIZE])
+        # Queue select goes right under the play select, so the buttons stay on the last row
+        cancel = self.children[-1]
+        self.remove_item(cancel)
+        queue = discord.ui.Select(placeholder='Choose a movie to queue next', options=_picker_options(self.results))
+        queue.callback = self._on_queue
+        self.add_item(queue)
+        self.add_item(cancel)
         self.genre = genre
         self.all_results = results
         self.page = 0
@@ -333,8 +342,36 @@ class GenrePickerView(PlaySearchView):
         footer = f"{len(self.all_results)} movies"
         if self.pages > 1:
             footer += f" · page {self.page + 1}/{self.pages}"
-        embed.set_footer(text=footer + " · pick one below to play")
+        embed.set_footer(text=footer + " · pick one below to play now or queue next")
         return embed
+
+    async def _on_queue(self, interaction: discord.Interaction):
+        """Queue the pick to play after the current item (same checks as !queue_next). The
+        picker stays open, so several movies can be queued from one list."""
+        pair = await self._picked(interaction)
+        if pair is None:
+            return
+        playlist_num, item = pair
+        playback_cog = self.cog.bot.get_cog('PlaybackCommands')
+        if playback_cog:
+            ok, reason = playback_cog._playback_guard(interaction.user)
+            if not ok:
+                await interaction.response.send_message(reason, ephemeral=True)
+                return
+        await interaction.response.defer()
+        if playback_cog:
+            starts_in = await asyncio.to_thread(playback_cog._queue_next_starts_in)
+            if not await playback_cog._confirm_nearby_schedule(interaction.channel, interaction.user, item, starts_in):
+                return
+        result = await asyncio.to_thread(self.cog.vlc.queue_item_next, item.get('id'))
+        if not result.get('success'):
+            await interaction.followup.send(f"Could not queue that: {result.get('error', 'unknown error')}", ephemeral=True)
+            return
+        pretty = MediaUtils.clean_filename_for_display(item.get('name', ''), max_length=120)
+        await interaction.followup.send(
+            f"⏭️ Queued #{playlist_num}: {pretty} · "
+            f"#{result.get('queue_order', 1)} of {result.get('total_queued', 1)} in queue"
+        )
 
     async def _turn(self, interaction: discord.Interaction, step: int):
         if interaction.user.id != self.requester_id:
@@ -343,8 +380,9 @@ class GenrePickerView(PlaySearchView):
         self.page = (self.page + step) % self.pages
         start = self.page * GENRE_PAGE_SIZE
         self.results = self.all_results[start:start + GENRE_PAGE_SIZE]
-        select = next(child for child in self.children if isinstance(child, discord.ui.Select))
-        select.options = _picker_options(self.results)
+        for child in self.children:
+            if isinstance(child, discord.ui.Select):
+                child.options = _picker_options(self.results)
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
 

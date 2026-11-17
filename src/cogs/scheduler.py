@@ -1,5 +1,6 @@
 
 
+import asyncio
 import discord
 from discord.ext import commands, tasks
 from datetime import datetime
@@ -70,6 +71,58 @@ def _resolve_schedule_index(entry: dict, items: list, exists=lambda uri: True):
 
 
 SCHEDULE_BACKUP_FILE = "schedule_backup.json"
+SCHEDULE_CARDS_MAX = 10  # Discord's limit on embeds per message
+SOON_SECONDS = 3600
+
+
+def tmdb_info(tmdb, entry) -> dict:
+    """Title, link, poster, rating and genres from TMDB for a schedule card; {} when nothing matched."""
+    raw = unquote(entry.get("uri") or entry.get("title") or "")
+    try:
+        embed, _ = tmdb.lookup_media_embed(raw, entry.get("uri"))
+    except Exception:
+        logger.exception(f"TMDB lookup failed for schedule {entry.get('title')}")
+        return {}
+    if not embed:
+        return {}
+    fields = {f.name: f.value for f in embed.fields}
+    return {
+        "title": embed.title, "url": embed.url, "poster": embed.thumbnail.url,
+        "rating": fields.get("Rating"), "genre": fields.get("Genre"),
+    }
+
+
+def schedule_card(entry: dict, now: datetime) -> discord.Embed:
+    """One card per scheduled movie: poster, when (each viewer's own timezone and PH time),
+    runtime and end time, rating and genres. Colour shows how soon: orange within the
+    hour, green later today, blurple after that."""
+    info = entry.get("tmdb") or {}
+    dt = entry["dt"] if entry["dt"].tzinfo else entry["dt"].replace(tzinfo=PH_TZ)
+    ts = int(dt.timestamp())
+    until = (dt - now).total_seconds()
+    if until < SOON_SECONDS:
+        color, lead = discord.Color.orange(), "🔥 **Starting soon** · "
+    elif dt.astimezone(PH_TZ).date() == now.astimezone(PH_TZ).date():
+        color, lead = discord.Color.green(), "🌙 **Today** · "
+    else:
+        color, lead = discord.Color.blurple(), ""
+    lines = [
+        f"{lead}<t:{ts}:F> · <t:{ts}:R>",
+        f"🇵🇭 {dt.astimezone(PH_TZ).strftime('%a %b %d, %I:%M %p')} PH time",
+    ]
+    duration = entry.get("duration")
+    if isinstance(duration, int) and duration > 0:
+        lines.append(f"⏱️ {duration // 3600}h {duration % 3600 // 60:02d}m · ends <t:{ts + duration}:t>")
+    meta = " · ".join(v for v in (info.get("rating"), info.get("genre")) if v)
+    if meta:
+        lines.append(meta)
+    by = f"<@{entry['user']}>" if entry.get("user") else "someone"
+    lines.append(f"🎞️ Playlist #{entry['number']} · scheduled by {by}")
+    title = info.get("title") or entry.get("title") or "Unknown"
+    embed = discord.Embed(title=title[:256], url=info.get("url"), description="\n".join(lines), color=color)
+    if info.get("poster"):
+        embed.set_thumbnail(url=info["poster"])
+    return embed
 
 
 from src.services.tmdb_service import TMDBService
@@ -202,30 +255,34 @@ class Scheduler(commands.Cog):
         except Exception as e:
             await ctx.send(f"❌ Invalid date/time format. Use: {format_cmd_inline('schedule <number> <YYYY-MM-DD> <HH:MM>')}")
 
+    async def schedule_list_message(self) -> dict:
+        """send() arguments for the schedule list: a header line and one card per movie,
+        soonest first. TMDB details are looked up once per schedule and kept with it."""
+        if not self.scheduled:
+            return {"content": "No movies scheduled."}
+        upcoming = sorted(self.scheduled, key=lambda x: x["dt"])
+        shown = upcoming[:SCHEDULE_CARDS_MAX]
+        missing = [s for s in shown if "tmdb" not in s]
+        if missing:
+            # ponytail: one at a time, because TMDBService keeps the last match score on itself;
+            # only the first list after scheduling waits on these
+            infos = await asyncio.to_thread(lambda: [tmdb_info(self.tmdb, s) for s in missing])
+            for s, info in zip(missing, infos):
+                s["tmdb"] = info
+            self._save_schedule_backup()
+        header = f"🎬 **Upcoming Screenings** · {len(upcoming)} scheduled"
+        if len(upcoming) > len(shown):
+            header += f" (showing the next {len(shown)})"
+        now = datetime.now(PH_TZ)
+        return {"content": header, "embeds": [schedule_card(s, now) for s in shown]}
+
     @commands.command(name="schedules")
     @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def list_schedules(self, ctx):
         """List all upcoming scheduled movies."""
-        if not self.scheduled:
-            await ctx.send("No movies scheduled.")
-            return
-        embed = discord.Embed(title="Upcoming Scheduled Movies", color=discord.Color.purple())
-        for s in sorted(self.scheduled, key=lambda x: x["dt"]):
-            dt_str = format_schedule_time(s["dt"])
-            duration = s.get("duration")
-            if duration == 'Loading...' or duration == 0:
-                dur_str = 'Loading...'
-            elif duration:
-                dur_str = MediaUtils.format_time(duration)
-            else:
-                dur_str = "Unknown"
-            scheduled_by = f"<@{s['user']}>" if s.get('user') else "Unknown"
-            embed.add_field(
-                name=f"#{s['number']} — {s.get('title', 'Unknown')}",
-                value=f"Scheduled for {dt_str}\nDuration: {dur_str}\nScheduled by: {scheduled_by}",
-                inline=False
-            )
-        await ctx.send(embed=embed)
+        async with ctx.typing():
+            message = await self.schedule_list_message()
+        await ctx.send(**message)
 
     @commands.command(name="unschedule")
     @commands.has_any_role(*Config.ALLOWED_ROLES)

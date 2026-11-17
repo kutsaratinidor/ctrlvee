@@ -274,14 +274,17 @@ def _interaction(user_id=1, values=None):
 
 def _cog(playback):
     bot = types.SimpleNamespace(get_cog=lambda name: playback if name == "PlaybackCommands" else None)
-    return types.SimpleNamespace(bot=bot, vlc=mock.Mock(play_item=mock.Mock(return_value=True)))
+    return types.SimpleNamespace(bot=bot, vlc=mock.Mock(
+        play_item=mock.Mock(return_value=True),
+        queue_item_next=mock.Mock(return_value={"success": True, "queue_order": 2, "total_queued": 2})))
 
 
 def _playback(guard=(True, ""), confirm=True):
     return types.SimpleNamespace(
         _playback_guard=mock.Mock(return_value=guard),
         _confirm_nearby_schedule=mock.AsyncMock(return_value=confirm),
-        _seat_playback_owner=mock.Mock(), _announce_now_playing=mock.AsyncMock())
+        _seat_playback_owner=mock.Mock(), _announce_now_playing=mock.AsyncMock(),
+        _queue_next_starts_in=mock.Mock(return_value=1800))
 
 
 def check_picker():
@@ -297,9 +300,13 @@ def check_picker():
         assert embed.title == "🎭 Drama" and "45 movies · page 1/3" in embed.footer.text
         assert embed.description.count("\n") == 19 and len(embed.description) < 4096
 
+        select, queue = [c for c in view.children if isinstance(c, discord.ui.Select)]
+        assert "queue" in queue.placeholder
+        assert len(view.to_components()) == 3  # play select, queue select, buttons
         previous, following = [c for c in view.children if isinstance(c, discord.ui.Button) and c.label in "◀️▶️"]
         await following.callback(_interaction())
         assert [o.value for o in select.options][0] == "21" and "page 2/3" in view.build_embed().footer.text
+        assert [o.value for o in queue.options] == [o.value for o in select.options]
         await previous.callback(_interaction())
         await previous.callback(_interaction())  # wraps to the last page
         assert [o.value for o in select.options] == [str(n) for n in range(41, 46)]
@@ -314,6 +321,23 @@ def check_picker():
         pick.response.defer.assert_awaited_once()
         view.cog.vlc.play_item.assert_called_once_with("143")
         assert pick.followup.send.call_args.args[0].startswith("Loading item #43")
+
+        # Queueing: guard, schedule check from when it would start, queue; the picker stays open
+        pick = _interaction(values=["41"])
+        await queue.callback(pick)
+        playback._confirm_nearby_schedule.assert_awaited_with("chan", pick.user, results[40][1], 1800)
+        view.cog.vlc.queue_item_next.assert_called_once_with("141")
+        assert pick.followup.send.call_args.args[0] == "⏭️ Queued #41: Film 41 (2000) · #2 of 2 in queue"
+        pick.message.edit.assert_not_awaited()
+        playback = _playback(confirm=False)
+        view = pl.GenrePickerView(_cog(playback), 1, "Drama", results[:3])
+        await [c for c in view.children if isinstance(c, discord.ui.Select)][1].callback(_interaction(values=["2"]))
+        view.cog.vlc.queue_item_next.assert_not_called()
+        view.cog.vlc.queue_item_next.return_value = {"success": False, "error": "gone"}
+        playback._confirm_nearby_schedule.return_value = True
+        failed = _interaction(values=["2"])
+        await [c for c in view.children if isinstance(c, discord.ui.Select)][1].callback(failed)
+        assert failed.followup.send.call_args.kwargs["ephemeral"] and "gone" in failed.followup.send.call_args.args[0]
 
         # Cancelling the schedule prompt plays nothing
         playback = _playback(confirm=False)
