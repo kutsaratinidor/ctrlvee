@@ -1,3 +1,8 @@
+## 1.27.1 - 2026-11-25
+
+### Added
+- **What's new on startup**: the startup message lists this version's new and changed features by name, one line each (up to 4), with the command to try for new ones (slash or prefix, whichever is enabled) and a pointer to the full changelog for details. The list comes from the bold titles in `CHANGELOG.md`.
+
 ## 1.27.0 - 2026-11-25
 
 ### Added

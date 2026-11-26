@@ -454,7 +454,7 @@ from src.cogs.scheduler import Scheduler, PH_TZ, format_schedule_time
 from src.cogs.watch import WatchCommands, _write_env_watch_folders, build_watch_remove_picker
 from src.cogs.stats import StatsCommands, build_stats_message
 from src.version import __version__
-from changelog_helper import parse_changelog
+from changelog_helper import parse_changelog, whats_new
 from src.config import get_watch_folders_from_env
 
 # -------- Voice connection management --------
@@ -1206,6 +1206,25 @@ async def _send_startup_announcement() -> None:
         color=discord.Color.green()
     )
     embed.set_footer(text="Thank you for using CtrlVee!")
+    try:
+        new_items = whats_new(__version__)
+    except Exception as e:
+        logger.debug(f"Skipping what's new on startup: {e}")
+        new_items = []
+    if new_items:
+        lines = []
+        for item in new_items:
+            # Name the new command the way this server can run it
+            command = item['slash'] if slash_enabled and item['slash'] else None
+            if not command and prefix_enabled and item['prefix']:
+                command = prefix + item['prefix'][1:]
+            lines.append(f"• {item['title']}" + (f" · try `{command}`" if command else ""))
+        more = "/system changelog" if slash_enabled else f"{prefix}changelog"
+        embed.add_field(
+            name=f"✨ New in {__version__}",
+            value=("\n".join(lines) + f"\nDetails: `{more}`")[:1024],
+            inline=False,
+        )
     if Config.KOFI_URL:
         # Clickable title plus a visible link field
         embed.url = Config.KOFI_URL
