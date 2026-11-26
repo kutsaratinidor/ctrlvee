@@ -1,6 +1,7 @@
 from typing import Optional, List, Tuple
 import asyncio
 import math
+import random
 import time
 import discord
 from discord.ext import commands, tasks
@@ -9,7 +10,7 @@ import re
 from ..utils.media_utils import MediaUtils
 from ..config import Config
 from ..utils.command_utils import format_cmd_inline
-from ..services.genre_service import match_genre
+from ..services.genre_service import match_genre, is_movie
 
 logger = logging.getLogger(__name__)
 
@@ -386,6 +387,44 @@ class GenrePickerView(PlaySearchView):
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
 
+class RouletteView(GenrePickerView):
+    """One random movie from a pool, with the play/queue pickers and a re-spin button."""
+
+    def __init__(self, cog, requester_id: int, genre: Optional[str], pool: List[Tuple[int, dict]]):
+        super().__init__(cog, requester_id, genre or "", [random.choice(pool)])
+        self.pool = pool
+        spin = discord.ui.Button(label='🎲 Spin again', style=discord.ButtonStyle.primary)
+        spin.callback = self._spin
+        self.add_item(spin)
+
+    async def roulette_embed(self) -> discord.Embed:
+        num, item = self.results[0]
+        name = item.get('name', '')
+        title, year = MediaUtils.parse_movie_filename(name)
+        try:
+            embed = await asyncio.to_thread(self.cog.tmdb.get_movie_metadata, title, year, item.get('uri'))
+        except Exception:
+            embed = None
+        if not embed:
+            pretty = discord.utils.escape_markdown(MediaUtils.clean_filename_for_display(name, max_length=200))
+            embed = discord.Embed(title=pretty, color=discord.Color.gold())
+        embed.set_author(name=f"🎲 Movie roulette{' · ' + self.genre if self.genre else ''}"[:250])
+        embed.set_footer(text=f"#{num} · drawn from {len(self.pool)} movies · play now, queue next, or spin again")
+        return embed
+
+    async def _spin(self, interaction: discord.Interaction):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message('That roulette belongs to someone else.', ephemeral=True)
+            return
+        await interaction.response.defer()  # the TMDB lookup can take a moment
+        others = [p for p in self.pool if p[0] != self.results[0][0]] or self.pool
+        self.results = [random.choice(others)]
+        for child in self.children:
+            if isinstance(child, discord.ui.Select):
+                child.options = _picker_options(self.results)
+        await interaction.edit_original_response(embed=await self.roulette_embed(), view=self)
+
+
 class PlaylistCommands(commands.Cog):
     # Cap for play-search pickers; the slash embed preview must match this.
     SEARCH_PICKER_CAP = SEARCH_PICKER_CAP
@@ -455,6 +494,26 @@ class PlaylistCommands(commands.Cog):
             return {"content": text + listing}
         view = GenrePickerView(self, requester_id, genre, index[genre])
         return {"embed": view.build_embed(), "view": view}
+
+    async def roulette_reply(self, requester_id: int, query: str) -> dict:
+        """send() arguments for a roulette spin: a random playlist movie (no TV episodes),
+        from one genre when given. An unmatched genre gets the genre list instead."""
+        if query.strip():
+            if not self.genres:
+                return {"content": "Genre filtering isn't available."}
+            index = await self.genre_index()
+            genre = match_genre(query, index) if index else None
+            if genre is None:
+                return await self.genre_reply(requester_id, query)
+            pool = index[genre]
+        else:
+            genre = None
+            items = await asyncio.to_thread(self._get_playlist_items)
+            pool = [(n, item) for n, item in enumerate(items, 1) if is_movie(item)]
+        if not pool:
+            return {"content": "No movies in the playlist to spin."}
+        view = RouletteView(self, requester_id, genre, pool)
+        return {"embed": await view.roulette_embed(), "view": view}
 
     def _get_playlist_items(self) -> List[dict]:
         """Get current playlist items"""
@@ -786,6 +845,15 @@ class PlaylistCommands(commands.Cog):
             await ctx.send("Genre browsing isn't available.")
             return
         reply = await self.genre_reply(ctx.author.id, genre)
+        message = await ctx.send(**reply)
+        if "view" in reply:
+            reply["view"].message = message
+
+    @commands.command(name='roulette', aliases=['random'])
+    @commands.has_any_role(*Config.ALLOWED_ROLES)
+    async def roulette(self, ctx: commands.Context, *, genre: str = ""):
+        """Pick a random movie from the playlist, optionally from one genre"""
+        reply = await self.roulette_reply(ctx.author.id, genre)
         message = await ctx.send(**reply)
         if "view" in reply:
             reply["view"].message = message

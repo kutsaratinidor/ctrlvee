@@ -362,6 +362,7 @@ Prefix shown as `!` below; replace with your configured `DISCORD_COMMAND_PREFIX`
 - `!search <query>`
 - `!play_search <query>` — shows a picker when multiple results are found; plays directly if only one match
 - `!genre [genre]` (alias `genres`), or `/playlist genre` — the playlist's movies in a genre, 20 per page, with a picker to play one. Leave the genre out to see every genre and how many movies it has; part of a name works (`!genre sci`). Slash autocompletes the genre.
+- `!roulette [genre]` (alias `random`), or `/playlist roulette` — picks a random movie from the playlist (TV episodes are left out), optionally from one genre. Shows the TMDB card with pickers to play it now or queue it next, and a 🎲 Spin again button.
 - `!cleanup` (aliases: `plcleanup`, `cleanup_missing`) removes missing files from VLC playlist
 
 ### Subtitles and Audio

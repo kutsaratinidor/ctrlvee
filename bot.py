@@ -1645,6 +1645,7 @@ async def controls(ctx):
 `{prefix}search <query>` - Search for items in playlist
 `{prefix}play_search <query>` - Search and play a specific item
 `{prefix}genre [genre]` - Movies in a genre, with pickers to play one or queue it next
+`{prefix}roulette [genre]` - A random playlist movie (no TV), optionally from one genre
 `{prefix}play_num <number>` - Play item by its number in playlist
         """
         embed.add_field(name="📋 Playlist Management", value=playlist_commands, inline=False)
@@ -2310,6 +2311,7 @@ def _build_system_help_embed() -> discord.Embed:
             "• `/playlist search`\n"
             "• `/playlist play-search`\n"
             "• `/playlist genre`\n"
+            "• `/playlist roulette`\n"
             "• `/playlist radarr-recent`"
         ),
         inline=False,
@@ -3090,6 +3092,25 @@ async def _playlist_genre_autocomplete(interaction: discord.Interaction, current
         app_commands.Choice(name=f"{genre[:85]} ({len(movies)})", value=genre[:100])
         for genre, movies in sorted(index.items()) if typed in genre.lower()
     ][:25]
+
+
+@playlist_group.command(name="roulette", description="Pick a random movie from the playlist (no TV episodes)")
+@app_commands.describe(genre="Only spin movies in this genre, e.g. Comedy. Leave empty for any movie.")
+async def playlist_roulette(interaction: discord.Interaction, genre: str = ""):
+    if not await _check_allowed_roles_for_interaction(interaction):
+        return
+    playlist_cog = bot.get_cog("PlaylistCommands")
+    if not playlist_cog:
+        await _reply(interaction, "Roulette isn't available right now.", ephemeral=True)
+        return
+    await _defer_if_needed(interaction)
+    reply = await playlist_cog.roulette_reply(interaction.user.id, genre)
+    await _reply(interaction, **reply)
+    if "view" in reply:
+        reply["view"].message = await interaction.original_response()
+
+
+playlist_roulette.autocomplete("genre")(_playlist_genre_autocomplete)
 
 
 @queue_group.command(name="add-next", description="Queue a playlist item to play next")

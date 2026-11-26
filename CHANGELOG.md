@@ -1,3 +1,8 @@
+## 1.27.0 - 2026-11-25
+
+### Added
+- **Movie roulette**: `/playlist roulette` and `!roulette` (alias `random`) pick a random movie from the playlist, leaving out TV episodes. An optional genre narrows the draw (part of a name works; slash autocompletes it), and an unknown genre shows the genre list instead. The pick shows its TMDB card with dropdowns to play it now or queue it next, plus a 🎲 Spin again button that draws a different movie.
+
 ## 1.26.0 - 2026-11-16
 
 ### Added
