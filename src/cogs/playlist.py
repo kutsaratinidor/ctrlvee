@@ -1,11 +1,16 @@
 from typing import Optional, List, Tuple
+import asyncio
+import math
+import random
+import time
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 import logging
 import re
 from ..utils.media_utils import MediaUtils
 from ..config import Config
 from ..utils.command_utils import format_cmd_inline
+from ..services.genre_service import match_genre, is_movie
 
 logger = logging.getLogger(__name__)
 
@@ -200,12 +205,328 @@ class SearchResultsView(discord.ui.View):
 
         await interaction.response.edit_message(embed=embed, view=self)
 
+SEARCH_PICKER_CAP = 25  # hard limit on Discord select options
+
+
+def _picker_options(results) -> List[discord.SelectOption]:
+    return [
+        discord.SelectOption(
+            label=f'#{num} {MediaUtils.clean_filename_for_display(item.get("name", ""), max_length=88)}',
+            value=str(num),
+        )
+        for num, item in results
+    ]
+
+
+class PlaySearchView(discord.ui.View):
+    """Picker for play-search (and genre lists) when multiple results match."""
+
+    def __init__(self, cog, requester_id: int, results: List[Tuple[int, dict]]):
+        super().__init__(timeout=120)
+        self.cog = cog
+        self.requester_id = requester_id
+        self.message = None
+        self.results = results[:SEARCH_PICKER_CAP]
+
+        select = discord.ui.Select(placeholder='Choose an item to play', options=_picker_options(self.results))
+        select.callback = self._on_select
+        self.add_item(select)
+
+        cancel = discord.ui.Button(label='✕ Cancel', style=discord.ButtonStyle.danger)
+        cancel.callback = self._on_cancel
+        self.add_item(cancel)
+
+    def _disable_all(self) -> None:
+        """Disable every child (select + buttons) so the picker becomes inert."""
+        for child in self.children:
+            child.disabled = True
+
+    async def _on_cancel(self, interaction: discord.Interaction):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message('That picker belongs to someone else.', ephemeral=True)
+            return
+        self._disable_all()
+        await interaction.response.edit_message(content='Playback selection cancelled.', embed=None, view=self)
+
+    async def _picked(self, interaction: discord.Interaction):
+        """(playlist number, item) chosen in a select, or None (someone else's picker, or stale)."""
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message('That picker belongs to someone else.', ephemeral=True)
+            return None
+        try:
+            playlist_num = int(interaction.data['values'][0])
+        except (KeyError, IndexError, TypeError, ValueError):
+            return None
+        return next((p for p in self.results if p[0] == playlist_num), None)
+
+    async def _on_select(self, interaction: discord.Interaction):
+        pair = await self._picked(interaction)
+        if pair is not None:
+            await self._play(interaction, *pair)
+
+    async def _play(self, interaction: discord.Interaction, playlist_num: int, item):
+        playback_cog = self.cog.bot.get_cog('PlaybackCommands')
+        if playback_cog:
+            ok, reason = playback_cog._playback_guard(interaction.user)
+            if not ok:
+                await interaction.response.send_message(reason, ephemeral=True)
+                return
+
+        # The schedule check runs on the pick, against the picked item's runtime. Its prompt
+        # can wait on Continue/Cancel well past Discord's 3 s window, so defer first.
+        await interaction.response.defer()
+        if playback_cog and not await playback_cog._confirm_nearby_schedule(interaction.channel, interaction.user, item):
+            return
+
+        item_id = item.get('id')
+        if not item_id or not self.cog.vlc.play_item(item_id):
+            await interaction.followup.send('Could not play the selected item.', ephemeral=True)
+            return
+
+        if playback_cog:
+            playback_cog._seat_playback_owner(interaction.user, item_id)
+
+        pretty = MediaUtils.clean_filename_for_display(item.get('name', ''), max_length=120)
+        await interaction.followup.send(f'Loading item #{playlist_num}: {pretty}')
+
+        if playback_cog and hasattr(playback_cog, '_announce_now_playing'):
+            try:
+                await playback_cog._announce_now_playing('command', item, playlist_num)
+            except Exception:
+                pass
+
+        self._disable_all()
+        try:
+            await interaction.message.edit(view=self)
+        except Exception:
+            pass
+
+    async def on_timeout(self):
+        self._disable_all()
+        if self.message is not None:
+            try:
+                await self.message.edit(view=self)
+            except Exception:
+                pass
+
+GENRE_PAGE_SIZE = 20  # under the 25-option select limit
+
+
+class GenrePickerView(PlaySearchView):
+    """A genre's movies a page at a time, with that page in the play picker."""
+
+    def __init__(self, cog, requester_id: int, genre: str, results: List[Tuple[int, dict]]):
+        super().__init__(cog, requester_id, results[:GENRE_PAGE_SIZE])
+        # Queue select goes right under the play select, so the buttons stay on the last row
+        cancel = self.children[-1]
+        self.remove_item(cancel)
+        queue = discord.ui.Select(placeholder='Choose a movie to queue next', options=_picker_options(self.results))
+        queue.callback = self._on_queue
+        self.add_item(queue)
+        self.add_item(cancel)
+        self.genre = genre
+        self.all_results = results
+        self.page = 0
+        self.pages = max(1, math.ceil(len(results) / GENRE_PAGE_SIZE))
+        if self.pages > 1:
+            for label, step in (('◀️', -1), ('▶️', 1)):
+                button = discord.ui.Button(label=label, style=discord.ButtonStyle.primary)
+                button.callback = lambda interaction, step=step: self._turn(interaction, step)
+                self.add_item(button)
+
+    def build_embed(self) -> discord.Embed:
+        lines = [
+            f"`#{num}` {discord.utils.escape_markdown(MediaUtils.clean_filename_for_display(item.get('name', ''), max_length=60))}"
+            for num, item in self.results
+        ]
+        embed = discord.Embed(title=f"🎭 {self.genre[:240]}", description="\n".join(lines), color=discord.Color.blurple())
+        footer = f"{len(self.all_results)} movies"
+        if self.pages > 1:
+            footer += f" · page {self.page + 1}/{self.pages}"
+        embed.set_footer(text=footer + " · pick one below to play now or queue next")
+        return embed
+
+    async def _on_queue(self, interaction: discord.Interaction):
+        """Queue the pick to play after the current item (same checks as !queue_next). The
+        picker stays open, so several movies can be queued from one list."""
+        pair = await self._picked(interaction)
+        if pair is not None:
+            await self._queue(interaction, *pair)
+
+    async def _queue(self, interaction: discord.Interaction, playlist_num: int, item):
+        playback_cog = self.cog.bot.get_cog('PlaybackCommands')
+        if playback_cog:
+            ok, reason = playback_cog._playback_guard(interaction.user)
+            if not ok:
+                await interaction.response.send_message(reason, ephemeral=True)
+                return
+        await interaction.response.defer()
+        if playback_cog:
+            starts_in = await asyncio.to_thread(playback_cog._queue_next_starts_in)
+            if not await playback_cog._confirm_nearby_schedule(interaction.channel, interaction.user, item, starts_in):
+                return
+        result = await asyncio.to_thread(self.cog.vlc.queue_item_next, item.get('id'))
+        if not result.get('success'):
+            await interaction.followup.send(f"Could not queue that: {result.get('error', 'unknown error')}", ephemeral=True)
+            return
+        pretty = MediaUtils.clean_filename_for_display(item.get('name', ''), max_length=120)
+        await interaction.followup.send(
+            f"⏭️ Queued #{playlist_num}: {pretty} · "
+            f"#{result.get('queue_order', 1)} of {result.get('total_queued', 1)} in queue"
+        )
+
+    async def _turn(self, interaction: discord.Interaction, step: int):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message('That picker belongs to someone else.', ephemeral=True)
+            return
+        self.page = (self.page + step) % self.pages
+        start = self.page * GENRE_PAGE_SIZE
+        self.results = self.all_results[start:start + GENRE_PAGE_SIZE]
+        for child in self.children:
+            if isinstance(child, discord.ui.Select):
+                child.options = _picker_options(self.results)
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+
+
+class RouletteView(GenrePickerView):
+    """One random movie from a pool, with Play, Queue next and Spin again buttons."""
+
+    def __init__(self, cog, requester_id: int, genre: Optional[str], pool: List[Tuple[int, dict]]):
+        super().__init__(cog, requester_id, genre or "", [random.choice(pool)])
+        self.pool = pool
+        # One movie, so buttons instead of the genre list's one-option dropdowns
+        cancel = self.children[-1]
+        self.clear_items()
+        for label, style, action in (
+            ('▶️ Play', discord.ButtonStyle.success, '_play'),
+            ('⏭️ Queue next', discord.ButtonStyle.secondary, '_queue'),
+            ('🎲 Spin again', discord.ButtonStyle.primary, '_spin'),
+        ):
+            button = discord.ui.Button(label=label, style=style)
+            button.callback = lambda i, a=action: self._act(i, a)
+            self.add_item(button)
+        self.add_item(cancel)
+
+    async def _act(self, interaction: discord.Interaction, action):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message('That roulette belongs to someone else.', ephemeral=True)
+            return
+        if action == '_spin':
+            await self._spin(interaction)
+        else:
+            await getattr(self, action)(interaction, *self.results[0])
+
+    async def roulette_embed(self) -> discord.Embed:
+        num, item = self.results[0]
+        name = item.get('name', '')
+        title, year = MediaUtils.parse_movie_filename(name)
+        try:
+            embed = await asyncio.to_thread(self.cog.tmdb.get_movie_metadata, title, year, item.get('uri'))
+        except Exception:
+            embed = None
+        if not embed:
+            pretty = discord.utils.escape_markdown(MediaUtils.clean_filename_for_display(name, max_length=200))
+            embed = discord.Embed(title=pretty, color=discord.Color.gold())
+        embed.set_author(name=f"🎲 Movie roulette{' · ' + self.genre if self.genre else ''}"[:250])
+        embed.set_footer(text=f"#{num} · drawn from {len(self.pool)} movies · play now, queue next, or spin again")
+        return embed
+
+    async def _spin(self, interaction: discord.Interaction):
+        await interaction.response.defer()  # the TMDB lookup can take a moment
+        others = [p for p in self.pool if p[0] != self.results[0][0]] or self.pool
+        self.results = [random.choice(others)]
+        await interaction.edit_original_response(embed=await self.roulette_embed(), view=self)
+
+
 class PlaylistCommands(commands.Cog):
-    def __init__(self, bot: commands.Bot, vlc_controller, tmdb_service, watch_service):
+    # Cap for play-search pickers; the slash embed preview must match this.
+    SEARCH_PICKER_CAP = SEARCH_PICKER_CAP
+
+    def __init__(self, bot: commands.Bot, vlc_controller, tmdb_service, watch_service, genre_service=None):
         self.bot = bot
         self.vlc = vlc_controller
         self.tmdb = tmdb_service
         self.watch_service = watch_service
+        self.genres = genre_service
+        self._genre_index_cache: Tuple[float, dict] = (0.0, {})
+
+    async def cog_load(self):
+        if self.genres:
+            self._refresh_genres.start()
+
+    async def cog_unload(self):
+        self._refresh_genres.cancel()
+
+    @tasks.loop(minutes=2)
+    async def _refresh_genres(self):
+        """Radarr's lists hourly, plus a few TMDB lookups for movies Radarr doesn't have."""
+        try:
+            await asyncio.to_thread(self.genres.refresh_radarr)
+            items = await asyncio.to_thread(self._get_playlist_items)
+            await asyncio.to_thread(self.genres.fill_from_tmdb, items)
+            self._genre_index_cache = (0.0, {})  # show what was just learned on the next request
+        except Exception:
+            # An unhandled error would stop the loop for the rest of the session
+            logger.exception("Genre refresh failed")
+
+    @_refresh_genres.before_loop
+    async def _before_refresh_genres(self):
+        await self.bot.wait_until_ready()
+
+    async def genre_index(self) -> dict:
+        """{genre: [(number, item)]} for the current playlist, reused for a minute
+        (slash autocomplete asks on every keystroke)."""
+        made_at, index = self._genre_index_cache
+        if not index or time.monotonic() - made_at > 60:  # an empty one may just be loading
+            items = await asyncio.to_thread(self._get_playlist_items)
+            index = await asyncio.to_thread(self.genres.by_genre, items)
+            self._genre_index_cache = (time.monotonic(), index)
+        return index
+
+    async def genre_reply(self, requester_id: int, query: str) -> dict:
+        """send() arguments for a genre request: the genre's picker, or the list of genres
+        when no genre was given or none matches."""
+        index = await self.genre_index()
+        if not index:
+            return {"content": (
+                "No playlist movies have genres yet. They load in the background over the first "
+                "few minutes after startup; if this persists, the playlist may be empty or have no movies."
+            )}
+        genre = match_genre(query, index) if query.strip() else None
+        if genre is None:
+            shown = discord.utils.escape_markdown(query.strip()[:60])
+            text = f"No single genre matches *{shown}*.\n" if query.strip() else ""
+            text += "🎭 **Genres in the playlist:** "
+            parts = [f"{discord.utils.escape_markdown(g)} ({len(v)})" for g, v in sorted(index.items())]
+            # Stay under Discord's 2000-character message limit however many genres there are
+            while parts and len(text) + len(" · ".join(parts)) > 1990:
+                parts.pop()
+            listing = " · ".join(parts)
+            if len(parts) < len(index):
+                listing += " · …"
+            return {"content": text + listing}
+        view = GenrePickerView(self, requester_id, genre, index[genre])
+        return {"embed": view.build_embed(), "view": view}
+
+    async def roulette_reply(self, requester_id: int, query: str) -> dict:
+        """send() arguments for a roulette spin: a random playlist movie (no TV episodes),
+        from one genre when given. An unmatched genre gets the genre list instead."""
+        if query.strip():
+            if not self.genres:
+                return {"content": "Genre filtering isn't available."}
+            index = await self.genre_index()
+            genre = match_genre(query, index) if index else None
+            if genre is None:
+                return await self.genre_reply(requester_id, query)
+            pool = index[genre]
+        else:
+            genre = None
+            items = await asyncio.to_thread(self._get_playlist_items)
+            pool = [(n, item) for n, item in enumerate(items, 1) if is_movie(item)]
+        if not pool:
+            return {"content": "No movies in the playlist to spin."}
+        view = RouletteView(self, requester_id, genre, pool)
+        return {"embed": await view.roulette_embed(), "view": view}
 
     def _get_playlist_items(self) -> List[dict]:
         """Get current playlist items"""
@@ -295,12 +616,6 @@ class PlaylistCommands(commands.Cog):
             if len(query_tokens) <= len(item_tokens) and item_tokens[:len(query_tokens)] == query_tokens:
                 score += 160
 
-        # Small preference for tighter titles (reduces noisy broad matches)
-        try:
-            score -= abs(len(item_compact) - len(query_compact))
-        except Exception:
-            pass
-
         return max(0, score)
 
     def _search_items(self, query: str) -> List[Tuple[int, dict]]:
@@ -379,6 +694,39 @@ class PlaylistCommands(commands.Cog):
 
         return pages
 
+    def make_play_search_view(self, requester_id: int, results: List[Tuple[int, dict]]) -> PlaySearchView:
+        """Create a slash-command picker; capping happens inside the view."""
+        return PlaySearchView(self, requester_id, results)
+
+    async def _play_and_report(self, ctx, item, playlist_num: int) -> bool:
+        """Play an item and reply with its metadata embed. Returns True on success."""
+        item_id = item.get('id')
+        if not item_id or not self.vlc.play_item(item_id):
+            await ctx.send('Error: Could not play the selected item')
+            return False
+
+        logger.info(f"Playing search result: {item.get('name')} (#{playlist_num})")
+        await ctx.send(f'Loading item #{playlist_num}...')
+
+        search_title, search_year = MediaUtils.parse_movie_filename(item.get('name'))
+        movie_embed = self.tmdb.get_movie_metadata(search_title, search_year, file_path=item.get('uri'))
+        edition_tag = MediaUtils.extract_edition_tag(item.get('name'))
+
+        if movie_embed:
+            if edition_tag:
+                try:
+                    movie_embed.add_field(name="Edition", value=edition_tag, inline=True)
+                except Exception:
+                    pass
+            movie_embed.set_footer(text=f"Now Playing #{playlist_num}")
+            await ctx.send(embed=movie_embed)
+        else:
+            name = item.get('name', '')
+            icon = MediaUtils.get_media_icon(name)
+            basename = MediaUtils.clean_filename_for_display(name)
+            await ctx.send(f'Playing: {icon}`{playlist_num}` {basename}')
+        return True
+
     @commands.command(name='search')
     @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def search_playlist(self, ctx: commands.Context, *, query: str):
@@ -433,45 +781,95 @@ class PlaylistCommands(commands.Cog):
     async def play_search(self, ctx: commands.Context, *, query: str):
         """Search for and play an item from the playlist"""
         try:
+            playback_cog = self.bot.get_cog("PlaybackCommands")
+            if playback_cog:
+                ok, reason = playback_cog._playback_guard(ctx.author)
+                if not ok:
+                    await ctx.send(reason)
+                    return
+
             results = self._search_items(query)
             if not results:
                 await ctx.send('No matches found in playlist')
                 return
-                
-            # Play the first match
-            playlist_num, item = results[0]
-            item_id = item.get('id')
-            
-            if self.vlc.play_item(item_id):
-                logger.info(f"Playing search result: {item.get('name')} (#{playlist_num})")
-                hint = ""
-                if len(results) > 1:
-                    hint = f"\n💡 Top match selected from {len(results)} results."
-                await ctx.send(f'Loading item #{playlist_num}...{hint}')
-                
-                # Get parsed title and optional year for metadata search
-                search_title, search_year = MediaUtils.parse_movie_filename(item.get('name'))
-                movie_embed = self.tmdb.get_movie_metadata(search_title, search_year, file_path=item.get('uri'))
-                edition_tag = MediaUtils.extract_edition_tag(item.get('name'))
-                
-                if movie_embed:
-                    if edition_tag:
-                        try:
-                            movie_embed.add_field(name="Edition", value=edition_tag, inline=True)
-                        except Exception:
-                            pass
-                    movie_embed.set_footer(text=f"Now Playing #{playlist_num}")
-                    await ctx.send(embed=movie_embed)
-                else:
-                    name = item.get('name', '')
-                    icon = MediaUtils.get_media_icon(name)
-                    basename = MediaUtils.clean_filename_for_display(name)
-                    await ctx.send(f'Playing: {icon}`{playlist_num}` {basename}')
-            else:
-                await ctx.send('Error: Could not play the selected item')
+
+            if len(results) == 1:
+                playlist_num, item = results[0]
+                if await self._play_and_report(ctx, item, playlist_num):
+                    if playback_cog:
+                        playback_cog._seat_playback_owner(ctx.author, item.get('id'))
+                return
+
+            # Multiple results: show a numbered list and wait for the user to pick.
+            shown = results[:SEARCH_PICKER_CAP]
+            lines = []
+            for num, item in shown:
+                name = item.get('name', '')
+                icon = MediaUtils.get_media_icon(name)
+                basename = MediaUtils.clean_filename_for_display(name, max_length=60)
+                lines.append(f"{icon}`{num}` {basename}")
+
+            # Keep the message under Discord's 2000-char cap: 25 lines of ~70 chars plus this header
+            shown_query = query if len(query) <= 60 else query[:59] + "…"
+            header = f"**{len(results)} matches** for *{shown_query}* — reply with the number to play, or `cancel` to dismiss."
+            if len(results) > len(shown):
+                header += f" Showing top {len(shown)}; refine your query for more."
+            await ctx.send(header + "\n" + "\n".join(lines))
+
+            valid = {pair[0] for pair in shown}
+
+            def _is_valid_reply(m):
+                if m.author != ctx.author or m.channel != ctx.channel:
+                    return False
+                stripped = m.content.strip().lower()
+                return stripped == 'cancel' or (stripped.isdigit() and int(stripped) in valid)
+
+            try:
+                picked = await self.bot.wait_for('message', check=_is_valid_reply, timeout=60)
+            except asyncio.TimeoutError:
+                await ctx.send('Playback selection timed out — run the search again.')
+                return
+
+            if picked.content.strip().lower() == 'cancel':
+                await ctx.send('Playback selection cancelled.')
+                return
+
+            number = int(picked.content.strip())
+            _, item = next(p for p in shown if p[0] == number)
+
+            if playback_cog:
+                ok, reason = playback_cog._playback_guard(ctx.author)
+                if not ok:
+                    await ctx.send(reason)
+                    return
+
+            if await self._play_and_report(ctx, item, number):
+                if playback_cog:
+                    playback_cog._seat_playback_owner(ctx.author, item.get('id'))
         except Exception as e:
             logger.error(f"Error in play_search: {e}")
             await ctx.send(f'Error searching and playing: {str(e)}')
+
+    @commands.command(name='genre', aliases=['genres'])
+    @commands.has_any_role(*Config.ALLOWED_ROLES)
+    async def genre(self, ctx: commands.Context, *, genre: str = ""):
+        """List the playlist's movies in a genre and pick one to play"""
+        if not self.genres:
+            await ctx.send("Genre browsing isn't available.")
+            return
+        reply = await self.genre_reply(ctx.author.id, genre)
+        message = await ctx.send(**reply)
+        if "view" in reply:
+            reply["view"].message = message
+
+    @commands.command(name='roulette', aliases=['random'])
+    @commands.has_any_role(*Config.ALLOWED_ROLES)
+    async def roulette(self, ctx: commands.Context, *, genre: str = ""):
+        """Pick a random movie from the playlist, optionally from one genre"""
+        reply = await self.roulette_reply(ctx.author.id, genre)
+        message = await ctx.send(**reply)
+        if "view" in reply:
+            reply["view"].message = message
 
     @commands.command(name='list')
     async def list_playlist(self, ctx: commands.Context):

@@ -1,0 +1,424 @@
+"""Runnable self-check for watch stats (hours, finished titles, persistence).
+
+Run from the repo root:  python tests/test_watch_stats.py
+"""
+import asyncio
+import io
+import json
+import os
+import sys
+import types
+import tempfile
+import xml.etree.ElementTree as ET
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from unittest import mock  # noqa: E402
+
+import discord  # noqa: E402
+
+from PIL import Image  # noqa: E402
+
+from src.cogs import stats as stats_cog  # noqa: E402
+from src.cogs.stats import StatsCommands, build_stats_embed, stats_title_key, tmdb_card, view_info  # noqa: E402
+from src.config import Config  # noqa: E402
+from src.utils import poster_grid  # noqa: E402
+from src.services.stats_service import StatsService  # noqa: E402
+from src.services.tmdb_service import TMDBService  # noqa: E402
+
+
+def _card(title, poster):
+    return discord.Embed(title=title, url=f"https://t/{title}").set_thumbnail(url=poster)
+
+
+def _tmdb(movie=None, tv=None):
+    """Real TMDBService matching over stubbed lookups. movie/tv: (embed, match score)."""
+    tmdb = TMDBService.__new__(TMDBService)
+
+    def stub(hit):
+        def lookup(*args, **kwargs):
+            tmdb._last_match_score = hit[1] if hit else 0.0
+            return hit[0] if hit else None
+        return mock.Mock(side_effect=lookup)
+
+    tmdb.get_movie_metadata, tmdb.get_tv_metadata = stub(movie), stub(tv)
+    return tmdb
+
+
+def build_stats_embeds(stats):
+    """The embeds /stats sends, with poster downloads faked (see _fake_downloads)."""
+    return asyncio.run(stats_cog.build_stats_message(stats))["embeds"]
+
+
+def _jpeg(color):
+    out = io.BytesIO()
+    Image.new("RGB", (500, 750), color).save(out, "JPEG")
+    return out.getvalue()
+
+
+class _Downloads:
+    """Stands in for requests.get: serves a solid-colour poster per URL, or fails for 'bad' ones."""
+
+    def __init__(self):
+        self.urls = []
+
+    def __call__(self, url, timeout):
+        self.urls.append(url)
+        if "bad" in url:
+            raise poster_grid.requests.ConnectionError("down")
+        return types.SimpleNamespace(content=_jpeg((200, 30, 30)), raise_for_status=lambda: None)
+
+
+def _leaf(filename):
+    return ET.Element("leaf", {"name": filename, "uri": "file:///movies/" + filename.replace(" ", "%20")})
+
+
+def main():
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "stats.json")
+        stats = StatsService(path)
+        assert build_stats_embed(stats).description == "No watch time recorded yet."
+
+        ann, bob = {1: "Ann"}, {2: "Bob"}
+        length = 600  # 10 minutes: 8.5 minutes seen is needed, so 9 buckets
+
+        # Rewatching one minute adds hours but no progress
+        for _ in range(20):
+            stats.record(ann, "heat|1995", 30, length, 30)
+        assert stats.users["1"]["seconds"] == 600
+        assert stats.users["1"]["finished"] == []
+        assert stats.users["1"]["progress"]["heat|1995"] == [0]
+
+        # Progress survives a restart, so two nights add up
+        for minute in range(1, 5):
+            stats.record(ann, "heat|1995", minute * 60, length, 30)
+        stats.save()
+        stats = StatsService(path)
+        for minute in range(5, 8):
+            stats.record(ann, "heat|1995", minute * 60, length, 30)
+        assert stats.users["1"]["finished"] == []
+        stats.record(ann, "heat|1995", 8 * 60, length, 30)
+        assert stats.users["1"]["finished"] == ["heat|1995"]
+        assert "heat|1995" not in stats.users["1"]["progress"]
+
+        # A replay adds hours but never a second finish
+        for minute in range(10):
+            stats.record(ann, "heat|1995", minute * 60, length, 30)
+        assert stats.users["1"]["finished"] == ["heat|1995"]
+
+        # Someone who skips most of the movie doesn't finish it
+        stats.record(bob, "heat|1995", 590, length, 30)
+        assert stats.users["2"]["finished"] == []
+
+        # No runtime or no title (a live stream): hours only
+        stats.record(bob, None, 0, 0, 30)
+        stats.record(bob, "stream|", 0, 0, 30)
+        assert stats.users["2"]["seconds"] == 90
+        assert stats.users["2"]["progress"] == {"heat|1995": [9]}
+
+        # Renames follow the user id; ladders rank by each measure
+        stats.record({2: "Robert"}, None, 0, 0, 30)
+        hours, finished = stats.ladders()
+        assert hours[0][0] == "Ann" and hours[1] == ("Robert", 120)
+        assert finished == [("Ann", 1)]
+        embed = build_stats_embed(stats)
+        assert "1. Ann — " in embed.fields[0].value and "2. Robert — 0.0 h" in embed.fields[0].value
+        assert embed.fields[1].value == "1. Ann — 1"
+
+        # Excluded users leave both ladders, and their totals stay in the file
+        stats.excluded = {"1"}
+        hours, finished = stats.ladders()
+        assert [name for name, _ in hours] == ["Robert"] and finished == []
+        assert stats.users["1"]["finished"] == ["heat|1995"]
+        assert StatsService(path, excluded=[1]).excluded == {"1"}
+
+        # A damaged file is kept aside, not overwritten by the next save
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("{broken")
+        assert StatsService(path).users == {}
+        assert os.path.exists(f"{path}.corrupt")
+
+    check_recently_viewed()
+    check_tick()
+    check_poster_grid()
+    check_daily_announcement()
+
+    # An upgraded file is the same title; another year or episode is not
+    assert stats_title_key(_leaf("Heat (1995) 720p.mkv")) == stats_title_key(_leaf("Heat.1995.2160p.UHD.BluRay.x265.mkv"))
+    assert stats_title_key(_leaf("Heat (1995).mkv")) != stats_title_key(_leaf("Heat (2030).mkv"))
+    assert stats_title_key(_leaf("Show.S01E01.mkv")) != stats_title_key(_leaf("Show.S01E02.mkv"))
+    assert stats_title_key(None) is None
+    print("ok")
+
+
+def check_recently_viewed():
+    with tempfile.TemporaryDirectory() as tmp, mock.patch.object(poster_grid.requests, "get", _Downloads()) as fake:
+        stats_cog._downloads = fake
+        stats_cog._grid_cache[:] = [None, None]
+        path = os.path.join(tmp, "stats.json")
+        stats = StatsService(path, excluded=[9])
+        streamer, ann = {9: "Streamer"}, {1: "Ann"}
+        heat = view_info(_leaf("Heat (1995) 1080p.mkv"))
+        assert heat[1:] == ("Heat (1995)", None)
+
+        # Only the excluded streamer in the room: played, not viewed
+        for _ in range(20):
+            assert stats.record_view(*heat, streamer, 30) is None
+        assert stats.recent == [] and build_stats_embeds(stats)[1:] == []
+
+        # A short drop-in doesn't count; 5 minutes does, and only real viewers are listed
+        for _ in range(9):
+            stats.record_view(*heat, {**streamer, **ann}, 30)
+        assert stats.recently_viewed() == []
+        entry = stats.record_view(*heat, {**streamer, **ann}, 30)
+        assert [e["key"] for e in stats.recently_viewed()] == [heat[0]]
+        assert entry["viewers"] == {"1": {"name": "Ann", "seconds": 300}}
+
+        # Episodes of a season share one entry that shows the latest episode, newest first
+        ep1 = view_info(_leaf("Show.Name.S02E03.1080p.mkv"))
+        ep2 = view_info(_leaf("Show.Name.S02E04.1080p.mkv"))
+        assert ep1[0] == ep2[0] and ep2[2] == "S02E04"
+        for info in (ep1,) * 5 + (ep2,) * 5:
+            stats.record_view(*info, {2: "Bob"}, 30)
+        recent = stats.recently_viewed()
+        assert [e["key"] for e in recent] == [ep1[0], heat[0]] and recent[0]["episode"] == "S02E04"
+
+        # Rewatching moves a title back to the top, and the list survives a restart
+        stats.record_view(*heat, ann, 30)
+        stats.save()
+        stats = StatsService(path, excluded=[9])
+        assert [e["key"] for e in stats.recently_viewed()] == [heat[0], ep1[0]]
+
+        # One "Recently Watched" card: a line per title (linked when TMDB matched, the
+        # parsed name when not) over one attached grid image
+        stats.recent[0].update(title="Heat", url="https://www.themoviedb.org/movie/949", poster="https://image.tmdb.org/t/p/w500/heat.jpg")
+        stats.recent[1]["poster"] = None
+        stats.users = {"1": {"name": "Ann", "seconds": 60, "finished": [], "progress": {}}}
+        message = asyncio.run(stats_cog.build_stats_message(stats))
+        board, card = message["embeds"]
+        assert board.title == "🏆 Watch Leaderboard" and card.title == "🎬 Recently Watched"
+        first, second = card.description.split("\n**2.**")
+        # Titles only: who watched and for how long is the leaderboard's job
+        assert first == "**1.** [Heat](https://www.themoviedb.org/movie/949)", first
+        assert second == " Show Name · S02E04", second
+        assert card.image.url == "attachment://recently-watched.jpg"
+        assert message["file"].filename == "recently-watched.jpg"
+        grid = Image.open(message["file"].fp)
+        assert grid.size == (2 * 200 + 3 * 6, 300 + 2 * 6)  # 2 titles: 2x1
+        assert grid.getpixel((6 + 100, 6 + 150))[0] > 150  # Heat's (red) poster, first cell
+        assert stats_cog._downloads.urls == ["https://image.tmdb.org/t/p/w342/heat.jpg"]  # smaller size
+
+        # The grid follows STATS_POSTER_GRID_MAX: 9 titles at most by default, then 4 at 2
+        for n in range(10):
+            stats.record_view(*view_info(_leaf(f"Film {n} (20{n:02d}).mkv")), {4: "Di"}, 300)
+            stats.recent[0]["poster"] = f"https://image.tmdb.org/t/p/w500/{n}.jpg"
+        message = asyncio.run(stats_cog.build_stats_message(stats))
+        assert message["embeds"][1].description.count("\n**") == 8
+        assert Image.open(message["file"].fp).size == (3 * 200 + 4 * 6, 3 * 300 + 4 * 6)
+        with mock.patch.object(Config, "STATS_POSTER_GRID_MAX", 2):
+            message = asyncio.run(stats_cog.build_stats_message(stats))
+        assert message["embeds"][1].description.count("\n**") == 3
+        assert Image.open(message["file"].fp).size == (2 * 200 + 3 * 6, 2 * 300 + 3 * 6)
+
+        # Same list again: served from the render cache, not drawn again
+        with mock.patch.object(Config, "STATS_POSTER_GRID_MAX", 2), \
+                mock.patch.object(poster_grid, "render", wraps=poster_grid.render) as render:
+            asyncio.run(stats_cog.build_stats_message(stats))
+        render.assert_not_called()
+
+        # No Pillow, or the render breaks: Discord's 4-poster gallery instead
+        with mock.patch.object(poster_grid, "render", side_effect=RuntimeError("boom")):
+            stats_cog._grid_cache[:] = [None, None]
+            embeds = build_stats_embeds(stats)
+        assert len(embeds) == 5 and {e.url for e in embeds[1:]} == {"https://www.themoviedb.org/"}
+        assert [e.image.url for e in embeds[1:]] == [f"https://image.tmdb.org/t/p/w500/{n}.jpg" for n in (9, 8, 7, 6)]
+        del stats.recent[:10]
+
+        # Excluding someone later hides them from past cards, along with their time;
+        # a card nobody else watched drops off. The stored entries keep them.
+        stats.record_view(*heat, {3: "Cy"}, 30)
+        stats.excluded = {"9", "1"}
+        recent = stats.recently_viewed()
+        assert [e["key"] for e in recent] == [ep1[0]], recent
+        assert "Heat" not in build_stats_embeds(stats)[1].description
+        stats.excluded = {"9", "2"}
+        assert stats.recently_viewed()[0]["viewers"] == {
+            "1": {"name": "Ann", "seconds": 330}, "3": {"name": "Cy", "seconds": 30}}
+        assert "2" in stats.recent[1]["viewers"]
+        # Cy alone (30 s) isn't enough to keep Heat listed once Ann is excluded
+        for _ in range(9):
+            stats.record_view(*heat, {3: "Cy"}, 30)
+        stats.excluded = {"9", "1"}
+        assert [e["viewers"] for e in stats.recently_viewed()] == [
+            {"3": {"name": "Cy", "seconds": 300}}, {"2": {"name": "Bob", "seconds": 300}}]
+
+    # A 1.22.0 file (names only, one room total) loads with that total per viewer
+    with tempfile.TemporaryDirectory() as tmp:
+        path = os.path.join(tmp, "stats.json")
+        with open(os.path.join(tmp, "stats_recent.json"), "w", encoding="utf-8") as f:
+            json.dump([{"key": "heat|1995", "name": "Heat", "seconds": 600, "last": 1,
+                        "episode": None, "viewers": {"1": "Ann", "9": "Streamer"}}], f)
+        stats = StatsService(path, excluded=[9])
+        assert stats.recently_viewed()[0]["viewers"] == {"1": {"name": "Ann", "seconds": 600}}
+        assert "seconds" not in stats.recent[0]
+
+    # Posters use the Now Playing match: SxxEyy goes straight to TV, otherwise the better score wins
+    assert tmdb_card(_tmdb(), _leaf("Heat (1995).mkv")) == {"poster": None}
+    tmdb = _tmdb(movie=(_card("Heat", "m"), 90.0), tv=(_card("Show", "t"), 95.0))
+    assert tmdb_card(tmdb, _leaf("Show.Name.S02E03.mkv"))["poster"] == "t"
+    tmdb.get_movie_metadata.assert_not_called()
+    assert tmdb.get_tv_metadata.call_args.args[:2] == ("Show Name", 2)
+    # A special with no episode number: both are looked up and the better TV score wins
+    tmdb = _tmdb(movie=(_card("Heat", "m"), 90.0), tv=(_card("Show", "t"), 95.0))
+    assert tmdb_card(tmdb, _leaf("Show.Name.Christmas.Special.mkv"))["poster"] == "t"
+    assert tmdb.get_movie_metadata.call_count == tmdb.get_tv_metadata.call_count == 1
+    movie_wins = _tmdb(movie=(_card("Heat", "m"), 95.0), tv=(_card("Heat", "t"), 40.0))
+    assert tmdb_card(movie_wins, _leaf("Heat (1995).mkv"))["poster"] == "m"
+    # No movie match at all falls back to a TV lookup by the title
+    assert tmdb_card(_tmdb(tv=(_card("Heat", "t"), 10.0)), _leaf("Heat (1995).mkv"))["poster"] == "t"
+
+
+class Room(discord.VoiceChannel):
+    members = []
+
+    def __init__(self, members):
+        self.__dict__["members"] = members
+
+
+def check_tick():
+    """The 30s tick: the poster is looked up after 5 minutes, saved with the entry, and an
+    empty result is retried an hour later, including for titles no longer playing."""
+    with tempfile.TemporaryDirectory() as tmp:
+        stats = StatsService(os.path.join(tmp, "stats.json"), excluded=[9])
+        # A 1.22 entry whose lookup came back empty, before retries existed: no uri, no check time
+        stats.recent.append({"key": "alien|1979", "name": "Alien (1979)", "episode": None, "last": 1,
+                             "poster": None, "viewers": {"1": {"name": "Ann", "seconds": 600}}})
+        people = [types.SimpleNamespace(id=i, display_name=n, bot=False) for i, n in ((9, "Streamer"), (1, "Ann"))]
+        bot = types.SimpleNamespace(get_channel=lambda _id: Room(people))
+        vlc = mock.Mock()
+        vlc.get_status.return_value = ET.fromstring("<root><state>playing</state><time>60</time><length>6000</length></root>")
+        playlist = ET.Element("node")
+        playlist.append(_leaf("Heat (1995).mkv"))
+        playlist[0].set("current", "current")
+        vlc.get_playlist.return_value = playlist
+        cog = StatsCommands(bot, vlc, stats, _tmdb())  # TMDB returns nothing at first
+        clock = [1_000_000.0]
+
+        def ticks(n):
+            async def run():
+                for _ in range(n):
+                    await cog._track.coro(cog)
+            with mock.patch.object(Config, "VOICE_JOIN_CHANNEL_ID", 1), \
+                    mock.patch("src.cogs.stats.time.time", lambda: clock[0]):
+                asyncio.run(run())
+
+        def entry(key):
+            return next(e for e in StatsService(stats.path).recent if e["key"] == key)
+
+        # First tick retries the old empty entry by its name; one lookup a tick at most
+        ticks(1)
+        assert cog.tmdb.get_movie_metadata.call_args.args[:2] == ("Alien", 1979)
+        assert entry("alien|1979")["poster"] is None and entry("alien|1979")["poster_checked"] == 1_000_000
+        # Heat isn't viewed until 5 minutes in; then it's looked up once and comes back empty too
+        ticks(8)
+        assert cog.tmdb.get_movie_metadata.call_count == 1
+        ticks(1)
+        assert cog.tmdb.get_movie_metadata.call_count == 2 and entry("heat|1995")["poster"] is None
+        assert entry("heat|1995")["uri"].endswith("Heat%20(1995).mkv")
+        ticks(20)
+        assert cog.tmdb.get_movie_metadata.call_count == 2  # no hammering inside the hour
+
+        # An hour on, TMDB answers: one title per tick, newest first, then nothing left to do
+        cog.tmdb = _tmdb(movie=(_card("Found", "https://p"), 90.0))
+        clock[0] += 3600
+        ticks(1)
+        assert entry("heat|1995")["poster"] == "https://p" and entry("alien|1979")["poster"] is None
+        ticks(3)
+        assert entry("alien|1979")["poster"] == "https://p"
+        assert cog.tmdb.get_movie_metadata.call_count == 2
+        assert entry("heat|1995")["viewers"] == {"1": {"name": "Ann", "seconds": 1020}}
+
+        # A lookup that raises counts as empty and still lets the tick save
+        stats.recent[0].pop("poster")
+        cog.tmdb.lookup_media_embed = mock.Mock(side_effect=RuntimeError("TMDB down"))
+        ticks(1)
+        assert entry("heat|1995")["poster"] is None and entry("heat|1995")["viewers"]["1"]["seconds"] == 1050
+
+
+def check_poster_grid():
+    assert [poster_grid.grid_shape(n) for n in (1, 2, 3, 4, 5, 6, 7, 9, 16)] == [
+        (1, 1), (2, 1), (2, 2), (2, 2), (3, 2), (3, 2), (3, 3), (3, 3), (4, 4)]
+    with mock.patch.object(poster_grid.requests, "get", _Downloads()) as fake:
+        poster_grid._posters.clear()
+        tiles = [("A", "https://image.tmdb.org/t/p/w500/a.jpg"), ("B", None), ("C", "https://bad/c.jpg")]
+        jpeg, complete = poster_grid.render(tiles)
+        grid = Image.open(io.BytesIO(jpeg))
+        assert grid.size == (2 * 200 + 3 * 6, 2 * 300 + 3 * 6) and not complete
+        cell = lambda i: grid.getpixel((6 + (i % 2) * 206 + 100, 6 + (i // 2) * 306 + 200))
+        near = lambda a, b: all(abs(x - y) <= 6 for x, y in zip(a, b))  # JPEG shifts colours slightly
+        assert cell(0)[0] > 150  # A's poster
+        assert near(cell(1), poster_grid.PLACEHOLDER) and near(cell(2), poster_grid.PLACEHOLDER)
+        assert near(cell(3), poster_grid.BACKGROUND)  # empty 4th cell
+
+        # Posters are cached between renders and pruned to the current grid
+        poster_grid.render(tiles[:1] + [("D", "https://image.tmdb.org/t/p/w500/d.jpg")])
+        assert len(fake.urls) == 3 and set(poster_grid._posters) == {
+            "https://image.tmdb.org/t/p/w500/a.jpg", "https://image.tmdb.org/t/p/w500/d.jpg"}
+        assert poster_grid.render(tiles[:1])[1] is True and len(fake.urls) == 3
+
+        # Bytes that aren't an image become a grey tile and are dropped from the cache
+        poster_grid._posters["https://image.tmdb.org/t/p/w500/a.jpg"] = b"not a jpeg"
+        assert poster_grid.render(tiles[:1])[1] is False and not poster_grid._posters
+
+
+def check_daily_announcement():
+    from src.cogs.scheduler import PH_TZ
+
+    # STATS_ANNOUNCE_TIME: HH:MM in PH time; empty, "off" or garbage turn it off
+    for raw, expected in (("20:00", (20, 0)), ("07:30", (7, 30)), ("", None), ("off", None), ("8pm", None), ("25:00", None)):
+        with mock.patch.object(Config, "STATS_ANNOUNCE_TIME", raw):
+            when = stats_cog.announce_time()
+        assert (when and (when.hour, when.minute)) == expected, (raw, when)
+        assert when is None or when.tzinfo is PH_TZ
+
+    with tempfile.TemporaryDirectory() as tmp, mock.patch.object(poster_grid.requests, "get", _Downloads()):
+        stats = StatsService(os.path.join(tmp, "stats.json"))
+        sent = {}
+
+        class Channel:
+            def __init__(self, cid):
+                self.cid = cid
+
+            async def send(self, **kwargs):
+                if self.cid == 2:
+                    raise discord.HTTPException(types.SimpleNamespace(status=403, reason="Forbidden"), "no access")
+                sent[self.cid] = kwargs
+
+        bot = types.SimpleNamespace(get_channel=lambda cid: Channel(cid))
+        cog = StatsCommands(bot, mock.Mock(), stats)
+        cog._announce.change_interval(time=stats_cog.announce_time())
+        assert [(t.hour, t.minute) for t in cog._announce.time] == [(20, 0)]
+
+        with mock.patch.object(Config, "get_announce_channel_ids", lambda: [1, 2, 3]):
+            # Nothing watched yet: nothing posted
+            asyncio.run(cog._announce.coro(cog))
+            assert sent == {}
+
+            # Each channel gets the leaderboard and the grid; one failing doesn't stop the rest
+            stats.record({1: "Ann"}, None, 0, 0, 3600)
+            stats.record_view(*view_info(_leaf("Heat (1995).mkv")), {1: "Ann"}, 300)
+            stats.recent[0]["poster"] = "https://image.tmdb.org/t/p/w500/heat.jpg"
+            stats_cog._grid_cache[:] = [None, None]
+            with mock.patch.object(Config, "ENABLE_SLASH_COMMANDS", True):
+                asyncio.run(cog._announce.coro(cog))
+        assert sorted(sent) == [1, 3]
+        assert sent[1]["content"].startswith("📊 **Daily watch stats**") and "`/stats`" in sent[1]["content"]
+        assert [e.title for e in sent[3]["embeds"]] == ["🏆 Watch Leaderboard", "🎬 Recently Watched"]
+        assert sent[1]["file"] is not sent[3]["file"]  # a discord.File can only be sent once
+
+    with mock.patch.object(Config, "ENABLE_SLASH_COMMANDS", False), mock.patch.object(Config, "DISCORD_COMMAND_PREFIX", "?"):
+        assert "`?stats`" in stats_cog._announce_text()
+
+
+if __name__ == "__main__":
+    main()

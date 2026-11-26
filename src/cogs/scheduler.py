@@ -1,5 +1,6 @@
 
 
+import asyncio
 import discord
 from discord.ext import commands, tasks
 from datetime import datetime
@@ -7,6 +8,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 import logging
 import json
 import os
+import re
+from urllib.parse import unquote
+from ..config import Config
 from ..utils.media_utils import MediaUtils
 
 # Cross-platform timezone handling for PH time
@@ -23,10 +27,102 @@ def get_ph_timezone():
             return get_localzone()
 
 PH_TZ = get_ph_timezone()
+
+
+def format_schedule_time(dt) -> str:
+    """PH time plus Discord timestamps, which each viewer's client renders in their own timezone."""
+    if not isinstance(dt, datetime):
+        return str(dt)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=PH_TZ)
+    ts = int(dt.timestamp())
+    return f"{dt.strftime('%Y-%m-%d %H:%M %Z')} · <t:{ts}:f> (<t:{ts}:R>)"
 logger = logging.getLogger(__name__)
 
 
+def _title_key(name: str):
+    title, year = MediaUtils.parse_movie_filename(unquote(name or ""))
+    norm = re.sub(r"\W+", " ", (title or "").lower()).strip()
+    return (norm, year) if norm else None
+
+
+def _resolve_schedule_index(entry: dict, items: list, exists=lambda uri: True):
+    """0-based playlist index for a schedule, or None.
+
+    Prefers the exact file (uri), so the schedule survives index shifts from
+    playlist cleanup. If that file is gone from the playlist or from disk (e.g.
+    replaced by an upgrade), falls back to the newest existing item with the same
+    parsed title + year. A missing-on-disk exact match is still returned when no
+    replacement exists, so an unreachable share doesn't silently skip the schedule.
+    """
+    uri = entry.get("uri")
+    if not uri:  # legacy entries only stored the number
+        idx = entry["number"] - 1
+        return idx if 0 <= idx < len(items) else None
+    exact = next((i for i, leaf in enumerate(items) if leaf.get("uri") == uri), None)
+    if exact is not None and exists(uri):
+        return exact
+    want = _title_key(uri.rsplit("/", 1)[-1])
+    matches = [
+        i for i, leaf in enumerate(items)
+        if want and i != exact and _title_key(leaf.get("name", "")) == want and exists(leaf.get("uri"))
+    ]
+    return matches[-1] if matches else exact
+
+
 SCHEDULE_BACKUP_FILE = "schedule_backup.json"
+SCHEDULE_CARDS_MAX = 10  # Discord's limit on embeds per message
+SOON_SECONDS = 3600
+
+
+def tmdb_info(tmdb, entry) -> dict:
+    """Title, link, poster, rating and genres from TMDB for a schedule card; {} when nothing matched."""
+    raw = unquote(entry.get("uri") or entry.get("title") or "")
+    try:
+        embed, _ = tmdb.lookup_media_embed(raw, entry.get("uri"))
+    except Exception:
+        logger.exception(f"TMDB lookup failed for schedule {entry.get('title')}")
+        return {}
+    if not embed:
+        return {}
+    fields = {f.name: f.value for f in embed.fields}
+    return {
+        "title": embed.title, "url": embed.url, "poster": embed.thumbnail.url,
+        "rating": fields.get("Rating"), "genre": fields.get("Genre"),
+    }
+
+
+def schedule_card(entry: dict, now: datetime) -> discord.Embed:
+    """One card per scheduled movie: poster, when (each viewer's own timezone and PH time),
+    runtime and end time, rating and genres. Colour shows how soon: orange within the
+    hour, green later today, blurple after that."""
+    info = entry.get("tmdb") or {}
+    dt = entry["dt"] if entry["dt"].tzinfo else entry["dt"].replace(tzinfo=PH_TZ)
+    ts = int(dt.timestamp())
+    until = (dt - now).total_seconds()
+    if until < SOON_SECONDS:
+        color, lead = discord.Color.orange(), "🔥 **Starting soon** · "
+    elif dt.astimezone(PH_TZ).date() == now.astimezone(PH_TZ).date():
+        color, lead = discord.Color.green(), "🌙 **Today** · "
+    else:
+        color, lead = discord.Color.blurple(), ""
+    lines = [
+        f"{lead}<t:{ts}:F> · <t:{ts}:R>",
+        f"🇵🇭 {dt.astimezone(PH_TZ).strftime('%a %b %d, %I:%M %p')} PH time",
+    ]
+    duration = entry.get("duration")
+    if isinstance(duration, int) and duration > 0:
+        lines.append(f"⏱️ {duration // 3600}h {duration % 3600 // 60:02d}m · ends <t:{ts + duration}:t>")
+    meta = " · ".join(v for v in (info.get("rating"), info.get("genre")) if v)
+    if meta:
+        lines.append(meta)
+    by = f"<@{entry['user']}>" if entry.get("user") else "someone"
+    lines.append(f"🎞️ Playlist #{entry['number']} · scheduled by {by}")
+    title = info.get("title") or entry.get("title") or "Unknown"
+    embed = discord.Embed(title=title[:256], url=info.get("url"), description="\n".join(lines), color=color)
+    if info.get("poster"):
+        embed.set_thumbnail(url=info["poster"])
+    return embed
 
 
 from src.services.tmdb_service import TMDBService
@@ -72,7 +168,35 @@ class Scheduler(commands.Cog):
                 logger.error(f"Error loading schedule backup: {e}")
         return []
 
+    def _uri_exists(self, uri) -> bool:
+        path = self.vlc._uri_to_path(uri)
+        return bool(path) and self.vlc._file_exists_robust(path)
+
+    def _rebind_due_schedules(self, now) -> dict:
+        """Resolve schedules due within 10 minutes; update number/uri if the item moved."""
+        due = [s for s in self.scheduled if (s["dt"] - now).total_seconds() <= 600]
+        if not due:
+            return {}
+        playlist = self.vlc.get_playlist()
+        items = playlist.findall('.//leaf') if playlist is not None else []
+        resolved, changed = {}, False
+        for s in due:
+            idx = _resolve_schedule_index(s, items, self._uri_exists)
+            resolved[id(s)] = (idx, items[idx] if idx is not None else None)
+            if idx is None:
+                continue
+            leaf = items[idx]
+            if s["number"] != idx + 1 or (s.get("uri") and s["uri"] != leaf.get("uri")):
+                logger.info(f"Rebinding schedule '{s.get('title')}' #{s['number']} -> #{idx + 1} ({leaf.get('name')})")
+                s["number"] = idx + 1
+                s["uri"] = leaf.get("uri") or s.get("uri")
+                changed = True
+        if changed:
+            self._save_schedule_backup()
+        return resolved
+
     @commands.command(name="schedule")
+    @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def schedule_movie(self, ctx, number: int, date: str, time: str):
         """Schedule a movie by playlist number and PH time.
 
@@ -88,7 +212,7 @@ class Scheduler(commands.Cog):
             # Check for double scheduling (same movie, same time within 1 minute)
             for s in self.scheduled:
                 if s["number"] == number and abs((s["dt"] - dt).total_seconds()) < 60:
-                    await ctx.send(f"❌ Movie #{number} is already scheduled at {s['dt'].strftime('%Y-%m-%d %H:%M %Z')}. Double scheduling is not allowed.")
+                    await ctx.send(f"❌ Movie #{number} is already scheduled at {format_schedule_time(s['dt'])}. Double scheduling is not allowed.")
                     return
             # Get movie title and duration from playlist (on demand)
             playlist = self.vlc.get_playlist()
@@ -124,36 +248,44 @@ class Scheduler(commands.Cog):
             )
             embed.add_field(name="Number", value=f"#{number}", inline=True)
             embed.add_field(name="Title", value=title, inline=True)
-            embed.add_field(name="Scheduled For", value=dt.strftime('%Y-%m-%d %H:%M %Z'), inline=False)
+            embed.add_field(name="Scheduled For", value=format_schedule_time(dt), inline=False)
             embed.add_field(name="Duration", value=dur_str, inline=True)
+            embed.add_field(name="Scheduled By", value=ctx.author.mention, inline=True)
             await ctx.send(embed=embed)
         except Exception as e:
             await ctx.send(f"❌ Invalid date/time format. Use: {format_cmd_inline('schedule <number> <YYYY-MM-DD> <HH:MM>')}")
 
+    async def schedule_list_message(self) -> dict:
+        """send() arguments for the schedule list: a header line and one card per movie,
+        soonest first. TMDB details are looked up once per schedule and kept with it."""
+        if not self.scheduled:
+            return {"content": "No movies scheduled."}
+        upcoming = sorted(self.scheduled, key=lambda x: x["dt"])
+        shown = upcoming[:SCHEDULE_CARDS_MAX]
+        missing = [s for s in shown if "tmdb" not in s]
+        if missing:
+            # ponytail: one at a time, because TMDBService keeps the last match score on itself;
+            # only the first list after scheduling waits on these
+            infos = await asyncio.to_thread(lambda: [tmdb_info(self.tmdb, s) for s in missing])
+            for s, info in zip(missing, infos):
+                s["tmdb"] = info
+            self._save_schedule_backup()
+        header = f"🎬 **Upcoming Screenings** · {len(upcoming)} scheduled"
+        if len(upcoming) > len(shown):
+            header += f" (showing the next {len(shown)})"
+        now = datetime.now(PH_TZ)
+        return {"content": header, "embeds": [schedule_card(s, now) for s in shown]}
+
     @commands.command(name="schedules")
+    @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def list_schedules(self, ctx):
         """List all upcoming scheduled movies."""
-        if not self.scheduled:
-            await ctx.send("No movies scheduled.")
-            return
-        embed = discord.Embed(title="Upcoming Scheduled Movies", color=discord.Color.purple())
-        for s in sorted(self.scheduled, key=lambda x: x["dt"]):
-            dt_str = s["dt"].strftime('%Y-%m-%d %H:%M %Z') if isinstance(s["dt"], datetime) else str(s["dt"])
-            duration = s.get("duration")
-            if duration == 'Loading...' or duration == 0:
-                dur_str = 'Loading...'
-            elif duration:
-                dur_str = MediaUtils.format_time(duration)
-            else:
-                dur_str = "Unknown"
-            embed.add_field(
-                name=f"#{s['number']} — {s.get('title', 'Unknown')}",
-                value=f"Scheduled for {dt_str}\nDuration: {dur_str}",
-                inline=False
-            )
-        await ctx.send(embed=embed)
+        async with ctx.typing():
+            message = await self.schedule_list_message()
+        await ctx.send(**message)
 
     @commands.command(name="unschedule")
+    @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def unschedule(self, ctx, number: int):
         """Remove all schedules for a given movie number."""
         before = len(self.scheduled)
@@ -173,6 +305,11 @@ class Scheduler(commands.Cog):
         # Safeguard: ensure pre_announce_sent always exists
         if not hasattr(self, 'pre_announce_sent') or self.pre_announce_sent is None:
             self.pre_announce_sent = set()
+        try:
+            resolved = self._rebind_due_schedules(now)
+        except Exception as e:
+            logger.error(f"Error resolving scheduled items: {e}")
+            resolved = {}
         for s in self.scheduled:
             pre_announce_key = (s['number'], s['dt'])
             if pre_announce_key not in self.pre_announce_sent:
@@ -205,12 +342,9 @@ class Scheduler(commands.Cog):
         to_run = [s for s in self.scheduled if s["dt"] <= now]
         for s in to_run:
             try:
-                # Play by number (1-based index)
-                playlist = self.vlc.get_playlist()
-                items = playlist.findall('.//leaf') if playlist is not None else []
-                idx = s["number"] - 1
-                if 0 <= idx < len(items):
-                    item_id = items[idx].get('id')
+                idx, leaf = resolved.get(id(s), (None, None))
+                if leaf is not None:
+                    item_id = leaf.get('id')
                     self.vlc.play_item(item_id)
                     announce_ids = Config.get_announce_channel_ids()
                     channel_ids = set(announce_ids or [])
@@ -262,7 +396,7 @@ class Scheduler(commands.Cog):
                                     except Exception:
                                         pass
                 else:
-                    logger.warning(f"Scheduled movie number {s['number']} not found in playlist.")
+                    logger.warning(f"Scheduled movie #{s['number']} ({s.get('title')}) not found in playlist; no replacement match.")
             except Exception as e:
                 logger.error(f"Error running scheduled movie: {e}")
         # Remove all that have run
