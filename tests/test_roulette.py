@@ -3,6 +3,8 @@
 Run from the repo root:  python tests/test_roulette.py
 """
 import asyncio
+import types
+from unittest import mock
 import os
 import sys
 import xml.etree.ElementTree as ET
@@ -50,6 +52,23 @@ async def main():
     assert "#3" in reply["embed"].footer.text
     reply = await cog.roulette_reply(1, "western")
     assert "content" in reply and "Genres in the playlist" in reply["content"]
+
+    # One movie: buttons, not one-option dropdowns; Play/Queue act on the drawn movie
+    view = (await cog.roulette_reply(1, "horr"))["view"]
+    assert not any(isinstance(c, pl.discord.ui.Select) for c in view.children)
+    buttons = {c.label: c for c in view.children}
+    assert list(buttons) == ['▶️ Play', '⏭️ Queue next', '🎲 Spin again', '✕ Cancel'], list(buttons)
+    picked = view.results[0]
+    for label, name in (('▶️ Play', '_play'), ('⏭️ Queue next', '_queue')):
+        with mock.patch.object(view, name, mock.AsyncMock()) as action:
+            await buttons[label].callback(types.SimpleNamespace(user=types.SimpleNamespace(id=1)))
+            action.assert_awaited_once()
+            assert action.await_args.args[1:] == picked
+    stranger = types.SimpleNamespace(user=types.SimpleNamespace(id=2),
+                                     response=types.SimpleNamespace(send_message=mock.AsyncMock()))
+    with mock.patch.object(view, '_play', mock.AsyncMock()) as action:
+        await buttons['▶️ Play'].callback(stranger)
+        action.assert_not_awaited()
     print("roulette ok")
 
 

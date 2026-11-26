@@ -1,3 +1,8 @@
+## 1.27.2 - 2026-11-25
+
+### Changed
+- **Roulette buttons**: the roulette pick now has ▶️ Play and ⏭️ Queue next buttons, next to 🎲 Spin again and ✕ Cancel, instead of one-option dropdowns. They do the same room and schedule checks as before.
+
 ## 1.27.1 - 2026-11-25
 
 ### Added

@@ -261,10 +261,10 @@ class PlaySearchView(discord.ui.View):
 
     async def _on_select(self, interaction: discord.Interaction):
         pair = await self._picked(interaction)
-        if pair is None:
-            return
-        playlist_num, item = pair
+        if pair is not None:
+            await self._play(interaction, *pair)
 
+    async def _play(self, interaction: discord.Interaction, playlist_num: int, item):
         playback_cog = self.cog.bot.get_cog('PlaybackCommands')
         if playback_cog:
             ok, reason = playback_cog._playback_guard(interaction.user)
@@ -350,9 +350,10 @@ class GenrePickerView(PlaySearchView):
         """Queue the pick to play after the current item (same checks as !queue_next). The
         picker stays open, so several movies can be queued from one list."""
         pair = await self._picked(interaction)
-        if pair is None:
-            return
-        playlist_num, item = pair
+        if pair is not None:
+            await self._queue(interaction, *pair)
+
+    async def _queue(self, interaction: discord.Interaction, playlist_num: int, item):
         playback_cog = self.cog.bot.get_cog('PlaybackCommands')
         if playback_cog:
             ok, reason = playback_cog._playback_guard(interaction.user)
@@ -388,14 +389,32 @@ class GenrePickerView(PlaySearchView):
 
 
 class RouletteView(GenrePickerView):
-    """One random movie from a pool, with the play/queue pickers and a re-spin button."""
+    """One random movie from a pool, with Play, Queue next and Spin again buttons."""
 
     def __init__(self, cog, requester_id: int, genre: Optional[str], pool: List[Tuple[int, dict]]):
         super().__init__(cog, requester_id, genre or "", [random.choice(pool)])
         self.pool = pool
-        spin = discord.ui.Button(label='🎲 Spin again', style=discord.ButtonStyle.primary)
-        spin.callback = self._spin
-        self.add_item(spin)
+        # One movie, so buttons instead of the genre list's one-option dropdowns
+        cancel = self.children[-1]
+        self.clear_items()
+        for label, style, action in (
+            ('▶️ Play', discord.ButtonStyle.success, '_play'),
+            ('⏭️ Queue next', discord.ButtonStyle.secondary, '_queue'),
+            ('🎲 Spin again', discord.ButtonStyle.primary, '_spin'),
+        ):
+            button = discord.ui.Button(label=label, style=style)
+            button.callback = lambda i, a=action: self._act(i, a)
+            self.add_item(button)
+        self.add_item(cancel)
+
+    async def _act(self, interaction: discord.Interaction, action):
+        if interaction.user.id != self.requester_id:
+            await interaction.response.send_message('That roulette belongs to someone else.', ephemeral=True)
+            return
+        if action == '_spin':
+            await self._spin(interaction)
+        else:
+            await getattr(self, action)(interaction, *self.results[0])
 
     async def roulette_embed(self) -> discord.Embed:
         num, item = self.results[0]
@@ -413,15 +432,9 @@ class RouletteView(GenrePickerView):
         return embed
 
     async def _spin(self, interaction: discord.Interaction):
-        if interaction.user.id != self.requester_id:
-            await interaction.response.send_message('That roulette belongs to someone else.', ephemeral=True)
-            return
         await interaction.response.defer()  # the TMDB lookup can take a moment
         others = [p for p in self.pool if p[0] != self.results[0][0]] or self.pool
         self.results = [random.choice(others)]
-        for child in self.children:
-            if isinstance(child, discord.ui.Select):
-                child.options = _picker_options(self.results)
         await interaction.edit_original_response(embed=await self.roulette_embed(), view=self)
 
 

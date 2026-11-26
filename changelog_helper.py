@@ -70,7 +70,7 @@ def whats_new(version: str, max_items: int = 4) -> List[Dict]:
     title is the bold lead-in ("**Movie roulette**: ..."); slash/prefix are the first
     `/...` and `!...` commands an Added bullet names (None otherwise). Bullets without a
     bold lead-in are skipped; empty if the version isn't logged."""
-    entry = next((e for e in parse_changelog(max_versions=3) if e['version'] == version), None)
+    entry = next((e for e in parse_changelog(max_versions=10_000) if e['version'] == version), None)
     if not entry:
         return []
     items = []
