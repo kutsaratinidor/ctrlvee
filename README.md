@@ -376,7 +376,7 @@ Prefix shown as `!` below; replace with your configured `DISCORD_COMMAND_PREFIX`
 ### Queue
 
 - `!queue_next <number>`
-- `!queue_status`
+- `!queue_status` (alias `qstatus`), or `/queue status` — one card per queued item in play order (up to 10): TMDB poster, title, rating and genres, runtime, queue and playlist position, and when it should start in your own timezone. Start times show only while something is playing, and stop at the first item whose runtime is unknown. The next item is green.
 - `!clear_queue`
 - `!remove_queue <N|#N>`
 

@@ -1,6 +1,7 @@
 import discord
 from discord.ext import commands
 import asyncio
+import time
 import logging
 import os
 import re
@@ -9,6 +10,37 @@ from urllib.parse import unquote, urlparse
 from ..utils.media_utils import MediaUtils
 from ..config import Config
 from ..utils.command_utils import format_cmd_inline
+from .scheduler import tmdb_info
+
+QUEUE_CARDS_MAX = 10  # Discord's limit on embeds per message
+
+
+def queue_card(row: dict, position: int, now_ts: float) -> discord.Embed:
+    """One poster card per queued item, like the schedule list: estimated start (each viewer's
+    own timezone), runtime, rating and genres, queue and playlist position. Green for up next."""
+    info = row.get("tmdb") or {}
+    lead = "▶️ **Up next**" if position == 1 else ""
+    lines = []
+    if row.get("starts_in") is not None:
+        ts = int(now_ts + row["starts_in"])
+        lines.append(f"{lead + ' · ' if lead else ''}starts <t:{ts}:t> · <t:{ts}:R>")
+    elif lead:
+        lines.append(lead)
+    duration = row.get("duration")
+    if duration:
+        lines.append(f"⏱️ {duration // 3600}h {duration % 3600 // 60:02d}m")
+    meta = " · ".join(v for v in (info.get("rating"), info.get("genre")) if v)
+    if meta:
+        lines.append(meta)
+    lines.append(f"📋 Queue #{position}" + (f" · playlist #{row['number']}" if row.get("number") else ""))
+    title = info.get("title") or MediaUtils.clean_filename_for_display(row.get("name") or "Unknown", max_length=200)
+    embed = discord.Embed(
+        title=title[:256], url=info.get("url"), description="\n".join(lines),
+        color=discord.Color.green() if position == 1 else discord.Color.blurple(),
+    )
+    if info.get("poster"):
+        embed.set_thumbnail(url=info["poster"])
+    return embed
 
 # Set up logger for this module
 logger = logging.getLogger(__name__)
@@ -117,6 +149,8 @@ class PlaybackCommands(commands.Cog):
         self.vlc = vlc_controller
         self.tmdb = tmdb_service
         self.watch_service = watch_service
+        # ponytail: never pruned; one small entry per file ever queued, fine for a home playlist
+        self._queue_tmdb: dict = {}
         self.last_state_change = {}
         self.logger = logging.getLogger(__name__)
         self.last_known_state = None
@@ -913,6 +947,54 @@ class PlaybackCommands(commands.Cog):
             if isinstance(duration, int):
                 total += duration
         return total
+
+    def _queue_rows(self) -> list:
+        """Queued items in play order with playlist number, runtime, TMDB details (cached per
+        file) and seconds until each starts. Start times only while playing, and stop after the
+        first item whose runtime is unknown rather than guess."""
+        queued = sorted(
+            self.vlc.get_queue_status().get('queued_items', {}).items(),
+            key=lambda kv: kv[1].get('queue_order', 0),
+        )
+        if not queued:
+            return []
+        status = self.vlc.get_status()
+        offset = None
+        try:
+            if status.find('state').text == 'playing':
+                offset = max(0, int(status.find('length').text) - int(status.find('time').text))
+        except Exception:
+            pass
+        playlist = self.vlc.get_playlist()
+        leaves = playlist.findall('.//leaf') if playlist is not None else []
+        by_id = {leaf.get('id'): (n, leaf) for n, leaf in enumerate(leaves, 1)}
+        rows = []
+        for item_id, info in queued:
+            number, leaf = by_id.get(item_id, (None, None))
+            name = leaf.get('name') if leaf is not None else info.get('item_name', 'Unknown')
+            uri = leaf.get('uri') if leaf is not None else None
+            duration = MediaUtils.resolve_duration(leaf) if leaf is not None else None
+            duration = duration if isinstance(duration, int) and duration > 0 else None
+            key = uri or name
+            # Sequential on purpose: TMDBService keeps the last match score on itself
+            if len(rows) < QUEUE_CARDS_MAX and key not in self._queue_tmdb:
+                self._queue_tmdb[key] = tmdb_info(self.tmdb, {"uri": uri, "title": name})
+            rows.append({"number": number, "name": name, "duration": duration,
+                         "starts_in": offset, "tmdb": self._queue_tmdb.get(key)})
+            offset = offset + duration if offset is not None and duration else None
+        return rows
+
+    async def queue_status_message(self, hint: str) -> dict:
+        """send() arguments for the queue: a header and one poster card per queued item."""
+        rows = await asyncio.to_thread(self._queue_rows)
+        if not rows:
+            return {"content": f"📋 Nothing queued. Use {hint} to queue a playlist item to play next."}
+        shown = rows[:QUEUE_CARDS_MAX]
+        header = f"📋 **Queue** · {len(rows)} item{'s' if len(rows) != 1 else ''}"
+        if len(rows) > len(shown):
+            header += f" (showing the next {len(shown)})"
+        now_ts = time.time()
+        return {"content": header, "embeds": [queue_card(r, n, now_ts) for n, r in enumerate(shown, 1)]}
 
     async def _confirm_nearby_schedule(self, sendable, member: discord.Member, item=None, starts_in: float = 0) -> bool:
         """Gate a play-start command behind the schedule-proximity prompt.
@@ -2749,71 +2831,9 @@ class PlaybackCommands(commands.Cog):
     @commands.command(name='queue_status', aliases=['qstatus'])
     @commands.has_any_role(*Config.ALLOWED_ROLES)
     async def queue_status(self, ctx):
-        """Show current soft queue status and shuffle state"""
+        """Show the queue as poster cards, in play order"""
         try:
-            queue_status = self.vlc.get_queue_status()
-            shuffle_on = queue_status.get("shuffle_currently_on", False)
-            
-            embed = discord.Embed(
-                title="📋 Queue Status",
-                color=discord.Color.blue()
-            )
-            
-            # Get queue count for title
-            queued_items = queue_status.get("queued_items", {})
-            queue_count = len(queued_items)
-            if queue_count > 0:
-                embed.title = f"📋 Queue Status ({queue_count} item{'s' if queue_count != 1 else ''})"
-            
-            # Active queued items
-            if queued_items:
-                # Get playlist to map item IDs to titles and positions
-                playlist = self.vlc.get_playlist()
-                playlist_map = {}
-                if playlist:
-                    for idx, item in enumerate(playlist.findall('.//leaf'), 1):
-                        item_id = item.get('id')
-                        item_name = item.get('name', 'Unknown')
-                        if item_id:
-                            playlist_map[item_id] = {
-                                'name': item_name,
-                                'position': idx
-                            }
-                
-                queue_list = []
-                for item_id, info in queued_items.items():
-                    # Get item details from playlist
-                    if item_id in playlist_map:
-                        item_name = playlist_map[item_id]['name']
-                        playlist_pos = playlist_map[item_id]['position']
-                        queue_list.append(f"• **{item_name}** (playlist #{playlist_pos}, queue #{info['queue_order']})")
-                    else:
-                        # Fallback if item not found in current playlist
-                        item_name = info.get('item_name', 'Unknown')
-                        queue_list.append(f"• **{item_name}** (queue #{info['queue_order']})")
-                
-                embed.add_field(
-                    name="Active Queue Items",
-                    value="\n".join(queue_list[:5]) + ("\n..." if len(queue_list) > 5 else ""),
-                    inline=False
-                )
-            else:
-                embed.add_field(
-                    name="Active Queue Items",
-                    value="No items currently queued",
-                    inline=False
-                )
-            
-            
-            # Usage hint
-            embed.add_field(
-                name="Usage",
-                value=f"Use {format_cmd_inline('queue_next <number>')} to queue a playlist item to play next",
-                inline=False
-            )
-            
-            await ctx.send(embed=embed)
-            
+            await ctx.send(**await self.queue_status_message(format_cmd_inline('queue_next <number>')))
         except Exception as e:
             logger.error(f"Error in queue_status command: {e}")
             await ctx.send(f'Error getting queue status: {str(e)}')

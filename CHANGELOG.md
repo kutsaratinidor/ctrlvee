@@ -1,3 +1,8 @@
+## 1.28.0 - 2026-11-25
+
+### Changed
+- **Queue as poster cards**: `/queue status` and `!queue_status` show one card per queued item in play order (up to 10): TMDB poster, title linked to TMDB, rating and genres, runtime, queue and playlist position, and when it should start in each viewer's timezone. Start times show only while something is playing and stop at the first item with an unknown runtime. The next item is green. TMDB details are looked up once per file and reused.
+
 ## 1.27.2 - 2026-11-25
 
 ### Changed

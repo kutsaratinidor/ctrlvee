@@ -1672,7 +1672,7 @@ async def controls(ctx):
         # Queue Management
         queue_commands = f"""
 `{prefix}queue_next <number>` - Queue a playlist item to play next (shows item title & positions)
-`{prefix}queue_status` - Show current queue with item titles and playlist positions
+`{prefix}queue_status` - Show the queue as poster cards with estimated start times
 `{prefix}clear_queue` - Clear all queue tracking
 `{prefix}remove_queue <N|#N>` - Remove from queue by queue order (N) or playlist number (#N)
         """
@@ -3192,45 +3192,11 @@ async def queue_status(interaction: discord.Interaction):
         return
 
     await _defer_if_needed(interaction)
-    queue_state = vlc.get_queue_status()
-    queued_items = queue_state.get("queued_items", {})
-    embed = discord.Embed(
-        title=f"Queue Status ({len(queued_items)} item{'s' if len(queued_items) != 1 else ''})" if queued_items else "Queue Status",
-        color=discord.Color.blue(),
-    )
-
-    if queued_items:
-        playlist = vlc.get_playlist()
-        playlist_map = {}
-        if playlist:
-            for idx, item in enumerate(playlist.findall('.//leaf'), 1):
-                item_id = item.get('id')
-                if item_id:
-                    playlist_map[item_id] = {
-                        'name': item.get('name', 'Unknown'),
-                        'position': idx,
-                    }
-
-        queue_lines = []
-        for item_id, info in queued_items.items():
-            if item_id in playlist_map:
-                name = playlist_map[item_id]['name']
-                pos = playlist_map[item_id]['position']
-                queue_lines.append(f"• **{name}** (playlist #{pos}, queue #{info['queue_order']})")
-            else:
-                name = info.get('item_name', 'Unknown')
-                queue_lines.append(f"• **{name}** (queue #{info['queue_order']})")
-
-        embed.add_field(
-            name="Active Queue Items",
-            value="\n".join(queue_lines[:5]) + ("\n..." if len(queue_lines) > 5 else ""),
-            inline=False,
-        )
-    else:
-        embed.add_field(name="Active Queue Items", value="No items currently queued", inline=False)
-
-    embed.add_field(name="Usage", value="Use /queue add-next to queue a playlist item", inline=False)
-    await _reply(interaction, embed=embed)
+    playback_cog = bot.get_cog("PlaybackCommands")
+    if not playback_cog:
+        await _reply(interaction, "Queue status isn't available right now.", ephemeral=True)
+        return
+    await _reply(interaction, **await playback_cog.queue_status_message("`/queue add-next`"))
 
 
 @queue_group.command(name="clear", description="Clear all queue tracking")
