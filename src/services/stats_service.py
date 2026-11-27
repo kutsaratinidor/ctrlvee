@@ -70,7 +70,12 @@ class StatsService:
             viewer = entry["viewers"].setdefault(user_id, {"name": viewer_name, "seconds": 0})
             viewer["name"] = viewer_name
             viewer["seconds"] += seconds
-        del self.recent[RECENT_KEEP:]
+        while len(self.recent) > RECENT_KEEP:
+            # Drop the oldest title nobody really watched before any that was, so channel-hops
+            # can't push viewed titles off the grid. The newest may still be counting up to it.
+            self.recent.remove(next(
+                (e for e in reversed(self.recent[1:]) if not self.is_viewed(e)), self.recent[-1]
+            ))
         return entry
 
     def is_viewed(self, entry: dict) -> bool:

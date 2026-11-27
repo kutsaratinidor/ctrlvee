@@ -23,7 +23,7 @@ from src.cogs import stats as stats_cog  # noqa: E402
 from src.cogs.stats import StatsCommands, build_stats_embed, stats_title_key, tmdb_card, view_info  # noqa: E402
 from src.config import Config  # noqa: E402
 from src.utils import poster_grid  # noqa: E402
-from src.services.stats_service import StatsService  # noqa: E402
+from src.services.stats_service import RECENT_KEEP, StatsService  # noqa: E402
 from src.services.tmdb_service import TMDBService  # noqa: E402
 
 
@@ -188,6 +188,16 @@ def check_recently_viewed():
         stats.save()
         stats = StatsService(path, excluded=[9])
         assert [e["key"] for e in stats.recently_viewed()] == [heat[0], ep1[0]]
+
+        # Past RECENT_KEEP, short drop-ins are dropped before anything viewed, oldest first,
+        # but never the newest (it may still be playing)
+        hops = [view_info(_leaf(f"Hop {i} (2000).mkv")) for i in range(25)]
+        for info in hops:
+            stats.record_view(*info, ann, 30)
+        assert len(stats.recent) == RECENT_KEEP and stats.recent[0]["key"] == hops[-1][0]
+        assert [e["key"] for e in stats.recently_viewed()] == [heat[0], ep1[0]]
+        assert stats.recent[RECENT_KEEP - 3]["key"] == hops[-RECENT_KEEP + 2][0]
+        stats.recent = [e for e in stats.recent if stats.is_viewed(e)]
 
         # One "Recently Watched" card: a line per title (linked when TMDB matched, the
         # parsed name when not) over one attached grid image
