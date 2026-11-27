@@ -1,6 +1,11 @@
-## 1.29.1 - 2026-11-27
+## 1.29.2 - 2026-11-27
 
 ### Changed
+- **Fixes in the startup message**: the "What's new" list on startup now includes a release's Fixed entries too, and marks each line by kind: ✨ added, 🔄 changed, 🐛 fixed.
+
+## 1.29.1 - 2026-11-27
+
+### Fixed
 - **Fuller Recently Watched grid**: the 20 titles kept for the grid now drop short drop-ins (under 5 minutes) before anything people actually watched, so a run of skipped or empty-room titles no longer pushes watched ones off and leaves the grid short.
 
 ## 1.29.0 - 2026-11-26

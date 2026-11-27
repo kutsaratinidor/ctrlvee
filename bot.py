@@ -1218,10 +1218,11 @@ async def _send_startup_announcement() -> None:
             command = item['slash'] if slash_enabled and item['slash'] else None
             if not command and prefix_enabled and item['prefix']:
                 command = prefix + item['prefix'][1:]
-            lines.append(f"• {item['title']}" + (f" · try `{command}`" if command else ""))
+            icon = {'Added': '✨', 'Changed': '🔄', 'Fixed': '🐛'}[item['section']]
+            lines.append(f"{icon} {item['title']}" + (f" · try `{command}`" if command else ""))
         more = "/system changelog" if slash_enabled else f"{prefix}changelog"
         embed.add_field(
-            name=f"✨ New in {__version__}",
+            name=f"What's new in {__version__}",
             value=("\n".join(lines) + f"\nDetails: `{more}`")[:1024],
             inline=False,
         )

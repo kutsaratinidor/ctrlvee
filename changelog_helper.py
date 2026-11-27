@@ -66,7 +66,7 @@ def parse_changelog(max_versions: int = 2) -> List[Dict]:
 
 
 def whats_new(version: str, max_items: int = 4) -> List[Dict]:
-    """This version's Added/Changed bullets as {title, slash, prefix} for a short summary.
+    """This version's Added/Changed/Fixed bullets as {title, section, slash, prefix} for a short summary.
     title is the bold lead-in ("**Movie roulette**: ..."); slash/prefix are the first
     `/...` and `!...` commands an Added bullet names (None otherwise). Bullets without a
     bold lead-in are skipped; empty if the version isn't logged."""
@@ -74,7 +74,7 @@ def whats_new(version: str, max_items: int = 4) -> List[Dict]:
     if not entry:
         return []
     items = []
-    for section in ('Added', 'Changed'):
+    for section in ('Added', 'Changed', 'Fixed'):
         for text in entry['sections'].get(section, []):
             match = re.match(r'\*\*(.+?)\*\*', text)
             if not match:
@@ -82,6 +82,7 @@ def whats_new(version: str, max_items: int = 4) -> List[Dict]:
             commands = re.findall(r'`([/!][^`]+)`', text) if section == 'Added' else []
             items.append({
                 'title': match.group(1).rstrip(':. '),
+                'section': section,
                 'slash': next((c for c in commands if c.startswith('/')), None),
                 'prefix': next((c for c in commands if c.startswith('!')), None),
             })
