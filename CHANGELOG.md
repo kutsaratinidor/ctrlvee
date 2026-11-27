@@ -1,3 +1,8 @@
+## 1.29.0 - 2026-11-26
+
+### Added
+- **Idle shuffle**: once nobody but bots and `STATS_EXCLUDED_USER_IDS` (the streaming account) has been in the voice room for `IDLE_SHUFFLE_MINUTES` (default 10, `0` turns it off), the bot turns shuffle back on and posts a short note in the command channel, so a series binge with shuffle off doesn't leave it off. It leaves shuffle alone while a soft queue is pending.
+
 ## 1.28.0 - 2026-11-25
 
 ### Changed

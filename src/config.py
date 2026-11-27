@@ -173,6 +173,10 @@ class Config:
         int(u) for u in os.getenv('STATS_EXCLUDED_USER_IDS', '').split(',') if u.strip()
     ]
 
+    # Turn shuffle back on after the voice room has had nobody but bots and
+    # STATS_EXCLUDED_USER_IDS (the streaming account) for this many minutes. 0 turns it off.
+    IDLE_SHUFFLE_MINUTES: int = int(os.getenv('IDLE_SHUFFLE_MINUTES', '10') or 0)
+
     # Recently Watched poster grid on /stats is at most this many posters across and down
     # (3 → up to 9 titles). Clamped to 1-4.
     STATS_POSTER_GRID_MAX: int = min(4, max(1, int(os.getenv('STATS_POSTER_GRID_MAX', '3') or 3)))

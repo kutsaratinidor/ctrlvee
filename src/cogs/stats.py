@@ -156,6 +156,7 @@ class StatsCommands(commands.Cog):
         self.vlc = vlc
         self.stats = stats
         self.tmdb = tmdb
+        self._empty_since = None  # monotonic time the room last went watcher-free
 
     async def cog_load(self):
         self._track.start()
@@ -195,6 +196,7 @@ class StatsCommands(commands.Cog):
             channel = self.bot.get_channel(Config.VOICE_JOIN_CHANNEL_ID)
             if not isinstance(channel, discord.VoiceChannel):
                 return
+            await self._idle_shuffle(channel)
             viewers = {m.id: m.display_name for m in channel.members if not m.bot}
             if not viewers:
                 return
@@ -221,6 +223,32 @@ class StatsCommands(commands.Cog):
         except Exception:
             # An unhandled error would stop the loop for the rest of the session
             logger.exception("Watch stats tick failed")
+
+    async def _idle_shuffle(self, channel):
+        """Turn shuffle back on once nobody but bots and the streaming account has been in
+        the room for IDLE_SHUFFLE_MINUTES, e.g. after a series binge left it off."""
+        if Config.IDLE_SHUFFLE_MINUTES <= 0:
+            return
+        if any(not m.bot and m.id not in Config.STATS_EXCLUDED_USER_IDS for m in channel.members):
+            self._empty_since = None
+            return
+        now = time.monotonic()
+        if self._empty_since is None:
+            self._empty_since = now
+        if now - self._empty_since < Config.IDLE_SHUFFLE_MINUTES * 60:
+            return
+        if self.vlc._queued_items:  # soft queue turned shuffle off and restores it itself
+            return
+        self._empty_since = now  # check again after another idle stretch, not every tick
+        status = await asyncio.to_thread(self.vlc.get_status)
+        if status is None or status.findtext('random') == 'true':
+            return
+        if await asyncio.to_thread(self.vlc.toggle_shuffle) is None:
+            return
+        logger.info("Voice room idle; shuffle turned back on")
+        for channel_id in (Config.COMMAND_CHANNEL_IDS or Config.get_announce_channel_ids())[:1]:
+            target = self.bot.get_channel(channel_id) or await self.bot.fetch_channel(channel_id)
+            await target.send("💤 No one's watching the stream, so shuffle is back on.")
 
     async def _fill_poster(self):
         """At most one TMDB lookup a tick, for the first title in the grid still missing its poster."""
