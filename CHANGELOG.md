@@ -1,3 +1,8 @@
+## 1.30.0 - 2026-11-27
+
+### Added
+- **Upgrade from Discord**: `/admin upgrade` (or `!upgrade`, bot owner only) pulls the latest code, installs `requirements.txt` if it changed, and restarts the bot on it. It needs a process manager (systemd, NSSM) to start the bot again after it exits. A failed pull or install keeps the current version running.
+
 ## 1.29.2 - 2026-11-27
 
 ### Changed

@@ -161,6 +161,7 @@ Owner slash maintenance commands:
 
 - `/admin cleanup-playlist` removes missing files from VLC playlist entries.
 - `/admin show-config` shows a human-readable config overview for the current server (resolves channel/role IDs to names; owner-only).
+- `/admin upgrade` runs `git pull` on the bot's checkout (fast-forward only), installs `requirements.txt` if it changed, and restarts the bot on the new code (owner-only). The bot only exits; run it under a process manager (systemd on Linux, NSSM on Windows) so it starts again, otherwise it stays down until started by hand. A failed pull or install leaves the current version running.
 - `/admin reconnect-voice` forces an immediate voice channel reconnect attempt without restarting the bot process (owner-only).
 - `/system clear-global-slash` performs one-time global slash cleanup in dev-guild mode.
 
@@ -462,6 +463,7 @@ For public deployments, set these in `.env`:
 
 - `!list_guilds` (aliases: `guilds`, `servers`)
 - `!leave_server [guild_id]` (aliases: `leave_guild`, `leave`)
+- `!upgrade` (alias: `update_bot`; slash: `/admin upgrade`)
 
 ## Notes
 

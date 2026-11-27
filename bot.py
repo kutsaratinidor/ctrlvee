@@ -68,6 +68,7 @@ from src.services.vlc_controller import VLCController
 from src.services.tmdb_service import TMDBService
 from src.services.watch_folder_service import WatchFolderService
 from src.utils.media_utils import MediaUtils
+from src.utils.self_update import pull_update
 from src.services.radarr_service import RadarrService
 from src.services.overseerr_service import OverseerrService, STATUS_LABELS, REQUEST_STATUS_DECLINED, REQUEST_STATUS_FAILED
 from src.services.movie_request_tracker import MovieRequestTracker
@@ -2036,6 +2037,27 @@ async def clearglobalslash(ctx):
         await ctx.send(f"Global slash cleanup failed: {type(e).__name__}: {e}")
 
 
+async def _upgrade(user) -> tuple[bool, str]:
+    """Pull new code for the owner-only upgrade command. Restarting is left to the process
+    manager (systemd, NSSM, pm2): the caller closes the bot and the manager starts it again."""
+    logger.warning(f"upgrade invoked by {user} ({user.id})")
+    restart, message = await pull_update(os.path.dirname(os.path.abspath(__file__)))
+    if restart:
+        message += "\nRestarting now. Back in a few seconds if a process manager is running me."
+    return restart, message
+
+
+@bot.command(name="upgrade", aliases=["update_bot"])
+@commands.is_owner()
+async def upgrade(ctx):
+    """Owner-only: git pull the bot's checkout and restart on new code."""
+    async with ctx.typing():
+        restart, message = await _upgrade(ctx.author)
+    await ctx.send(message)
+    if restart:
+        await bot.close()
+
+
 system_group = app_commands.Group(name="system", description="CtrlVee system and information commands")
 playback_group = app_commands.Group(name="playback", description="CtrlVee playback controls")
 playlist_group = app_commands.Group(name="playlist", description="CtrlVee playlist browsing and search")
@@ -3745,6 +3767,19 @@ async def admin_leave_server(interaction: discord.Interaction, guild_id: str | N
 @admin_group.command(name="cleanup-playlist", description="Owner only: remove missing files from VLC playlist")
 async def admin_cleanup_playlist(interaction: discord.Interaction):
     await _run_playlist_cleanup(interaction, "/admin cleanup-playlist")
+
+
+@admin_group.command(name="upgrade", description="Owner only: pull the latest code and restart")
+async def admin_upgrade(interaction: discord.Interaction):
+    if not await bot.is_owner(interaction.user):
+        await interaction.response.send_message("This command is owner-only.", ephemeral=True)
+        return
+
+    await interaction.response.defer(thinking=True, ephemeral=True)
+    restart, message = await _upgrade(interaction.user)
+    await interaction.followup.send(message, ephemeral=True)
+    if restart:
+        await bot.close()
 
 
 @admin_group.command(name="reconnect-voice", description="Owner only: force a voice channel reconnect attempt")
